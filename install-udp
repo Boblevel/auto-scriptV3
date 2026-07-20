@@ -1,0 +1,59 @@
+#!/bin/bash
+# ============================================================
+#  nvpanel · installation UDP  (badvpn-udpgw + udp-custom)
+#  commande : install-udp
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+
+# Binaires à héberger toi-même (comme pour SlowDNS)
+BADVPN_URL="${BADVPN_URL:-https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/badvpn-udpgw}"
+UDPCUSTOM_URL="${UDPCUSTOM_URL:-https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/udp-custom}"
+DIR=/etc/nvpanel/udp
+mkdir -p "$DIR"
+
+banner; center " INSTALLATION UDP " "${BOLD}${WHT}"; line
+
+# --- badvpn-udpgw (ports 7100/7200/7300) --------------------
+printf "${CYN}➜${NC} badvpn-udpgw…\n"
+curl -sL "$BADVPN_URL" -o "$DIR/badvpn-udpgw" && chmod +x "$DIR/badvpn-udpgw"
+
+for p in 7100 7200 7300; do
+cat > /etc/systemd/system/nvpanel-badvpn-$p.service <<EOF
+[Unit]
+Description=nvpanel badvpn-udpgw $p
+After=network.target
+[Service]
+ExecStart=$DIR/badvpn-udpgw --listen-addr 127.0.0.1:$p --max-clients 500 --max-connections-for-client 10
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable --now nvpanel-badvpn-$p >/dev/null 2>&1
+done
+
+# --- udp-custom (optionnel, port 5300 UDP par défaut) -------
+printf "${CYN}➜${NC} udp-custom…\n"
+if curl -sL "$UDPCUSTOM_URL" -o "$DIR/udp-custom" && [ -s "$DIR/udp-custom" ]; then
+  chmod +x "$DIR/udp-custom"
+  [ -f "$DIR/config.json" ] || cat > "$DIR/config.json" <<'EOF'
+{ "listen": ":36712", "stream_buffer": 33554432, "receive_buffer": 83886080, "auth": { "mode": "passwords" } }
+EOF
+cat > /etc/systemd/system/nvpanel-udp-custom.service <<EOF
+[Unit]
+Description=nvpanel udp-custom
+After=network.target
+[Service]
+WorkingDirectory=$DIR
+ExecStart=$DIR/udp-custom server -exclude 1-21,23-52,54-79
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable --now nvpanel-udp-custom >/dev/null 2>&1
+fi
+
+clear; banner; center " UDP PRÊT " "${BOLD}${GRN}"; line
+ok "badvpn-udpgw : 7100 / 7200 / 7300"
+ok "udp-custom   : 36712 (si binaire fourni)"
+pause
