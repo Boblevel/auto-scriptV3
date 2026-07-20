@@ -1,0 +1,65 @@
+#!/bin/bash
+# ============================================================
+#  nvpanel · installation du cœur Xray  (commande : install-xray)
+#  Prépare les entrées Vmess / Vless / Trojan / Shadowsocks (WS)
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+
+XDIR=/usr/local/etc/xray
+NDIR=/etc/nvpanel/xray
+mkdir -p "$XDIR" "$NDIR"
+
+banner; center " INSTALLATION XRAY " "${BOLD}${WHT}"; line
+
+if ! command -v xray >/dev/null 2>&1; then
+  printf "${CYN}➜${NC} Téléchargement du cœur Xray (dépôt officiel)…\n"
+  bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install >/dev/null 2>&1
+fi
+
+# clé serveur Shadowsocks (2022) générée une seule fois
+SSKEY=$(cat "$NDIR/ss_key" 2>/dev/null)
+[ -z "$SSKEY" ] && { SSKEY=$(openssl rand -base64 32); echo "$SSKEY" > "$NDIR/ss_key"; }
+
+# config de base : 4 entrées, chacune identifiée par un "tag"
+cat > "$XDIR/config.json" <<EOF
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "tag": "vmess-in", "port": 8080, "protocol": "vmess",
+      "settings": { "clients": [] },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } }
+    },
+    {
+      "tag": "vless-in", "port": 8081, "protocol": "vless",
+      "settings": { "clients": [], "decryption": "none" },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
+    },
+    {
+      "tag": "trojan-in", "port": 8082, "protocol": "trojan",
+      "settings": { "clients": [] },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
+    },
+    {
+      "tag": "ss-in", "port": 8388, "protocol": "shadowsocks",
+      "settings": {
+        "method": "2022-blake3-aes-256-gcm",
+        "password": "$SSKEY",
+        "clients": [],
+        "network": "tcp,udp"
+      }
+    }
+  ],
+  "outbounds": [ { "protocol": "freedom" } ]
+}
+EOF
+
+systemctl enable xray >/dev/null 2>&1
+systemctl restart xray
+
+clear; banner; center " XRAY PRÊT " "${BOLD}${GRN}"; line
+ok "Cœur Xray installé et démarré."
+printf "   ${GRY}Vmess ws:8080/vmess · Vless ws:8081/vless${NC}\n"
+printf "   ${GRY}Trojan ws:8082/trojan · Shadowsocks tcp/udp:8388${NC}\n"
+pause
