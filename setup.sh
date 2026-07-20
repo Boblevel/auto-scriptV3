@@ -55,7 +55,13 @@ mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
 curl -s ipv4.icanhazip.com > /etc/nvpanel/ip || curl -s ifconfig.me > /etc/nvpanel/ip
 
 # Téléchargement des composants
-fetch(){ curl -sL "$REPO_RAW/$1" -o "$2" && chmod +x "$2"; }
+fetch(){
+  curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null
+  if [ ! -s "$2" ] || head -c 200 "$2" | grep -q '404: Not Found'; then
+    die "Fichier introuvable sur GitHub : '$1'. Vérifie qu'il est bien à la RACINE du dépôt (branche main), sans extension ni sous-dossier."
+  fi
+  chmod +x "$2"
+}
 fetch ui.sh            /etc/nvpanel/lib/ui.sh
 fetch menu             /usr/local/bin/menu
 fetch menu-ssh         /usr/local/bin/menu-ssh
@@ -73,6 +79,7 @@ fetch menu-xray        /usr/local/bin/menu-xray
 fetch menu-ss          /usr/local/bin/menu-ss
 fetch menu-settings    /usr/local/bin/menu-settings
 fetch menu-uninstall   /usr/local/bin/menu-uninstall
+fetch update.sh        /usr/local/bin/update
 
 # Raccourcis : menu = acc = dgh  ·  désinstallation = uninstall
 ln -sf /usr/local/bin/menu /usr/local/bin/acc
@@ -131,6 +138,8 @@ printf "      ${WHT}nvpanel-cli status${NC}      infos serveur\n"
 printf "      ${WHT}journalctl -u nvpanel-bot -f${NC}   logs du bot\n\n"
 printf "   ${CYN}Bot Telegram :${NC}\n"
 printf "      ${WHT}menu-bot${NC}                configurer token + ID puis activer\n\n"
+printf "   ${CYN}Mise à jour :${NC}\n"
+printf "      ${WHT}update${NC}   (récupère la dernière version depuis GitHub)\n\n"
 printf "   ${CYN}Désinstallation complète :${NC}\n"
 printf "      ${WHT}uninstall${NC}   (ou ${WHT}menu-uninstall${NC})\n\n"
 printf "   ${CYN}Automatismes actifs :${NC} suppression comptes expirés (SSH +\n"

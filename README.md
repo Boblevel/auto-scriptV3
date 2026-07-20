@@ -41,6 +41,7 @@ dgh
 | `nvpanel-cli delete u` | supprimer |
 | `nvpanel-cli status` | infos serveur |
 | `journalctl -u nvpanel-bot -f` | logs du bot |
+| `update` | mettre à jour depuis GitHub (garde comptes + config) |
 | `uninstall` / `menu-uninstall` | désinstaller entièrement nvpanel |
 
 ## Bot Telegram
@@ -83,6 +84,23 @@ bin-blobs/           binaires à héberger (dns-server, badvpn-udpgw, udp-custom
    nginx obtient un certificat Let's Encrypt et sert Vmess/Vless/Trojan en
    WebSocket sur le port 443. Les liens générés ensuite utilisent TLS.
    Le certificat se renouvelle automatiquement.
+
+## Mettre à jour
+
+Sur le serveur, tape simplement :
+
+```bash
+update
+```
+
+ou, sans passer par le panel :
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/update.sh)
+```
+
+La mise à jour re-télécharge les scripts depuis GitHub sans toucher aux
+comptes, à la configuration, au bot ni à Xray.
 
 ## Binaires (`bin-blobs/`)
 

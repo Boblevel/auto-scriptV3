@@ -1,0 +1,70 @@
+#!/bin/bash
+# ============================================================
+#  nvpanel · gestion Xray   (menu-xray vmess|vless|trojan)
+#  Interface — la logique est dans nvpanel-cli (partagée avec le bot)
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+PROTO="$1"
+case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac
+
+header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; }
+
+ensure_xray() {
+  if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
+    warn "Xray n'est pas installé."
+    read -rp " L'installer maintenant ? (o/n) : " r
+    [ "$r" = "o" ] && install-xray || return 1
+  fi
+}
+
+add_client() {
+  header; read -rp " Nom du client : " name
+  [ -z "$name" ] && { err "Nom vide"; pause; return; }
+  read -rp " Durée (jours) : " days
+  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days")
+  clear; header
+  if echo "$out" | head -1 | grep -q '^OK'; then
+    exp=$(echo "$out" | head -1 | awk '{print $3}')
+    link=$(echo "$out" | tail -1)
+    ok "Client ${PROTO^^} créé (expire $exp)"
+    echo; printf "   ${GRY}Lien de connexion :${NC}\n   ${CYN}%s${NC}\n" "$link"
+  else
+    err "Échec : $(echo "$out" | head -1)"
+  fi
+  pause
+}
+
+list_clients() {
+  header; printf " ${GRY}%-20s %s${NC}\n" "Nom" "Expire"; line
+  nvpanel-cli xlist "$PROTO" | while IFS='|' read -r n e; do printf " %-20s %s\n" "$n" "$e"; done
+  pause
+}
+
+del_client() {
+  header; read -rp " Nom à supprimer : " name
+  r=$(nvpanel-cli xdel "$PROTO" "$name")
+  echo "$r" | grep -q '^OK' && ok "$name supprimé" || err "$r"; pause
+}
+
+renew_client() {
+  header; read -rp " Nom : " name; read -rp " Ajouter (jours) : " days
+  r=$(nvpanel-cli xrenew "$PROTO" "$name" "$days")
+  echo "$r" | grep -q '^OK' && ok "Prolongé jusqu'au $(echo "$r"|awk '{print $3}')" || err "$r"; pause
+}
+
+ensure_xray || exit 0
+while true; do
+  header
+  entry "1" "Ajouter un client"
+  entry "2" "Lister les clients"
+  entry "3" "Prolonger un client"
+  entry "4" "Supprimer un client"
+  entry "0" "Retour"
+  line
+  read -rp "$(printf " ${WHT}Choix :${NC} ")" o
+  case "$o" in
+    1) add_client ;; 2) list_clients ;; 3) renew_client ;;
+    4) del_client ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+  esac
+done
