@@ -1,0 +1,56 @@
+#!/bin/bash
+# ============================================================
+#  nvpanel · menu principal   (commandes : menu / acc / dgh)
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+
+run() {  # lance $1 s'il existe, sinon message "à venir"
+  if command -v "$1" >/dev/null 2>&1; then "$@"
+  else clear; banner; warn "Module « $1 » pas encore installé (à venir)."; pause; fi
+}
+
+services_status() {
+  banner; center " STATUT DES SERVICES " "${BOLD}${WHT}"; line
+  for s in ssh dropbear nvpanel-slowdns nvpanel-badvpn-7300 nvpanel-udp-custom nvpanel-limit nvpanel-bot; do
+    if systemctl is-active --quiet "$s" 2>/dev/null; then
+      printf "  ${GRN}●${NC} %s\n" "$s"
+    else
+      printf "  ${RED}○${NC} %s\n" "$s"
+    fi
+  done
+  pause
+}
+
+while true; do
+  banner
+  sysinfo
+  line
+  clientcount
+  line
+  entry "01" "SSH · SlowDNS · UDP"
+  entry "02" "Vmess  (Xray)"
+  entry "03" "Vless  (Xray)"
+  entry "04" "Trojan (Xray)"
+  entry "05" "Shadowsocks"
+  line
+  entry "06" "Bot Telegram"
+  entry "07" "Statut des services"
+  entry "08" "Réglages (domaine, bannière…)"
+  entry "09" "Désinstaller nvpanel"
+  entry "00" "Quitter"
+  line
+  read -rp "$(printf " ${WHT}Choix :${NC} ")" opt
+  case "$opt" in
+    01|1) run menu-ssh ;;
+    02|2) run menu-xray vmess ;;
+    03|3) run menu-xray vless ;;
+    04|4) run menu-xray trojan ;;
+    05|5) run menu-ss ;;
+    06|6) run menu-bot ;;
+    07|7) services_status ;;
+    08|8) run menu-settings ;;
+    09|9) run menu-uninstall ;;
+    00|0) clear; exit 0 ;;
+    *)    warn "Option invalide"; sleep 1 ;;
+  esac
+done
