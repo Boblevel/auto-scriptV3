@@ -25,31 +25,18 @@ create_account() {
   read -rp " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
   read -rp " Quota (Go, 0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
 
-  exp=$(date -d "+$days days" +"%Y-%m-%d")
-  useradd -e "$exp" -s /bin/false -M "$user" &>/dev/null
-  echo -e "$pass\n$pass" | passwd "$user" &>/dev/null
-  echo "### $user $exp" >> "$DB"
-
-  # limite d'appareils
-  grep -q "^$user " "$LIMDB" && sed -i "s/^$user .*/$user $lim/" "$LIMDB" || echo "$user $lim" >> "$LIMDB"
-  # quota
-  if [ "$gb" -gt 0 ]; then
-    bytes=$(( gb * 1024 * 1024 * 1024 ))
-    grep -q "^$user " "$QDB" && sed -i "s/^$user .*/$user $bytes/" "$QDB" || echo "$user $bytes" >> "$QDB"
-    nvpanel-quota add "$user" 2>/dev/null
+  out=$(nvpanel-cli create "$user" "$pass" "$days" "$lim" "$gb")
+  clear; header
+  if echo "$out" | head -1 | grep -q '^OK'; then
+    ok "Compte SSH créé"
+    echo
+    printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+    printf "\n   ${GRY}Appareils : %s · Quota : %s${NC}\n" "$lim" "$([ "$gb" -gt 0 ] && echo "${gb} Go" || echo illimité)"
+  else
+    err "Échec : $(echo "$out" | head -1)"
   fi
-
-  clear; header; ok "Compte créé"
-  echo
-  printf "   Domaine/IP  : ${WHT}%s${NC}\n" "$DOMAIN"
-  printf "   Utilisateur : ${WHT}%s${NC}\n" "$user"
-  printf "   Mot de passe: ${WHT}%s${NC}\n" "$pass"
-  printf "   Expire      : ${WHT}%s${NC} (%s j)\n" "$exp" "$days"
-  printf "   Appareils   : ${WHT}%s${NC}   Quota : ${WHT}%s${NC}\n" "$lim" "$([ "$gb" -gt 0 ] && echo "${gb} Go" || echo illimité)"
-  echo
-  printf "   ${GRY}SSH/Dropbear 22,143,109 · SSL 443 · WS 8880/443${NC}\n"
-  printf "   ${GRY}SlowDNS : voir le sous-menu · UDP badvpn 7100/7200/7300${NC}\n"
   pause
+
 }
 
 list_accounts() {

@@ -1,17 +1,17 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · menu principal   (commandes : menu / acc / dgh)
+#  RHAFF SERVICE · menu principal   (commandes : menu / acc / dgh)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 
-run() {  # lance $1 s'il existe, sinon message "à venir"
+run() {
   if command -v "$1" >/dev/null 2>&1; then "$@"
-  else clear; banner; warn "Module « $1 » pas encore installé (à venir)."; pause; fi
+  else clear; banner; warn "Module « $1 » en préparation (bientôt disponible)."; pause; fi
 }
 
 services_status() {
-  banner; center " STATUT DES SERVICES " "${BOLD}${WHT}"; line
-  for s in ssh dropbear nvpanel-slowdns nvpanel-badvpn-7300 nvpanel-udp-custom nvpanel-limit nvpanel-bot; do
+  banner; center " 📊  STATUT DES SERVICES " "${BOLD}${WHT}"; line
+  for s in ssh dropbear xray nginx wg-quick@wg0 nvpanel-slowdns nvpanel-badvpn-7300 nvpanel-limit nvpanel-bot; do
     if systemctl is-active --quiet "$s" 2>/dev/null; then
       printf "  ${GRN}●${NC} %s\n" "$s"
     else
@@ -21,35 +21,56 @@ services_status() {
   pause
 }
 
+reboot_server() {
+  banner; center " 🔁  REDÉMARRAGE DU SERVEUR " "${BOLD}${WHT}"; line
+  warn "Le serveur va redémarrer. Ta session SSH sera coupée quelques instants."
+  read -rp " Confirmer le redémarrage ? (o/n) : " r
+  if [ "$r" = "o" ]; then
+    printf "${YLW}Redémarrage en cours…${NC}\n"; sleep 1; reboot
+  fi
+}
+
 while true; do
   banner
   sysinfo
   line
-  clientcount
+  stats
   line
-  entry "01" "SSH · SlowDNS · UDP"
-  entry "02" "Vmess  (Xray)"
-  entry "03" "Vless  (Xray)"
-  entry "04" "Trojan (Xray)"
-  entry "05" "Shadowsocks"
+  entry "01" "🔒" "SSH · SlowDNS · UDP"
+  entry "02" "🟣" "Vmess  (Xray)"
+  entry "03" "🔵" "Vless  (Xray)"
+  entry "04" "🟠" "Trojan (Xray)"
+  entry "05" "🟢" "Shadowsocks"
+  entry "06" "🛡️" "WireGuard"
+  entry "07" "🌐" "L2TP"
+  entry "08" "📡" "PPTP"
+  entry "09" "🔐" "SSTP"
   line
-  entry "06" "Bot Telegram"
-  entry "07" "Statut des services"
-  entry "08" "Réglages (domaine, bannière…)"
-  entry "09" "Désinstaller nvpanel"
-  entry "00" "Quitter"
+  entry "10" "🤖" "Bot Telegram"
+  entry "11" "📈" "Statut des services"
+  entry "12" "⚙️" "Paramètres"
+  entry "13" "🔁" "Redémarrer le serveur"
+  entry "14" "🔄" "Mettre à jour"
+  entry "15" "🗑️" "Désinstaller le script"
+  entry "00" "🚪" "Quitter"
   line
-  read -rp "$(printf " ${WHT}Choix :${NC} ")" opt
+  read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" opt
   case "$opt" in
     01|1) run menu-ssh ;;
     02|2) run menu-xray vmess ;;
     03|3) run menu-xray vless ;;
     04|4) run menu-xray trojan ;;
     05|5) run menu-ss ;;
-    06|6) run menu-bot ;;
-    07|7) services_status ;;
-    08|8) run menu-settings ;;
-    09|9) run menu-uninstall ;;
+    06|6) run menu-wg ;;
+    07|7) run menu-l2tp ;;
+    08|8) run menu-pptp ;;
+    09|9) run menu-sstp ;;
+    10)   run menu-bot ;;
+    11)   services_status ;;
+    12)   run menu-settings ;;
+    13)   reboot_server ;;
+    14)   run update ;;
+    15)   run menu-uninstall ;;
     00|0) clear; exit 0 ;;
     *)    warn "Option invalide"; sleep 1 ;;
   esac

@@ -25,10 +25,8 @@ add_client() {
   out=$(nvpanel-cli xadd "$PROTO" "$name" "$days")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
-    exp=$(echo "$out" | head -1 | awk '{print $3}')
-    link=$(echo "$out" | tail -1)
-    ok "Client ${PROTO^^} créé (expire $exp)"
-    echo; printf "   ${GRY}Lien de connexion :${NC}\n   ${CYN}%s${NC}\n" "$link"
+    ok "Client ${PROTO^^} créé"
+    echo; printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
   else
     err "Échec : $(echo "$out" | head -1)"
   fi

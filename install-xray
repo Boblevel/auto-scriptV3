@@ -1,21 +1,24 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · installation du cœur Xray  (commande : install-xray)
-#  Prépare les entrées Vmess / Vless / Trojan / Shadowsocks (WS)
+#  RHAFF SERVICE · installation du cœur Xray  (install-xray)
+#  Entrées Vmess/Vless/Trojan/Shadowsocks (WS) + façade nginx
+#  qui sert le port sans TLS (freesurf) et prépare le 443 (TLS).
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 XDIR=/usr/local/etc/xray
 NDIR=/etc/nvpanel/xray
+XPORT=$(cat /etc/nvpanel/xport 2>/dev/null || echo 80)
 mkdir -p "$XDIR" "$NDIR"
 
-banner; center " INSTALLATION XRAY " "${BOLD}${WHT}"; line
+banner; center " 🟦  INSTALLATION XRAY " "${BOLD}${WHT}"; line
 
 if ! command -v xray >/dev/null 2>&1; then
   printf "${CYN}➜${NC} Téléchargement du cœur Xray (dépôt officiel)…\n"
   bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install >/dev/null 2>&1
 fi
+command -v nginx >/dev/null 2>&1 || apt-get install -y nginx >/dev/null 2>&1
 
 # clé serveur Shadowsocks (2022) générée une seule fois
 SSKEY=$(cat "$NDIR/ss_key" 2>/dev/null)
@@ -58,8 +61,32 @@ EOF
 systemctl enable xray >/dev/null 2>&1
 systemctl restart xray
 
-clear; banner; center " XRAY PRÊT " "${BOLD}${GRN}"; line
+# --- Façade nginx : sert le port sans TLS (freesurf) --------
+mkdir -p /etc/nginx/conf.d
+cat > /etc/nginx/nvpanel-ws.conf <<'EOF'
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_read_timeout 300s;
+EOF
+cat > /etc/nginx/conf.d/rhaff-http.conf <<EOF
+server {
+    listen $XPORT;
+    server_name _;
+    location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }
+    location /vless  { proxy_pass http://127.0.0.1:8081; include /etc/nginx/nvpanel-ws.conf; }
+    location /trojan { proxy_pass http://127.0.0.1:8082; include /etc/nginx/nvpanel-ws.conf; }
+    location / { return 200 "ok"; }
+}
+EOF
+rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+if nginx -t >/dev/null 2>&1; then systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; fi
+
+clear; banner; center " 🟦  XRAY PRÊT " "${BOLD}${GRN}"; line
 ok "Cœur Xray installé et démarré."
-printf "   ${GRY}Vmess ws:8080/vmess · Vless ws:8081/vless${NC}\n"
-printf "   ${GRY}Trojan ws:8082/trojan · Shadowsocks tcp/udp:8388${NC}\n"
+printf "   ${GRY}Sans TLS : port %s (paths /vmess /vless /trojan)${NC}\n" "$XPORT"
+printf "   ${GRY}Avec TLS  : active-le via menu-settings (port 443)${NC}\n"
+printf "   ${GRY}Shadowsocks : tcp/udp 8388${NC}\n"
 pause

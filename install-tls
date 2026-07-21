@@ -35,13 +35,8 @@ if [ ! -f "$CERT/fullchain.pem" ]; then
   systemctl start nginx >/dev/null 2>&1; pause; exit 1
 fi
 
-# Vhost nginx : 80 → 443, TLS + proxy WebSocket vers Xray
-cat > /etc/nginx/conf.d/nvpanel.conf <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
+# Vhost nginx : bloc TLS 443 (le port sans TLS reste servi par rhaff-http.conf)
+cat > /etc/nginx/conf.d/rhaff-tls.conf <<EOF
 server {
     listen 443 ssl;
     server_name $DOMAIN;

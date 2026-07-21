@@ -96,6 +96,18 @@ script_info(){
   printf "   TLS      : %s\n" "$([ -f /etc/nvpanel/tls_on ] && printf "${GRN}actif${NC}" || printf "${RED}inactif${NC}")"
   pause
 }
+reset_traffic(){
+  header; warn "Cela remet à zéro les compteurs de consommation (hier/aujourd'hui/mois)."
+  read -rp " Confirmer ? (o/n) : " r; [ "$r" != "o" ] && { pause; return; }
+  local ifc; ifc=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
+  if [ -n "$ifc" ] && command -v vnstat >/dev/null 2>&1; then
+    vnstat --remove -i "$ifc" --force >/dev/null 2>&1
+    vnstat --add -i "$ifc" >/dev/null 2>&1
+    systemctl restart vnstat >/dev/null 2>&1
+    ok "Compteurs remis à zéro."
+  else err "vnstat introuvable."; fi
+  pause
+}
 
 while true; do
   header
@@ -111,18 +123,19 @@ while true; do
   entry "10" "🚀" "Speedtest du serveur"
   entry "11" "♻️" "Redémarrer les services VPN"
   entry "12" "📜" "Renouveler les certificats"
-  entry "13" "📝" "Changer la bannière SSH"
+  entry "13" "📝" "Ajouter une bannière SSH"
   entry "14" "🔁" "Redémarrer le VPS"
   entry "15" "ℹ️" "Info du script"
+  entry "16" "🧹" "Réinitialiser la consommation"
   entry "0"  "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}➤ Choix [0-15] :${NC} ")" o
+  read -rp "$(printf " ${WHT}➤ Choix [0-16] :${NC} ")" o
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
     3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;
     7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
     11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
-    14) reboot_vps ;; 15) script_info ;; 0) break ;;
+    14) reboot_vps ;; 15) script_info ;; 16) reset_traffic ;; 0) break ;;
     *) warn "Invalide"; sleep 1 ;;
   esac
 done

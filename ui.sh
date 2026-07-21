@@ -41,7 +41,7 @@ banner() {
   clear
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  center "gestionnaire de comptes VPN" "${GRY}"
+  center "gestion premium des accès & tunnels" "${GRY}"
   center "$CONTACT" "${CYN}"
   bot
 }
@@ -82,10 +82,21 @@ sysinfo() {
 _count_db(){ grep -c '^### ' "/etc/nvpanel/db/$1" 2>/dev/null || echo 0; }
 
 stats() {
-  local ssh online blocked total conso hier auj mois
-  ssh=$(awk -F: '$3>=1000 && $3<60000 {c++} END{print c+0}' /etc/passwd)
-  online=$(ps -eo user,comm 2>/dev/null | awk '($2 ~ /sshd|dropbear/) && $1!="root"{c++} END{print c+0}')
-  blocked=$(awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while read -r u; do passwd -S "$u" 2>/dev/null | grep -q ' L ' && echo x; done | wc -l)
+  local ssh online blocked total hier auj mois
+  ssh=$(grep -c '^### ' /etc/nvpanel/db/ssh 2>/dev/null); ssh=${ssh:-0}
+  online=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
+             uid=$(id -u "$pu" 2>/dev/null)
+             [ -n "$uid" ] && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] && echo 1
+           done | wc -l)
+  # Bloqué : uniquement les comptes SSH gérés qui sont réellement verrouillés
+  blocked=0
+  if [ -f /etc/nvpanel/db/ssh ]; then
+    while read -r _ u _; do
+      [ -z "$u" ] && continue
+      local st; st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
+      [ "$st" = "L" ] && blocked=$((blocked+1))
+    done < /etc/nvpanel/db/ssh
+  fi
   local vm vl tr ss wg
   vm=$(_count_db vmess); vl=$(_count_db vless); tr=$(_count_db trojan)
   ss=$(_count_db shadowsocks); wg=$(_count_db wireguard)

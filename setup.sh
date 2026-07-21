@@ -37,6 +37,15 @@ cat <<'ART'
 ART
 printf "${NC}\n"
 
+# --- Configuration initiale : domaine + port V2Ray ----------
+printf "${CYN}➜ Configuration initiale${NC}\n"
+printf "   ${GRY}Ces valeurs seront appliquées par défaut aux protocoles.${NC}\n"
+read -rp "   🌐 Nom de domaine (laisser vide si aucun) : " NVDOMAIN
+read -rp "   🔓 Port sans TLS [80] : " NVPORT
+NVPORT=${NVPORT:-80}
+[[ "$NVPORT" =~ ^[0-9]+$ ]] || NVPORT=80
+echo
+
 # --- DNS de secours -----------------------------------------
 say "Correction DNS…"
 cat > /etc/resolv.conf <<EOF
@@ -57,6 +66,10 @@ mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
 
 # IP publique (mise en cache pour un menu rapide)
 curl -s ipv4.icanhazip.com > /etc/nvpanel/ip || curl -s ifconfig.me > /etc/nvpanel/ip
+
+# Domaine + port V2Ray saisis au début
+[ -n "$NVDOMAIN" ] && echo "$NVDOMAIN" > /etc/nvpanel/domain
+echo "$NVPORT" > /etc/nvpanel/xport
 
 # Téléchargement des composants
 fetch(){
@@ -116,6 +129,15 @@ systemctl enable --now nvpanel-limit >/dev/null 2>&1
 # --- Cron : quota de bande passante -------------------------
 ( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab -
 
+# --- Remise à zéro des compteurs de trafic (le trafic d'install ne compte pas) ---
+say "Réinitialisation des compteurs de trafic…"
+IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
+if [ -n "$IFACE" ] && command -v vnstat >/dev/null 2>&1; then
+  vnstat --remove -i "$IFACE" --force >/dev/null 2>&1
+  vnstat --add -i "$IFACE" >/dev/null 2>&1
+  systemctl restart vnstat >/dev/null 2>&1
+fi
+
 # --- Fin -----------------------------------------------------
 IPADDR=$(cat /etc/nvpanel/ip 2>/dev/null)
 clear
@@ -144,4 +166,5 @@ printf "   ${CYN}Automatismes :${NC} suppression comptes expirés · limite\n"
 printf "   d'appareils · quota de bande passante\n\n"
 printf "   ${GRY}🌐 IP du serveur : %s${NC}\n" "$IPADDR"
 printf "   ${GRY}📨 Support : %s${NC}\n\n" "$CONTACT"
-printf "   ${GRN}➜ Tape ${YLW}menu${GRN} pour commencer.${NC}\n\n"
+printf "   ${GRN}➜ Pour ouvrir le panel, tape l'une de ces 3 commandes :${NC}\n"
+printf "      ${YLW}menu${NC}   ·   ${YLW}acc${NC}   ·   ${YLW}dgh${NC}\n\n"
