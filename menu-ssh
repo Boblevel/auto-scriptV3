@@ -103,7 +103,7 @@ slowdns_menu() {
   else
     warn "SlowDNS non installé."
   fi
-  echo; entry "1" "Installer / réinstaller SlowDNS"; entry "0" "Retour"; line
+  echo; entry "1" "Installer / réinstaller SlowDNS"; entry "0" "⬅️" "Retour"; line
   read -rp " Choix : " s
   [ "$s" = "1" ] && install-slowdns
 }
@@ -114,21 +114,21 @@ udp_status() {
     if systemctl is-active --quiet nvpanel-badvpn-$p; then ok "badvpn $p actif"; else warn "badvpn $p inactif"; fi
   done
   systemctl is-active --quiet nvpanel-udp-custom && ok "udp-custom actif" || warn "udp-custom inactif"
-  echo; entry "1" "Installer / réinstaller UDP"; entry "0" "Retour"; line
+  echo; entry "1" "Installer / réinstaller UDP"; entry "0" "⬅️" "Retour"; line
   read -rp " Choix : " s
   [ "$s" = "1" ] && install-udp
 }
 
 while true; do
   header
-  entry "1" "Créer un compte"
-  entry "2" "Lister les comptes"
-  entry "3" "Prolonger / réactiver"
-  entry "4" "Verrouiller / déverrouiller"
-  entry "5" "Supprimer un compte"
-  entry "6" "SlowDNS"
-  entry "7" "UDP (badvpn / udp-custom)"
-  entry "0" "Retour"
+  entry "1" "➕" "Créer un compte"
+  entry "2" "📋" "Lister les comptes"
+  entry "3" "♻️" "Prolonger / réactiver"
+  entry "4" "🔒" "Verrouiller / déverrouiller"
+  entry "5" "🗑️" "Supprimer un compte"
+  entry "6" "🌐" "SlowDNS"
+  entry "7" "📡" "UDP (badvpn / udp-custom)"
+  entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in

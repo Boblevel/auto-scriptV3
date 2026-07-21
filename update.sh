@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · mise à jour
+#  RHAFF SERVICE · mise à jour
 #  Re-télécharge la dernière version des scripts depuis GitHub,
 #  SANS toucher aux comptes, à la config, au bot ni à Xray,
 #  puis relance le menu.
@@ -17,18 +17,21 @@ RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; NC='\033
 clear
 printf "${CYN}"
 cat <<'ART'
-   ┌───────────────────────────────────────────┐
-   │        Mise à jour de  N V P A N E L         │
-   └───────────────────────────────────────────┘
+   ┌───────────────────────────────────────────────────┐
+   │     Mise a jour de  R H A F F   S E R V I C E     │
+   └───────────────────────────────────────────────────┘
 ART
 printf "${NC}\n"
 
 fetch(){
-  curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null
-  if [ ! -s "$2" ] || head -c 200 "$2" | grep -q '404: Not Found'; then
-    printf "  ${RED}✘ %s introuvable sur GitHub (racine du dépôt ?)${NC}\n" "$1"; return 1
-  fi
-  chmod +x "$2"; printf "  ${GRN}✔${NC} %s\n" "$1"
+  local name dest="$2"
+  for name in "$1" "$1.txt"; do
+    curl -fsSL "$REPO_RAW/$name" -o "$dest" 2>/dev/null
+    if [ -s "$dest" ] && ! head -c 200 "$dest" | grep -q '404: Not Found'; then
+      chmod +x "$dest"; printf "  ${GRN}✔${NC} %s\n" "$1"; return 0
+    fi
+  done
+  printf "  ${RED}✘ %s introuvable sur GitHub (racine du dépôt ?)${NC}\n" "$1"; return 1
 }
 
 printf "${CYN}➜${NC} Téléchargement de la dernière version…\n"
@@ -40,6 +43,7 @@ fetch menu-xray        /usr/local/bin/menu-xray
 fetch menu-ss          /usr/local/bin/menu-ss
 fetch menu-settings    /usr/local/bin/menu-settings
 fetch menu-uninstall   /usr/local/bin/menu-uninstall
+fetch menu-wg          /usr/local/bin/menu-wg
 fetch nvpanel-cli      /usr/local/bin/nvpanel-cli
 fetch nvpanel-bot      /usr/local/bin/nvpanel-bot
 fetch nvpanel-limit    /usr/local/bin/nvpanel-limit

@@ -56,11 +56,11 @@ renew_client() {
 ensure_xray || exit 0
 while true; do
   header
-  entry "1" "Ajouter un client"
-  entry "2" "Lister les clients"
-  entry "3" "Prolonger un client"
-  entry "4" "Supprimer un client"
-  entry "0" "Retour"
+  entry "1" "➕" "Ajouter un client"
+  entry "2" "📋" "Lister les clients"
+  entry "3" "♻️" "Prolonger un client"
+  entry "4" "🗑️" "Supprimer un client"
+  entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in

@@ -1,14 +1,18 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · installateur
-#  Usage :  bash <(curl -sL https://raw.githubusercontent.com/USER/REPO/main/setup.sh)
+#  RHAFF SERVICE · installateur
+#  Usage :  bash <(curl -sL https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/setup.sh)
 # ============================================================
 set -e
 
 # >>> À PERSONNALISER : ton dépôt GitHub <<<
 REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 
-RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; NC='\033[0m'
+# Marque
+BRAND="RHAFF SERVICE"
+CONTACT="t.me/bigrhaff226"
+
+RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\033[1;37m'; NC='\033[0m'
 say(){ printf "${CYN}➜${NC} %s\n" "$1"; }
 die(){ printf "${RED}✘ %s${NC}\n" "$1"; exit 1; }
 
@@ -27,9 +31,9 @@ fi
 clear
 printf "${CYN}"
 cat <<'ART'
-   ┌───────────────────────────────────────────┐
-   │        Installation de  N V P A N E L       │
-   └───────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────┐
+   │     Installation de  R H A F F   S E R V I C E     │
+   └────────────────────────────────────────────────────┘
 ART
 printf "${NC}\n"
 
@@ -56,11 +60,14 @@ curl -s ipv4.icanhazip.com > /etc/nvpanel/ip || curl -s ifconfig.me > /etc/nvpan
 
 # Téléchargement des composants
 fetch(){
-  curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null
-  if [ ! -s "$2" ] || head -c 200 "$2" | grep -q '404: Not Found'; then
-    die "Fichier introuvable sur GitHub : '$1'. Vérifie qu'il est bien à la RACINE du dépôt (branche main), sans extension ni sous-dossier."
-  fi
-  chmod +x "$2"
+  local name dest="$2"
+  for name in "$1" "$1.txt"; do
+    curl -fsSL "$REPO_RAW/$name" -o "$dest" 2>/dev/null
+    if [ -s "$dest" ] && ! head -c 200 "$dest" | grep -q '404: Not Found'; then
+      chmod +x "$dest"; return 0
+    fi
+  done
+  die "Fichier introuvable sur GitHub : '$1' (ni '$1.txt'). Vérifie qu'il est à la RACINE du dépôt (branche main)."
 }
 fetch ui.sh            /etc/nvpanel/lib/ui.sh
 fetch menu             /usr/local/bin/menu
@@ -79,6 +86,7 @@ fetch menu-xray        /usr/local/bin/menu-xray
 fetch menu-ss          /usr/local/bin/menu-ss
 fetch menu-settings    /usr/local/bin/menu-settings
 fetch menu-uninstall   /usr/local/bin/menu-uninstall
+fetch menu-wg          /usr/local/bin/menu-wg
 fetch update.sh        /usr/local/bin/update
 
 # Raccourcis : menu = acc = dgh  ·  désinstallation = uninstall
@@ -113,36 +121,27 @@ IPADDR=$(cat /etc/nvpanel/ip 2>/dev/null)
 clear
 printf "${GRN}"
 cat <<'DONE'
-   ┌───────────────────────────────────────────┐
-   │      ✔  NVPANEL installé avec succès        │
-   └───────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────┐
+   │     R H A F F   S E R V I C E  -  installe !     │
+   └──────────────────────────────────────────────────┘
 DONE
 printf "${NC}\n"
-printf "   ${CYN}Ouvrir le panel (3 raccourcis identiques) :${NC}\n"
+printf "   ${CYN}▶ OUVRIR LE PANEL — tape l'une de ces commandes :${NC}\n"
 printf "      ${YLW}menu${NC}   ·   ${YLW}acc${NC}   ·   ${YLW}dgh${NC}\n\n"
-printf "   ${CYN}Commandes de gestion des comptes :${NC}\n"
-printf "      ${WHT}menu-ssh${NC}                gérer SSH / SlowDNS / UDP\n"
-printf "      ${WHT}nvpanel-cli create${NC} u p j [lim] [Go]   créer (ligne de commande)\n"
-printf "      ${WHT}nvpanel-cli list${NC}        lister les comptes\n"
-printf "      ${WHT}nvpanel-cli delete${NC} u    supprimer\n"
-printf "      ${WHT}nvpanel-cli lock/unlock${NC} u   (dé)verrouiller\n"
-printf "      ${WHT}nvpanel-cli renew${NC} u j   prolonger\n\n"
-printf "   ${CYN}Services / protocoles :${NC}\n"
-printf "      ${WHT}install-xray${NC}            installer le cœur Xray\n"
-printf "      ${WHT}menu-xray vmess|vless|trojan${NC}   gérer les clients Xray\n"
-printf "      ${WHT}menu-ss${NC}                 gérer Shadowsocks\n"
-printf "      ${WHT}menu-settings${NC}           domaine + activer le TLS (HTTPS)\n"
-printf "      ${WHT}install-slowdns${NC}         installer SlowDNS\n"
-printf "      ${WHT}install-udp${NC}             installer l'UDP (badvpn/udp-custom)\n"
-printf "      ${WHT}nvpanel-cli status${NC}      infos serveur\n"
-printf "      ${WHT}journalctl -u nvpanel-bot -f${NC}   logs du bot\n\n"
-printf "   ${CYN}Bot Telegram :${NC}\n"
-printf "      ${WHT}menu-bot${NC}                configurer token + ID puis activer\n\n"
-printf "   ${CYN}Mise à jour :${NC}\n"
-printf "      ${WHT}update${NC}   (récupère la dernière version depuis GitHub)\n\n"
-printf "   ${CYN}Désinstallation complète :${NC}\n"
-printf "      ${WHT}uninstall${NC}   (ou ${WHT}menu-uninstall${NC})\n\n"
-printf "   ${CYN}Automatismes actifs :${NC} suppression comptes expirés (SSH +\n"
-printf "   Xray) · limite d'appareils · quota de bande passante\n\n"
-printf "   ${GRY}IP du serveur : %s${NC}\n\n" "$IPADDR"
-printf "   ➜ Tape ${YLW}menu${NC} pour commencer.\n\n"
+printf "   ${CYN}👤 Comptes :${NC}\n"
+printf "      ${WHT}menu-ssh${NC}     🔒 SSH / SlowDNS / UDP\n"
+printf "      ${WHT}menu-xray vmess|vless|trojan${NC}   🟣 clients Xray\n"
+printf "      ${WHT}menu-ss${NC}      🟢 Shadowsocks\n"
+printf "      ${WHT}menu-wg${NC}      🛡️ WireGuard\n"
+printf "      ${WHT}nvpanel-cli${NC}  ⌨️ gestion en ligne de commande\n\n"
+printf "   ${CYN}⚙️ Système :${NC}\n"
+printf "      ${WHT}menu-settings${NC}   ⚙️ paramètres (domaine, TLS, swap, BBR…)\n"
+printf "      ${WHT}menu-bot${NC}        🤖 configurer le bot Telegram\n"
+printf "      ${WHT}update${NC}          🔄 mettre à jour depuis GitHub\n"
+printf "      ${WHT}reboot${NC}          🔁 redémarrer le serveur\n"
+printf "      ${WHT}uninstall${NC}       🗑️ désinstaller le script\n\n"
+printf "   ${CYN}Automatismes :${NC} suppression comptes expirés · limite\n"
+printf "   d'appareils · quota de bande passante\n\n"
+printf "   ${GRY}🌐 IP du serveur : %s${NC}\n" "$IPADDR"
+printf "   ${GRY}📨 Support : %s${NC}\n\n" "$CONTACT"
+printf "   ${GRN}➜ Tape ${YLW}menu${GRN} pour commencer.${NC}\n\n"

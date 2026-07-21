@@ -1,35 +1,128 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · réglages du serveur   (commande : menu-settings)
+#  RHAFF SERVICE · Paramètres système   (commande : menu-settings)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+BKDIR=/root
 
-header(){ banner; center " RÉGLAGES DU SERVEUR " "${BOLD}${WHT}"; line; }
+header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
+
+set_domain(){
+  header; read -rp " Domaine (ex. vpn.mondomaine.com) : " d
+  [ -n "$d" ] && { echo "$d" > /etc/nvpanel/domain; ok "Domaine : $d"; } || warn "Inchangé"; pause
+}
+change_port(){
+  header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null || echo '?')"
+  read -rp " Nouveau port Dropbear : " p
+  [[ "$p" =~ ^[0-9]+$ ]] || { err "Port invalide"; pause; return; }
+  if grep -q DROPBEAR_PORT /etc/default/dropbear 2>/dev/null; then
+    sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$p/" /etc/default/dropbear
+  else echo "DROPBEAR_PORT=$p" >> /etc/default/dropbear; fi
+  systemctl restart dropbear 2>/dev/null; ok "Port Dropbear : $p"; pause
+}
+backup_now(){
+  header; local f="$BKDIR/rhaff-backup-$(date +%F-%H%M).tar.gz"
+  tar czf "$f" /etc/nvpanel /usr/local/etc/xray /etc/wireguard 2>/dev/null
+  ok "Sauvegarde créée : $f"; pause
+}
+autobackup(){
+  header
+  ( crontab -l 2>/dev/null | grep -v rhaff-backup; echo "0 4 * * * tar czf $BKDIR/rhaff-backup-auto.tar.gz /etc/nvpanel /usr/local/etc/xray /etc/wireguard 2>/dev/null" ) | crontab -
+  ok "Sauvegarde automatique activée (tous les jours à 4h)."; pause
+}
+restore_data(){
+  header; local files=("$BKDIR"/rhaff-backup-*.tar.gz)
+  [ -e "${files[0]}" ] || { err "Aucune sauvegarde trouvée"; pause; return; }
+  local i=1; for f in "${files[@]}"; do printf "  ${GRN}%s)${NC} %s\n" "$i" "$(basename "$f")"; i=$((i+1)); done
+  read -rp " Numéro à restaurer : " n
+  local sel="${files[$((n-1))]}"
+  [ -f "$sel" ] || { err "Choix invalide"; pause; return; }
+  tar xzf "$sel" -C / && ok "Restauré depuis $(basename "$sel")"; pause
+}
+ram_usage(){ header; free -h; echo; command -v vnstat >/dev/null && vnstat --oneline 2>/dev/null; pause; }
+swap_ram(){
+  header; read -rp " Taille du swap en Mo (ex. 1024) : " s
+  [[ "$s" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
+  fallocate -l "${s}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$s" 2>/dev/null
+  chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile 2>/dev/null
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  ok "Swap de ${s} Mo activé."; pause
+}
+enable_bbr(){
+  header
+  grep -q 'net.core.default_qdisc=fq' /etc/sysctl.conf || echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
+  grep -q 'tcp_congestion_control=bbr' /etc/sysctl.conf || echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
+  sysctl -p >/dev/null 2>&1
+  local cc; cc=$(sysctl -n net.ipv4.tcp_congestion_control)
+  [ "$cc" = "bbr" ] && ok "BBR activé." || warn "BBR demandé (contrôle : $cc). Un redémarrage peut être nécessaire."
+  pause
+}
+speedtest(){
+  header; printf "${CYN}➜${NC} Test de débit descendant (100 Mo via Cloudflare)…\n"
+  local sp; sp=$(curl -o /dev/null -s -w '%{speed_download}' "https://speed.cloudflare.com/__down?bytes=100000000" 2>/dev/null)
+  [ -n "$sp" ] && printf "  Débit : ${GRN}%.1f Mbps${NC}\n" "$(awk -v b="$sp" 'BEGIN{print b*8/1000000}')" || err "Test échoué (réseau ?)"
+  pause
+}
+restart_services(){
+  header; printf "${CYN}➜${NC} Redémarrage des services…\n"
+  for s in ssh dropbear xray nginx wg-quick@wg0 nvpanel-slowdns nvpanel-limit nvpanel-bot; do
+    systemctl restart "$s" >/dev/null 2>&1 && printf "  ${GRN}✔${NC} %s\n" "$s"
+  done
+  pause
+}
+reboot_vps(){
+  header; read -rp " Redémarrer le VPS maintenant ? (o/n) : " r
+  [ "$r" = "o" ] && { printf "${YLW}Redémarrage…${NC}\n"; sleep 1; reboot; }
+}
+renew_cert(){
+  header; printf "${CYN}➜${NC} Renouvellement des certificats…\n"
+  certbot renew --quiet 2>/dev/null && systemctl reload nginx 2>/dev/null
+  ok "Renouvellement terminé (voir certbot pour le détail)."; pause
+}
+change_banner(){
+  header; read -rp " Texte de la bannière SSH : " b
+  [ -z "$b" ] && { warn "Inchangé"; pause; return; }
+  echo "$b" > /etc/issue.net
+  grep -q '^Banner ' /etc/ssh/sshd_config || echo 'Banner /etc/issue.net' >> /etc/ssh/sshd_config
+  systemctl restart ssh 2>/dev/null; ok "Bannière mise à jour."; pause
+}
+script_info(){
+  header
+  printf "   Marque   : ${WHT}%s${NC}\n" "$BRAND"
+  printf "   Contact  : ${CYN}%s${NC}\n" "$CONTACT"
+  printf "   IP       : ${WHT}%s${NC}\n" "$(cat /etc/nvpanel/ip 2>/dev/null)"
+  printf "   Domaine  : ${WHT}%s${NC}\n" "$(cat /etc/nvpanel/domain 2>/dev/null || echo 'non configuré')"
+  printf "   TLS      : %s\n" "$([ -f /etc/nvpanel/tls_on ] && printf "${GRN}actif${NC}" || printf "${RED}inactif${NC}")"
+  pause
+}
 
 while true; do
   header
-  printf " ${GRY}Domaine :${NC} %s\n" "$(cat /etc/nvpanel/domain 2>/dev/null || echo 'non défini')"
-  printf " ${GRY}TLS     :${NC} %s\n" "$([ -f /etc/nvpanel/tls_on ] && printf "${GRN}actif${NC}" || printf "${RED}inactif${NC}")"
-  printf " ${GRY}IP      :${NC} %s\n" "$(cat /etc/nvpanel/ip 2>/dev/null)"
+  entry "1"  "🌐" "Ajouter / changer le domaine"
+  entry "2"  "🔒" "Activer le TLS (HTTPS)"
+  entry "3"  "⚙️" "Changer le port Dropbear"
+  entry "4"  "💾" "Sauvegarde automatique"
+  entry "5"  "📦" "Sauvegarder maintenant"
+  entry "6"  "🔄" "Restaurer une sauvegarde"
+  entry "7"  "📊" "Utilisation RAM / trafic"
+  entry "8"  "🧠" "Créer un SwapRAM"
+  entry "9"  "⚡" "Activer BBR"
+  entry "10" "🚀" "Speedtest du serveur"
+  entry "11" "♻️" "Redémarrer les services VPN"
+  entry "12" "📜" "Renouveler les certificats"
+  entry "13" "📝" "Changer la bannière SSH"
+  entry "14" "🔁" "Redémarrer le VPS"
+  entry "15" "ℹ️" "Info du script"
+  entry "0"  "⬅️" "Retour"
   line
-  entry "1" "Définir / changer le domaine"
-  entry "2" "Activer le TLS (HTTPS)"
-  entry "3" "Rafraîchir l'IP publique"
-  entry "0" "Retour"
-  line
-  read -rp "$(printf " ${WHT}Choix :${NC} ")" o
+  read -rp "$(printf " ${WHT}➤ Choix [0-15] :${NC} ")" o
   case "$o" in
-    1)
-      read -rp " Nouveau domaine (ex. vpn.mondomaine.com) : " d
-      [ -n "$d" ] && { echo "$d" > /etc/nvpanel/domain; ok "Domaine enregistré : $d"; } || warn "Inchangé"
-      pause ;;
-    2)
-      if [ -s /etc/nvpanel/domain ]; then install-tls
-      else err "Définis d'abord un domaine (option 1)."; pause; fi ;;
-    3)
-      curl -s ipv4.icanhazip.com > /etc/nvpanel/ip && ok "IP mise à jour : $(cat /etc/nvpanel/ip)"; pause ;;
-    0) break ;;
+    1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
+    3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;
+    7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
+    11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
+    14) reboot_vps ;; 15) script_info ;; 0) break ;;
     *) warn "Invalide"; sleep 1 ;;
   esac
 done

@@ -1,0 +1,141 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · WireGuard   (commande : menu-wg)
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+
+WGCONF=/etc/wireguard/wg0.conf
+DB=/etc/nvpanel/db/wireguard
+NDIR=/etc/nvpanel/wg
+SRV_IP=$(cat /etc/nvpanel/ip 2>/dev/null)
+NET="10.66.66"
+PORT=51820
+mkdir -p /etc/nvpanel/db "$NDIR"
+touch "$DB"
+
+header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; }
+
+install_wg() {
+  header; printf "${CYN}➜${NC} Installation de WireGuard…\n"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y wireguard qrencode >/dev/null 2>&1
+  mkdir -p /etc/wireguard
+  local spriv spub ifc
+  spriv=$(wg genkey); spub=$(printf '%s' "$spriv" | wg pubkey)
+  echo "$spub" > "$NDIR/server.pub"
+  ifc=$(ip route | awk '/default/{print $5; exit}')
+  cat > "$WGCONF" <<EOF
+[Interface]
+Address = $NET.1/24
+ListenPort = $PORT
+PrivateKey = $spriv
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $ifc -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $ifc -j MASQUERADE
+EOF
+  sed -i 's/^#\?net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+  grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+  sysctl -p >/dev/null 2>&1
+  systemctl enable --now wg-quick@wg0 >/dev/null 2>&1
+  ok "WireGuard installé (port $PORT/udp)."; sleep 1
+}
+
+ensure_wg() {
+  if ! command -v wg >/dev/null 2>&1 || [ ! -f "$WGCONF" ]; then
+    read -rp " WireGuard n'est pas installé. L'installer ? (o/n) : " r
+    [ "$r" = "o" ] && install_wg || return 1
+  fi
+}
+
+next_ip() {
+  local last
+  last=$(awk '{print $4}' "$DB" | awk -F. '{print $4}' | sort -n | tail -1)
+  echo $(( ${last:-1} + 1 ))
+}
+
+add_peer() {
+  header; read -rp " Nom du client : " name
+  [ -z "$name" ] && { err "Nom vide"; pause; return; }
+  grep -q "^### $name " "$DB" && { err "Existe déjà"; pause; return; }
+  read -rp " Durée (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || days=30
+  local ppriv ppub ip exp spub
+  ppriv=$(wg genkey); ppub=$(printf '%s' "$ppriv" | wg pubkey)
+  ip="$NET.$(next_ip)"; exp=$(date -d "+$days days" +"%Y-%m-%d")
+  spub=$(cat "$NDIR/server.pub")
+
+  cat >> "$WGCONF" <<EOF
+
+[Peer]
+# $name
+PublicKey = $ppub
+AllowedIPs = $ip/32
+EOF
+  wg set wg0 peer "$ppub" allowed-ips "$ip/32" 2>/dev/null
+  echo "### $name $ppub $ip $exp" >> "$DB"
+
+  local conf="$NDIR/$name.conf"
+  cat > "$conf" <<EOF
+[Interface]
+PrivateKey = $ppriv
+Address = $ip/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = $spub
+Endpoint = $SRV_IP:$PORT
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+
+  clear; header; ok "Client WireGuard créé (expire $exp)"
+  echo
+  printf "${GRY}--- Config client (copie-la dans un fichier .conf) ---${NC}\n"
+  cat "$conf"
+  echo
+  command -v qrencode >/dev/null 2>&1 && { printf "${GRY}--- QR code ---${NC}\n"; qrencode -t ANSIUTF8 < "$conf"; }
+  pause
+}
+
+list_peers() {
+  header; printf " ${GRY}%-16s %-14s %s${NC}\n" "Nom" "IP" "Expire"; line
+  awk '/^### /{printf " %-16s %-14s %s\n",$2,$4,$5}' "$DB"
+  [ -s "$DB" ] || printf " ${GRY}(aucun client)${NC}\n"
+  pause
+}
+
+del_peer() {
+  header; read -rp " Nom à supprimer : " name
+  grep -q "^### $name " "$DB" || { err "Inconnu"; pause; return; }
+  local pub; pub=$(awk -v n="$name" '$2==n{print $3}' "$DB")
+  wg set wg0 peer "$pub" remove 2>/dev/null
+  # retire le bloc [Peer] correspondant du fichier
+  sed -i "/^# $name$/,/^AllowedIPs/d" "$WGCONF"
+  sed -i "/^### $name /d" "$DB"
+  rm -f "$NDIR/$name.conf"
+  ok "$name supprimé"; pause
+}
+
+renew_peer() {
+  header; read -rp " Nom : " name; read -rp " Ajouter (jours) : " days
+  grep -q "^### $name " "$DB" || { err "Inconnu"; pause; return; }
+  [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
+  local exp; exp=$(date -d "+$days days" +"%Y-%m-%d")
+  sed -i "s|^### $name \([^ ]*\) \([^ ]*\) .*|### $name \1 \2 $exp|" "$DB"
+  ok "$name prolongé jusqu'au $exp"; pause
+}
+
+ensure_wg || exit 0
+while true; do
+  header
+  entry "1" "➕" "Ajouter un client"
+  entry "2" "📋" "Lister les clients"
+  entry "3" "♻️" "Prolonger un client"
+  entry "4" "🗑️" "Supprimer un client"
+  entry "0" "⬅️" "Retour"
+  line
+  read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" o
+  case "$o" in
+    1) add_peer ;; 2) list_peers ;; 3) renew_peer ;;
+    4) del_peer ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+  esac
+done

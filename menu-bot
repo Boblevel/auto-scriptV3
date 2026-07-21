@@ -14,11 +14,11 @@ if [ -f "$CONF" ]; then
   echo
 fi
 
-entry "1" "Configurer / reconfigurer le bot"
-entry "2" "Démarrer le bot"
-entry "3" "Arrêter le bot"
-entry "4" "Voir le statut / logs"
-entry "0" "Retour"
+entry "1" "🔧" "Configurer / reconfigurer le bot"
+entry "2" "▶️" "Démarrer le bot"
+entry "3" "⏹️" "Arrêter le bot"
+entry "4" "📄" "Voir le statut / logs"
+entry "0" "⬅️" "Retour"
 line
 read -rp "$(printf " ${WHT}Choix :${NC} ")" o
 

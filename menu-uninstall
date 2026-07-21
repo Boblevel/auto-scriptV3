@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · désinstallation complète  (commande : menu-uninstall)
+#  RHAFF SERVICE · désinstallation du script  (commande : menu-uninstall)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh 2>/dev/null || { RED='\033[0;31m'; GRN='\033[0;32m'; NC='\033[0m'; }
 [ "$EUID" -ne 0 ] && { echo "Lance en root."; exit 1; }
@@ -8,9 +8,9 @@ source /etc/nvpanel/lib/ui.sh 2>/dev/null || { RED='\033[0;31m'; GRN='\033[0;32m
 clear
 printf "${RED}"
 cat <<'ART'
-   ┌───────────────────────────────────────────┐
-   │      DÉSINSTALLATION COMPLÈTE DE NVPANEL     │
-   └───────────────────────────────────────────┘
+   ┌───────────────────────────────────────────────────────┐
+   │     DESINSTALLATION DE  R H A F F   S E R V I C E     │
+   └───────────────────────────────────────────────────────┘
 ART
 printf "${NC}\n"
 echo " Cette action va supprimer : le panel, le bot, les services"
@@ -30,6 +30,7 @@ for s in nvpanel-slowdns nvpanel-udp-custom nvpanel-limit nvpanel-bot \
   systemctl disable --now "$s" >/dev/null 2>&1
   rm -f "/etc/systemd/system/$s.service"
 done
+systemctl disable --now wg-quick@wg0 >/dev/null 2>&1
 systemctl daemon-reload >/dev/null 2>&1
 
 # 2) Tâches cron
@@ -58,7 +59,7 @@ if [ "$delxray" = "o" ]; then
 fi
 
 # 6) Binaires et raccourcis
-rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-bot,menu-xray,menu-ss,menu-settings,menu-uninstall,uninstall,update} \
+rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-bot,menu-xray,menu-ss,menu-wg,menu-settings,menu-uninstall,uninstall,update} \
       /usr/local/bin/{nvpanel-cli,nvpanel-bot,nvpanel-limit,nvpanel-quota,nvpanel-clean} \
       /usr/local/bin/{install-slowdns,install-udp,install-xray,install-tls}
 
@@ -66,6 +67,6 @@ rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-bot,menu-xray,menu-ss,menu-sett
 rm -rf /etc/nvpanel
 
 clear
-printf "${GRN}✔ nvpanel a été entièrement désinstallé.${NC}\n"
+printf "${GRN}✔ RHAFF SERVICE a été entièrement désinstallé.${NC}\n"
 echo "  (les paquets système comme dropbear/nginx ne sont pas touchés)"
 echo
