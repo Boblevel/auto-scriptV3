@@ -43,7 +43,7 @@ EOF
 ensure_wg() {
   if ! command -v wg >/dev/null 2>&1 || [ ! -f "$WGCONF" ]; then
     read -rp " WireGuard n'est pas installé. L'installer ? (o/n) : " r
-    [ "$r" = "o" ] && install_wg || return 1
+    confirm "$r" && install_wg || return 1
   fi
 }
 

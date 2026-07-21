@@ -25,7 +25,7 @@ reboot_server() {
   banner; center " 🔁  REDÉMARRAGE DU SERVEUR " "${BOLD}${WHT}"; line
   warn "Le serveur va redémarrer. Ta session SSH sera coupée quelques instants."
   read -rp " Confirmer le redémarrage ? (o/n) : " r
-  if [ "$r" = "o" ]; then
+  if confirm "$r"; then
     printf "${YLW}Redémarrage en cours…${NC}\n"; sleep 1; reboot
   fi
 }
@@ -50,7 +50,7 @@ while true; do
   entry "11" "📈" "Statut des services"
   entry "12" "⚙️" "Paramètres"
   entry "13" "🔁" "Redémarrer le serveur"
-  entry "14" "🔄" "Mettre à jour (GitHub)"
+  entry "14" "🔄" "Mettre à jour"
   entry "15" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
   line

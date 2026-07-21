@@ -12,7 +12,7 @@ ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
     warn "Xray n'est pas installé."
     read -rp " L'installer maintenant ? (o/n) : " r
-    [ "$r" = "o" ] && install-xray || return 1
+    confirm "$r" && install-xray || return 1
   fi
 }
 

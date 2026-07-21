@@ -1,9 +1,15 @@
 #!/bin/bash
 # ============================================================
-#  RHAFF SERVICE · désinstallation du script  (commande : menu-uninstall)
+#  RHAFF SERVICE · désinstallation / réinitialisation complète
+#  (commande : menu-uninstall  ·  alias : uninstall)
+#  Supprime TOUT : panel, bot, services, comptes, Xray,
+#  WireGuard, règles réseau, nginx et données.
 # ============================================================
-source /etc/nvpanel/lib/ui.sh 2>/dev/null || { RED='\033[0;31m'; GRN='\033[0;32m'; NC='\033[0m'; }
+source /etc/nvpanel/lib/ui.sh 2>/dev/null || { RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[0;33m'; NC='\033[0m'; }
 [ "$EUID" -ne 0 ] && { echo "Lance en root."; exit 1; }
+
+# réponse affirmative insensible à la casse (oui/OUI/Oui/o/O/y/yes…)
+_yes(){ case "${1,,}" in oui|o|y|yes) return 0;; *) return 1;; esac; }
 
 clear
 printf "${RED}"
@@ -13,60 +19,57 @@ cat <<'ART'
    └───────────────────────────────────────────────────────┘
 ART
 printf "${NC}\n"
-echo " Cette action va supprimer : le panel, le bot, les services"
-echo " (SlowDNS, UDP, Xray, limite, quota) et toutes les données."
+echo " Cette action supprime et réinitialise TOUT :"
+echo " panel, bot, services, comptes SSH, Xray, WireGuard,"
+echo " règles réseau, configs nginx et toutes les données."
 echo
-read -rp " Confirmer la désinstallation ? (tape OUI) : " c
-[ "$c" != "OUI" ] && { echo "Annulé."; exit 0; }
+read -rp " Confirmer la désinstallation complète ? (tape OUI) : " c
+_yes "$c" || { echo "Annulé."; exit 0; }
 
-read -rp " Supprimer aussi les comptes SSH créés ? (o/n) : " delusers
-read -rp " Désinstaller aussi le cœur Xray ? (o/n) : " delxray
+echo; printf "${RED}➜ Suppression complète en cours…${NC}\n"
 
-echo; printf "${RED}➜ Suppression en cours…${NC}\n"
+# 1) Comptes SSH gérés
+if [ -f /etc/nvpanel/db/ssh ]; then
+  while read -r _ u _; do [ -n "$u" ] && userdel -f "$u" 2>/dev/null; done < /etc/nvpanel/db/ssh
+fi
 
-# 1) Services systemd
+# 2) Services systemd
 for s in nvpanel-slowdns nvpanel-udp-custom nvpanel-limit nvpanel-bot \
-         nvpanel-badvpn-7100 nvpanel-badvpn-7200 nvpanel-badvpn-7300; do
+         nvpanel-badvpn-7100 nvpanel-badvpn-7200 nvpanel-badvpn-7300 wg-quick@wg0; do
   systemctl disable --now "$s" >/dev/null 2>&1
   rm -f "/etc/systemd/system/$s.service"
 done
-systemctl disable --now wg-quick@wg0 >/dev/null 2>&1
 systemctl daemon-reload >/dev/null 2>&1
 
-# 2) Tâches cron
-( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota' ) | crontab - 2>/dev/null
+# 3) Tâches cron
+( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|rhaff-backup' ) | crontab - 2>/dev/null
 
-# 3) Comptes SSH (optionnel)
-if [ "$delusers" = "o" ]; then
-  awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while read -r u; do
-    userdel -f "$u" >/dev/null 2>&1
-  done
-fi
-
-# 4) Règles iptables (quota + slowdns)
+# 4) Règles iptables + configs nginx
 iptables -F NVPANEL_QUOTA 2>/dev/null
 iptables -D OUTPUT -j NVPANEL_QUOTA 2>/dev/null
 iptables -X NVPANEL_QUOTA 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
-
-# 4b) Vhost nginx du panel
-rm -f /etc/nginx/conf.d/nvpanel.conf /etc/nginx/conf.d/rhaff-http.conf /etc/nginx/conf.d/rhaff-tls.conf /etc/nginx/nvpanel-ws.conf
+rm -f /etc/nginx/conf.d/nvpanel.conf /etc/nginx/conf.d/rhaff-http.conf \
+      /etc/nginx/conf.d/rhaff-tls.conf /etc/nginx/nvpanel-ws.conf
 systemctl reload nginx 2>/dev/null
 
-# 5) Cœur Xray (optionnel)
-if [ "$delxray" = "o" ]; then
+# 5) WireGuard (config créée par le script)
+rm -f /etc/wireguard/wg0.conf
+
+# 6) Cœur Xray (purge automatique s'il est présent)
+if command -v xray >/dev/null 2>&1; then
+  printf "${YLW}➜ Suppression du cœur Xray…${NC}\n"
   bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) remove --purge >/dev/null 2>&1
 fi
+rm -rf /usr/local/etc/xray
 
-# 6) Binaires et raccourcis
-rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-bot,menu-xray,menu-ss,menu-wg,menu-settings,menu-uninstall,uninstall,update} \
+# 7) Binaires, raccourcis et données
+rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-xray,menu-ss,menu-wg,menu-bot,menu-settings,menu-uninstall,uninstall,update} \
       /usr/local/bin/{nvpanel-cli,nvpanel-bot,nvpanel-limit,nvpanel-quota,nvpanel-clean} \
       /usr/local/bin/{install-slowdns,install-udp,install-xray,install-tls}
-
-# 7) Données
 rm -rf /etc/nvpanel
 
 clear
-printf "${GRN}✔ RHAFF SERVICE a été entièrement désinstallé.${NC}\n"
-echo "  (les paquets système comme dropbear/nginx ne sont pas touchés)"
+printf "${GRN}✔ RHAFF SERVICE a été entièrement supprimé et réinitialisé.${NC}\n"
+echo "  (les paquets système de base comme nginx/dropbear ne sont pas touchés)"
 echo

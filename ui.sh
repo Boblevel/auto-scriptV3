@@ -115,3 +115,5 @@ ok()   { printf "${GRN}✔${NC} %s\n" "$1"; }
 err()  { printf "${RED}✘${NC} %s\n" "$1"; }
 warn() { printf "${YLW}!${NC} %s\n" "$1"; }
 pause(){ echo; read -rp "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _; }
+# réponse affirmative, insensible à la casse (o/O/oui/OUI/y/yes)
+confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }

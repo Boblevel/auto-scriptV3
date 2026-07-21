@@ -16,7 +16,7 @@ if [ -z "$DOMAIN" ]; then
 fi
 printf " Domaine : ${WHT}%s${NC}\n" "$DOMAIN"
 printf " ${GRY}Assure-toi que %s pointe (enregistrement A) vers %s${NC}\n\n" "$DOMAIN" "$(cat /etc/nvpanel/ip 2>/dev/null)"
-read -rp " Continuer ? (o/n) : " r; [ "$r" != "o" ] && exit 0
+read -rp " Continuer ? (o/n) : " r; confirm "$r" || exit 0
 
 # Dépendances
 export DEBIAN_FRONTEND=noninteractive
