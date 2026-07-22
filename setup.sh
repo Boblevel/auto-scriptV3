@@ -1,26 +1,22 @@
 #!/bin/bash
 # ============================================================
 #  RHAFF SERVICE · installateur
-#  Usage :  bash <(curl -sL https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/setup.sh)
+#  Usage :  bash <(curl -fsSL https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/setup.sh)
 # ============================================================
-set -e
 
 # >>> À PERSONNALISER : ton dépôt GitHub <<<
 REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 
-# Marque
 BRAND="RHAFF SERVICE"
 CONTACT="t.me/bigrhaff226"
 
-RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\033[1;37m'; NC='\033[0m'
+RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\033[1;37m'; GRY='\033[0;90m'; NC='\033[0m'
 say(){ printf "${CYN}➜${NC} %s\n" "$1"; }
 die(){ printf "${RED}✘ %s${NC}\n" "$1"; exit 1; }
 
 # --- Vérifications ------------------------------------------
-[ "$EUID" -ne 0 ] && die "Ce script doit être lancé en root."
+[ "$EUID" -ne 0 ] && die "Ce script doit être lancé en root (sudo su -)."
 [ "$(systemd-detect-virt 2>/dev/null)" = "openvz" ] && die "OpenVZ non supporté."
-
-# Distribution : toute version Ubuntu / Debian (et dérivés Debian)
 . /etc/os-release 2>/dev/null || die "Distribution inconnue."
 if echo "$ID $ID_LIKE" | grep -qiE 'ubuntu|debian'; then
   say "Distribution détectée : $PRETTY_NAME"
@@ -37,14 +33,17 @@ cat <<'ART'
 ART
 printf "${NC}\n"
 
-# --- Configuration initiale : domaine + port V2Ray ----------
+# --- Configuration initiale : domaine + ports ---------------
 printf "${CYN}➜ Configuration initiale${NC}\n"
-printf "   ${GRY}Ces valeurs seront appliquées par défaut aux protocoles.${NC}\n"
+printf "   ${GRY}Ces valeurs sont appliquées par défaut aux protocoles.${NC}\n"
+printf "   ${GRY}Rappel : sans TLS = HTTP (port 80) · avec TLS = HTTPS (port 443).${NC}\n"
 read -rp "   🌐 Nom de domaine (laisser vide si aucun) : " NVDOMAIN
-read -rp "   🔓 Port sans TLS [80] : " NVPORT
+read -rp "   🔓 Port de connexion SANS TLS / HTTP [80] : " NVPORT
 NVPORT=${NVPORT:-80}
 [[ "$NVPORT" =~ ^[0-9]+$ ]] || NVPORT=80
 echo
+printf "   ${GRN}✔ Domaine : %s${NC}\n" "${NVDOMAIN:-aucun}"
+printf "   ${GRN}✔ Port sans TLS : %s   ·   Port avec TLS : 443${NC}\n\n" "$NVPORT"
 
 # --- DNS de secours -----------------------------------------
 say "Correction DNS…"
@@ -56,66 +55,63 @@ EOF
 # --- Dépendances --------------------------------------------
 say "Mise à jour et installation des dépendances…"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y >/dev/null
+apt-get update -y >/dev/null 2>&1
 apt-get install -y curl wget jq unzip cron screen socat python3 openssl \
-    net-tools dropbear stunnel4 fail2ban vnstat iptables nginx certbot >/dev/null
+    net-tools dropbear stunnel4 fail2ban vnstat iptables nginx certbot >/dev/null 2>&1
 
 # --- Arborescence -------------------------------------------
 say "Déploiement du panel…"
 mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
 
-# IP publique (mise en cache pour un menu rapide)
-curl -s ipv4.icanhazip.com > /etc/nvpanel/ip || curl -s ifconfig.me > /etc/nvpanel/ip
-
-# Domaine + port V2Ray saisis au début
+curl -s ipv4.icanhazip.com > /etc/nvpanel/ip 2>/dev/null || curl -s ifconfig.me > /etc/nvpanel/ip 2>/dev/null
 [ -n "$NVDOMAIN" ] && echo "$NVDOMAIN" > /etc/nvpanel/domain
 echo "$NVPORT" > /etc/nvpanel/xport
 
-# Téléchargement des composants
+# --- Téléchargement robuste : ne s'arrête pas si un fichier manque ---
+FAILED=""
 fetch(){
-  local name dest="$2"
+  local name dest="$2" done=0
   for name in "$1" "$1.txt"; do
-    curl -fsSL "$REPO_RAW/$name" -o "$dest" 2>/dev/null
-    if [ -s "$dest" ] && ! head -c 200 "$dest" | grep -q '404: Not Found'; then
-      chmod +x "$dest"; return 0
+    if curl -fsSL "$REPO_RAW/$name" -o "$dest" 2>/dev/null && [ -s "$dest" ] && ! head -c 200 "$dest" | grep -q '404: Not Found'; then
+      chmod +x "$dest"; done=1; break
     fi
   done
-  die "Fichier introuvable sur GitHub : '$1' (ni '$1.txt'). Vérifie qu'il est à la RACINE du dépôt (branche main)."
+  if [ "$done" = 1 ]; then printf "  ${GRN}✔${NC} %s\n" "$1"
+  else printf "  ${RED}✘ %s (manquant sur GitHub)${NC}\n" "$1"; FAILED="$FAILED $1"; fi
 }
 fetch ui.sh            /etc/nvpanel/lib/ui.sh
 fetch menu             /usr/local/bin/menu
 fetch menu-ssh         /usr/local/bin/menu-ssh
+fetch menu-xray        /usr/local/bin/menu-xray
+fetch menu-ss          /usr/local/bin/menu-ss
+fetch menu-wg          /usr/local/bin/menu-wg
 fetch menu-bot         /usr/local/bin/menu-bot
+fetch menu-settings    /usr/local/bin/menu-settings
+fetch menu-uninstall   /usr/local/bin/menu-uninstall
 fetch nvpanel-cli      /usr/local/bin/nvpanel-cli
 fetch nvpanel-bot      /usr/local/bin/nvpanel-bot
-fetch install-slowdns  /usr/local/bin/install-slowdns
-fetch install-udp      /usr/local/bin/install-udp
 fetch nvpanel-limit    /usr/local/bin/nvpanel-limit
 fetch nvpanel-quota    /usr/local/bin/nvpanel-quota
 fetch nvpanel-clean    /usr/local/bin/nvpanel-clean
 fetch install-xray     /usr/local/bin/install-xray
 fetch install-tls      /usr/local/bin/install-tls
-fetch menu-xray        /usr/local/bin/menu-xray
-fetch menu-ss          /usr/local/bin/menu-ss
-fetch menu-settings    /usr/local/bin/menu-settings
-fetch menu-uninstall   /usr/local/bin/menu-uninstall
-fetch menu-wg          /usr/local/bin/menu-wg
+fetch install-slowdns  /usr/local/bin/install-slowdns
+fetch install-udp      /usr/local/bin/install-udp
 fetch update.sh        /usr/local/bin/update
 
-# Raccourcis : menu = acc = dgh  ·  désinstallation = uninstall
-ln -sf /usr/local/bin/menu /usr/local/bin/acc
-ln -sf /usr/local/bin/menu /usr/local/bin/dgh
-ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall
+# Raccourcis : menu = acc = dgh  ·  uninstall
+ln -sf /usr/local/bin/menu /usr/local/bin/acc 2>/dev/null
+ln -sf /usr/local/bin/menu /usr/local/bin/dgh 2>/dev/null
+ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 
-# --- Tâche : suppression auto des comptes expirés -----------
+# --- Nettoyage auto des comptes expirés ---------------------
 say "Configuration du nettoyage automatique…"
-( crontab -l 2>/dev/null | grep -v nvpanel-clean; echo "*/10 * * * * /usr/local/bin/nvpanel-clean" ) | crontab -
+( crontab -l 2>/dev/null | grep -v nvpanel-clean; echo "*/10 * * * * /usr/local/bin/nvpanel-clean" ) | crontab - 2>/dev/null
 
-# --- Service : limite d'appareils (multi-login) -------------
-say "Activation du contrôle multi-login…"
+# --- Service limite multi-login -----------------------------
 cat > /etc/systemd/system/nvpanel-limit.service <<EOF
 [Unit]
-Description=nvpanel limite d'appareils
+Description=RHAFF limite d'appareils
 After=network.target
 [Service]
 ExecStart=/usr/local/bin/nvpanel-limit
@@ -123,13 +119,19 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
+systemctl daemon-reload 2>/dev/null
 systemctl enable --now nvpanel-limit >/dev/null 2>&1
 
-# --- Cron : quota de bande passante -------------------------
-( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab -
+# --- Cron quota ---------------------------------------------
+( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null
 
-# --- Remise à zéro des compteurs de trafic (le trafic d'install ne compte pas) ---
+# --- Installation automatique de Xray (freesurf prêt) -------
+if [ -x /usr/local/bin/install-xray ]; then
+  say "Préparation des protocoles Xray (freesurf)…"
+  /usr/local/bin/install-xray auto 2>/dev/null
+fi
+
+# --- Remise à zéro des compteurs de trafic ------------------
 say "Réinitialisation des compteurs de trafic…"
 IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
 if [ -n "$IFACE" ] && command -v vnstat >/dev/null 2>&1; then
@@ -144,27 +146,28 @@ clear
 printf "${GRN}"
 cat <<'DONE'
    ┌──────────────────────────────────────────────────┐
-   │     R H A F F   S E R V I C E  -  installe !     │
+   │     R H A F F   S E R V I C E   ·   installe !    │
    └──────────────────────────────────────────────────┘
 DONE
 printf "${NC}\n"
-printf "   ${CYN}▶ OUVRIR LE PANEL — tape l'une de ces commandes :${NC}\n"
+printf "   ${CYN}▶ OUVRIR LE PANEL — tape l'une de ces 3 commandes :${NC}\n"
 printf "      ${YLW}menu${NC}   ·   ${YLW}acc${NC}   ·   ${YLW}dgh${NC}\n\n"
 printf "   ${CYN}👤 Comptes :${NC}\n"
 printf "      ${WHT}menu-ssh${NC}     🔒 SSH / SlowDNS / UDP\n"
 printf "      ${WHT}menu-xray vmess|vless|trojan${NC}   🟣 clients Xray\n"
 printf "      ${WHT}menu-ss${NC}      🟢 Shadowsocks\n"
-printf "      ${WHT}menu-wg${NC}      🛡️ WireGuard\n"
-printf "      ${WHT}nvpanel-cli${NC}  ⌨️ gestion en ligne de commande\n\n"
+printf "      ${WHT}menu-wg${NC}      🛡️ WireGuard\n\n"
 printf "   ${CYN}⚙️ Système :${NC}\n"
 printf "      ${WHT}menu-settings${NC}   ⚙️ paramètres (domaine, TLS, swap, BBR…)\n"
 printf "      ${WHT}menu-bot${NC}        🤖 configurer le bot Telegram\n"
-printf "      ${WHT}update${NC}          🔄 mettre à jour depuis GitHub\n"
-printf "      ${WHT}reboot${NC}          🔁 redémarrer le serveur\n"
+printf "      ${WHT}update${NC}          🔄 mettre à jour\n"
 printf "      ${WHT}uninstall${NC}       🗑️ désinstaller le script\n\n"
-printf "   ${CYN}Automatismes :${NC} suppression comptes expirés · limite\n"
-printf "   d'appareils · quota de bande passante\n\n"
-printf "   ${GRY}🌐 IP du serveur : %s${NC}\n" "$IPADDR"
+printf "   ${GRY}🌐 IP : %s   ·   🔓 Port sans TLS : %s   ·   🔒 TLS : 443${NC}\n" "$IPADDR" "$NVPORT"
 printf "   ${GRY}📨 Support : %s${NC}\n\n" "$CONTACT"
-printf "   ${GRN}➜ Pour ouvrir le panel, tape l'une de ces 3 commandes :${NC}\n"
-printf "      ${YLW}menu${NC}   ·   ${YLW}acc${NC}   ·   ${YLW}dgh${NC}\n\n"
+
+if [ -n "$FAILED" ]; then
+  printf "   ${RED}⚠ Fichiers manquants sur GitHub :${NC}${YLW}%s${NC}\n" "$FAILED"
+  printf "   ${GRY}Uploade-les à la racine du dépôt puis relance : update${NC}\n\n"
+fi
+
+printf "   ${GRN}➜ Tape ${YLW}menu${GRN} (ou ${YLW}acc${GRN}, ou ${YLW}dgh${GRN}) pour ouvrir le panel.${NC}\n\n"

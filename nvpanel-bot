@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+# ============================================================
+#  nvpanel · bot Telegram (SSH + Xray/Vmess/Vless/Trojan/SS)
+#  stdlib uniquement · reserve a l'ADMIN · boutons horizontaux
+#  Config : /etc/nvpanel/bot.conf  ->  TOKEN=...  ADMIN=...
+# ============================================================
+import json, subprocess, urllib.request, urllib.parse, time
+
+CONF = "/etc/nvpanel/bot.conf"
+
+def load_conf():
+    c = {}
+    with open(CONF) as f:
+        for ln in f:
+            ln = ln.strip()
+            if "=" in ln and not ln.startswith("#"):
+                k, v = ln.split("=", 1); c[k.strip()] = v.strip()
+    return c
+
+conf = load_conf()
+TOKEN = conf.get("TOKEN", ""); ADMIN = str(conf.get("ADMIN", ""))
+API = "https://api.telegram.org/bot%s/" % TOKEN
+STATE = {}
+
+def api(method, **params):
+    data = urllib.parse.urlencode(
+        {k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in params.items()}
+    ).encode()
+    try:
+        with urllib.request.urlopen(API + method, data=data, timeout=60) as r:
+            return json.load(r)
+    except Exception:
+        return {}
+
+def cli(*args):
+    try:
+        return subprocess.run(["nvpanel-cli", *args], capture_output=True, text=True, timeout=40).stdout.strip()
+    except Exception as e:
+        return "ERR %s" % e
+
+def main_kb():
+    return {"inline_keyboard": [
+        [{"text": "\u2795 SSH", "callback_data": "create"}, {"text": "\U0001F4CB SSH", "callback_data": "list"}],
+        [{"text": "\U0001F512 Verrouiller", "callback_data": "lock"}, {"text": "\U0001F513 Deverrouiller", "callback_data": "unlock"}],
+        [{"text": "\u267B\uFE0F Prolonger", "callback_data": "renew"}, {"text": "\U0001F5D1 Suppr SSH", "callback_data": "delete"}],
+        [{"text": "\U0001F7E3 Vmess", "callback_data": "p:vmess"}, {"text": "\U0001F535 Vless", "callback_data": "p:vless"}],
+        [{"text": "\U0001F7E0 Trojan", "callback_data": "p:trojan"}, {"text": "\U0001F7E2 Shadowsocks", "callback_data": "p:ss"}],
+        [{"text": "\U0001F4CA Serveur", "callback_data": "status"}, {"text": "\U0001F504 Menu", "callback_data": "menu"}],
+    ]}
+
+def proto_kb(p):
+    return {"inline_keyboard": [
+        [{"text": "\u2795 Ajouter", "callback_data": "pa:%s" % p}, {"text": "\U0001F4CB Liste", "callback_data": "pl:%s" % p}],
+        [{"text": "\U0001F5D1 Supprimer", "callback_data": "pd:%s" % p}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
+    ]}
+
+def send(chat, text, kb=None):
+    mk = kb if kb is not None else main_kb()
+    api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
+
+def show_menu(chat):
+    send(chat, "<b>NVPANEL</b> - gestion des comptes\nChoisis une action :")
+
+def do_list(chat):
+    out = cli("list")
+    if not out:
+        send(chat, "Aucun compte SSH."); return
+    lines = ["<b>Comptes SSH</b>", "<code>user        expire     dev quota etat</code>"]
+    for l in out.splitlines():
+        p = l.split("|")
+        if len(p) == 5:
+            lines.append("<code>%-11s %-10s %-3s %-5s %s</code>" % (p[0][:11], p[1], p[2], p[3]+"G", p[4]))
+    send(chat, "\n".join(lines))
+
+def do_xlist(chat, proto):
+    out = cli("xlist", proto)
+    if not out or out.startswith("ERR"):
+        send(chat, "Aucun client %s." % proto, kb=proto_kb(proto)); return
+    lines = ["<b>Clients %s</b>" % proto]
+    for l in out.splitlines():
+        n, _, e = l.partition("|")
+        lines.append("<code>%-16s %s</code>" % (n, e))
+    send(chat, "\n".join(lines), kb=proto_kb(proto))
+
+def handle_callback(chat, data):
+    if data == "menu":
+        show_menu(chat); return
+    if data == "list":
+        do_list(chat); return
+    if data == "status":
+        send(chat, "<b>Serveur</b>\n<code>%s</code>" % cli("status")); return
+    if data.startswith("p:"):
+        p = data[2:]; send(chat, "<b>%s</b> - choisis :" % p.upper(), kb=proto_kb(p)); return
+    if data.startswith("pl:"):
+        do_xlist(chat, data[3:]); return
+    if data.startswith("pa:"):
+        STATE[chat] = {"action": "xadd", "proto": data[3:]}
+        send(chat, "Envoie : <code>nom jours</code>  (ex : <code>client1 30</code>)", kb=None); return
+    if data.startswith("pd:"):
+        STATE[chat] = {"action": "xdel", "proto": data[3:]}
+        send(chat, "Envoie le <b>nom</b> du client a supprimer :", kb=None); return
+    prompts = {
+        "create": "Nouveau compte SSH.\n<code>user motdepasse jours [limite] [quotaGo]</code>\nex : <code>client1 pass123 30 2 50</code>",
+        "delete": "Nom du compte SSH a supprimer :",
+        "lock":   "Nom du compte a verrouiller :",
+        "unlock": "Nom du compte a deverrouiller :",
+        "renew":  "Envoie : <code>user jours</code>",
+    }
+    if data in prompts:
+        STATE[chat] = {"action": data}
+        send(chat, prompts[data], kb=None)
+
+def handle_text(chat, text):
+    st = STATE.pop(chat, None)
+    if not st:
+        show_menu(chat); return
+    a = st["action"]; parts = text.split()
+    if a == "create":
+        if len(parts) < 3: send(chat, "Format : user motdepasse jours [limite] [quotaGo]"); return
+        r = cli("create", *parts[:5])
+        if r.startswith("OK"):
+            box = "\n".join(r.splitlines()[1:])
+            send(chat, "\u2705 Compte SSH cree\n<code>%s</code>" % box)
+        else:
+            send(chat, "\u274C %s" % r)
+    elif a == "renew":
+        if len(parts) < 2: send(chat, "Format : user jours"); return
+        r = cli("renew", parts[0], parts[1])
+        send(chat, ("\u2705 %s" % r) if r.startswith("OK") else ("\u274C %s" % r))
+    elif a in ("delete", "lock", "unlock"):
+        r = cli(a, parts[0]); send(chat, ("\u2705 %s" % r) if r.startswith("OK") else ("\u274C %s" % r))
+    elif a == "xadd":
+        proto = st["proto"]
+        if len(parts) < 1: send(chat, "Format : nom jours"); return
+        days = parts[1] if len(parts) > 1 else "30"
+        out = cli("xadd", proto, parts[0], days)
+        first = out.splitlines()[0] if out else "ERR"
+        if first.startswith("OK"):
+            box = "\n".join(out.splitlines()[1:])
+            send(chat, "\u2705 %s cree\n<code>%s</code>" % (proto, box))
+        else:
+            send(chat, "\u274C %s" % first)
+    elif a == "xdel":
+        r = cli("xdel", st["proto"], parts[0])
+        send(chat, "\u2705 Supprime" if r.startswith("OK") else ("\u274C %s" % r))
+
+def authorized(uid):
+    return str(uid) == ADMIN
+
+def main():
+    offset = None
+    if ADMIN:
+        api("sendMessage", chat_id=ADMIN, text="\U0001F916 nvpanel bot en ligne", reply_markup=main_kb())
+    while True:
+        upd = api("getUpdates", offset=offset, timeout=50)
+        if not upd.get("ok"):
+            time.sleep(3); continue
+        for u in upd["result"]:
+            offset = u["update_id"] + 1
+            if "callback_query" in u:
+                cq = u["callback_query"]; uid = cq["from"]["id"]; chat = cq["message"]["chat"]["id"]
+                api("answerCallbackQuery", callback_query_id=cq["id"])
+                if not authorized(uid): api("sendMessage", chat_id=chat, text="\u26D4 Non autorise"); continue
+                handle_callback(chat, cq["data"])
+            elif "message" in u:
+                m = u["message"]; uid = m["from"]["id"]; chat = m["chat"]["id"]
+                if not authorized(uid): api("sendMessage", chat_id=chat, text="\u26D4 Non autorise"); continue
+                txt = m.get("text", "")
+                if txt in ("/start", "/menu"): show_menu(chat)
+                else: handle_text(chat, txt)
+
+if __name__ == "__main__":
+    if not TOKEN or not ADMIN:
+        raise SystemExit("bot.conf incomplet (TOKEN / ADMIN)")
+    while True:
+        try: main()
+        except Exception: time.sleep(5)
