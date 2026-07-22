@@ -143,6 +143,45 @@ reset_traffic(){
   pause
 }
 
+optimize_server(){
+  header
+  center " 🚀  OPTIMISATION DU SERVEUR " "${BOLD}${WHT}"; echo
+  printf "   ${GRY}Nettoyage sûr (n'affecte ni les comptes ni la config)…${NC}\n\n"
+  local ram_b disk_b ram_a disk_a
+  ram_b=$(free -m | awk '/Mem:/{print $3}')
+  disk_b=$(df -m / | awk 'NR==2{print $3}')
+
+  printf "   ${CYN}➜${NC} Paquets inutiles et cache APT…\n"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -y autoremove --purge >/dev/null 2>&1
+  apt-get -y clean >/dev/null 2>&1
+  apt-get -y autoclean >/dev/null 2>&1
+
+  printf "   ${CYN}➜${NC} Rotation des journaux système…\n"
+  journalctl --vacuum-time=3d >/dev/null 2>&1
+  journalctl --vacuum-size=50M >/dev/null 2>&1
+  find /var/log -type f \( -name "*.gz" -o -name "*.[0-9]" -o -name "*.old" \) -delete 2>/dev/null
+  find /var/log -type f -name "*.log" -size +20M -exec truncate -s 0 {} \; 2>/dev/null
+
+  printf "   ${CYN}➜${NC} Fichiers temporaires…\n"
+  find /tmp -type f -atime +2 -delete 2>/dev/null
+  rm -rf /var/tmp/* 2>/dev/null
+  rm -rf /root/.cache/* 2>/dev/null
+
+  printf "   ${CYN}➜${NC} Libération de la mémoire (caches)…\n"
+  sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+
+  ram_a=$(free -m | awk '/Mem:/{print $3}')
+  disk_a=$(df -m / | awk 'NR==2{print $3}')
+  local rf=$(( ram_b - ram_a ));  [ "$rf" -lt 0 ] && rf=0
+  local df_=$(( disk_b - disk_a )); [ "$df_" -lt 0 ] && df_=0
+
+  echo; ok "Serveur optimisé et nettoyé."
+  printf "   ${GRY}RAM libérée   :${NC} ${WHT}%s Mo${NC}  ${GRY}(%s → %s Mo utilisés)${NC}\n" "$rf" "$ram_b" "$ram_a"
+  printf "   ${GRY}Disque libéré :${NC} ${WHT}%s Mo${NC}  ${GRY}(%s → %s Mo utilisés)${NC}\n" "$df_" "$disk_b" "$disk_a"
+  pause
+}
+
 while true; do
   header
   entry "1"  "🌐" "Ajouter / changer le domaine"
@@ -161,15 +200,16 @@ while true; do
   entry "14" "🔁" "Redémarrer le VPS"
   entry "15" "ℹ️" "Info du script"
   entry "16" "🧹" "Réinitialiser la consommation"
+  entry "17" "🚀" "Optimiser le serveur"
   entry "0"  "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}➤ Choix [0-16] :${NC} ")" o
+  read -rp "$(printf " ${WHT}➤ Choix [0-17] :${NC} ")" o
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
     3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;
     7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
     11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
-    14) reboot_vps ;; 15) script_info ;; 16) reset_traffic ;; 0) break ;;
+    14) reboot_vps ;; 15) script_info ;; 16) reset_traffic ;; 17) optimize_server ;; 0) break ;;
     *) warn "Invalide"; sleep 1 ;;
   esac
 done
