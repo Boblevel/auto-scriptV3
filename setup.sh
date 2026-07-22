@@ -131,15 +131,19 @@ if [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto 2>/dev/null
 fi
 
-# --- SlowDNS : binaire + clé FIXE (clé affichée par défaut) --
+# --- SlowDNS : binaire (selon l'archi) + clé FIXE (affichée par défaut) --
 say "Préparation de SlowDNS (clé par défaut)…"
 mkdir -p /etc/nvpanel/slowdns
-for f in dns-server server.key server.pub; do
-  curl -fsSL "$REPO_RAW/$f" -o "/etc/nvpanel/slowdns/$f" 2>/dev/null
-done
+case "$(uname -m)" in
+  aarch64|arm64) SLDNS_BIN="dns-server-arm64" ;;
+  *)             SLDNS_BIN="dns-server" ;;
+esac
+curl -fsSL "$REPO_RAW/$SLDNS_BIN" -o /etc/nvpanel/slowdns/dns-server 2>/dev/null
+curl -fsSL "$REPO_RAW/server.key" -o /etc/nvpanel/slowdns/server.key 2>/dev/null
+curl -fsSL "$REPO_RAW/server.pub" -o /etc/nvpanel/slowdns/server.pub 2>/dev/null
 chmod +x /etc/nvpanel/slowdns/dns-server 2>/dev/null
 if [ ! -s /etc/nvpanel/slowdns/dns-server ]; then
-  printf "  ${YLW}! Binaire SlowDNS absent du dépôt (dns-server) — la clé ne s'affichera pas.${NC}\n"
+  printf "  ${YLW}! Binaire SlowDNS absent du dépôt (%s) — la clé ne s'affichera pas.${NC}\n" "$SLDNS_BIN"
 fi
 # Active SlowDNS automatiquement si un domaine a été fourni (NS = ns-<domaine>)
 if [ -n "$NVDOMAIN" ] && [ -s /etc/nvpanel/slowdns/dns-server ] && [ -x /usr/local/bin/install-slowdns ]; then

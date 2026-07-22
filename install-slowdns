@@ -18,9 +18,13 @@ mkdir -p "$DIR"
 AUTO=0; NS_ARG=""
 [ "$1" = "auto" ] && { AUTO=1; NS_ARG="$2"; }
 
-# --- Récupère le binaire + les clés fixes depuis le dépôt (si absents) ---
+# --- Récupère le binaire (selon l'architecture) + les clés fixes ---
+case "$(uname -m)" in
+  aarch64|arm64) BIN_SRC="dns-server-arm64" ;;
+  *)             BIN_SRC="dns-server" ;;
+esac
 dl(){ curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null; }
-[ -s "$DIR/dns-server" ] || dl dns-server "$DIR/dns-server"
+[ -s "$DIR/dns-server" ] || dl "$BIN_SRC" "$DIR/dns-server"
 [ -s "$DIR/server.key" ] || dl server.key "$DIR/server.key"
 [ -s "$DIR/server.pub" ] || dl server.pub "$DIR/server.pub"
 chmod +x "$DIR/dns-server" 2>/dev/null
