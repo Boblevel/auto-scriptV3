@@ -24,6 +24,12 @@ else
   die "Ubuntu ou Debian requis (détecté : $PRETTY_NAME)."
 fi
 
+# RAM recommandée : 1 Go minimum (non bloquant)
+RAM_TOT=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')
+if [ -n "$RAM_TOT" ] && [ "$RAM_TOT" -lt 900 ]; then
+  printf "${YLW}! RAM détectée : %s Mo — 1 Go minimum recommandé pour de bonnes performances.${NC}\n" "$RAM_TOT"
+fi
+
 clear
 printf "${CYN}"
 cat <<'ART'
