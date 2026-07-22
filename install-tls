@@ -1,55 +1,52 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · activation TLS/HTTPS   (commande : install-tls)
-#  nginx (443) + certificat Let's Encrypt devant les entrées
-#  WebSocket de Xray (vmess/vless/trojan).
+#  RHAFF SERVICE · activation TLS/HTTPS   (install-tls)
+#  Obtient un certificat Let's Encrypt SANS couper nginx.
+#  En cas d'échec, rien n'est cassé : le certificat auto-signé
+#  reste en place et les comptes Vmess/Vless/Trojan continuent.
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
+IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 banner; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; line
+[ -z "$DOMAIN" ] && { err "Aucun domaine défini (menu-settings → option 1)."; pause; exit 1; }
 
-if [ -z "$DOMAIN" ]; then
-  err "Aucun domaine défini. Configure-le d'abord (menu → Réglages, ou menu-settings)."
-  pause; exit 1
-fi
 printf " Domaine : ${WHT}%s${NC}\n" "$DOMAIN"
-printf " ${GRY}Assure-toi que %s pointe (enregistrement A) vers %s${NC}\n\n" "$DOMAIN" "$(cat /etc/nvpanel/ip 2>/dev/null)"
+printf " ${GRY}%s doit pointer (enregistrement A) vers %s, sans proxy Cloudflare.${NC}\n" "$DOMAIN" "$IP"
+printf " ${GRY}Si le certificat échoue, tes comptes continueront de fonctionner.${NC}\n\n"
 read -rp " Continuer ? (o/n) : " r; confirm "$r" || exit 0
 
-# Dépendances
 export DEBIAN_FRONTEND=noninteractive
-apt-get install -y nginx certbot >/dev/null 2>&1
+printf "${CYN}➜${NC} Préparation…\n"
+apt-get install -y certbot >/dev/null 2>&1
+mkdir -p /var/www/certbot
 
-# Certificat (mode standalone : port 80 libre le temps de l'émission)
-printf "${CYN}➜${NC} Obtention du certificat…\n"
-systemctl stop nginx >/dev/null 2>&1
-certbot certonly --standalone --non-interactive --agree-tos \
-  -m "admin@$DOMAIN" -d "$DOMAIN" \
-  --deploy-hook "systemctl reload nginx" >/dev/null 2>&1
+# nginx doit tourner (il sert le challenge sur le port 80) — AUCUNE coupure
+[ -x /usr/local/bin/install-xray ] && command -v xray >/dev/null 2>&1 || true
+nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || systemctl start nginx >/dev/null 2>&1
+
+printf "${CYN}➜${NC} Obtention du certificat Let's Encrypt…\n"
+certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos \
+  -m "admin@$DOMAIN" -d "$DOMAIN" >/dev/null 2>&1
 
 CERT=/etc/letsencrypt/live/$DOMAIN
-if [ ! -f "$CERT/fullchain.pem" ]; then
-  err "Échec de l'émission du certificat. Vérifie que le domaine pointe bien vers ce VPS et que le port 80 est ouvert."
-  systemctl start nginx >/dev/null 2>&1; pause; exit 1
-fi
-
-# Le certificat existe : on régénère la façade nginx (install-xray détecte
-# le certificat Let's Encrypt et l'utilise sur le port TLS à la place de l'auto-signé).
-touch /etc/nvpanel/tls_on
-if [ -x /usr/local/bin/install-xray ]; then
-  /usr/local/bin/install-xray auto >/dev/null 2>&1
-fi
-
-if nginx -t >/dev/null 2>&1; then
-  systemctl restart nginx
-  clear; banner; center " TLS ACTIF " "${BOLD}${GRN}"; line
+if [ -f "$CERT/fullchain.pem" ]; then
+  touch /etc/nvpanel/tls_on
+  # régénère la façade nginx : install-xray détecte le certificat officiel
+  [ -x /usr/local/bin/install-xray ] && /usr/local/bin/install-xray auto >/dev/null 2>&1
+  nginx -t >/dev/null 2>&1 && { systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1; }
+  clear; banner; center " ✔  TLS ACTIF " "${BOLD}${GRN}"; line
   ok "HTTPS activé sur $DOMAIN (certificat officiel Let's Encrypt)."
-  printf "   ${GRY}Les liens Vmess/Vless/Trojan en TLS utilisent maintenant un vrai certificat.${NC}\n"
-  printf "   ${GRY}Renouvellement automatique (certbot).${NC}\n"
+  printf "   ${GRY}Tes comptes Vmess/Vless/Trojan continuent de marcher — désormais avec un vrai certificat.${NC}\n"
+  printf "   ${GRY}Renouvellement automatique.${NC}\n"
 else
-  err "Configuration nginx invalide."
-  rm -f /etc/nvpanel/tls_on
+  # Échec : on ne casse RIEN. L'auto-signé reste, les comptes marchent toujours.
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1
+  clear; banner; center " TLS NON ACTIVÉ " "${BOLD}${YLW}"; line
+  warn "Certificat Let's Encrypt non obtenu (DNS pas prêt, port 80 bloqué, ou proxy Cloudflare)."
+  printf "   ${GRN}Aucune inquiétude :${NC} ${GRY}tes comptes fonctionnent toujours (certificat auto-signé).${NC}\n"
+  printf "   ${GRY}Vérifie que %s pointe vers %s (DNS only), puis réessaie.${NC}\n" "$DOMAIN" "$IP"
 fi
 pause

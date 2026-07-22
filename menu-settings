@@ -59,9 +59,35 @@ enable_bbr(){
   pause
 }
 speedtest(){
-  header; printf "${CYN}➜${NC} Test de débit descendant (100 Mo via Cloudflare)…\n"
-  local sp; sp=$(curl -o /dev/null -s -w '%{speed_download}' "https://speed.cloudflare.com/__down?bytes=100000000" 2>/dev/null)
-  [ -n "$sp" ] && printf "  Débit : ${GRN}%.1f Mbps${NC}\n" "$(awk -v b="$sp" 'BEGIN{print b*8/1000000}')" || err "Test échoué (réseau ?)"
+  header; center " 📶  VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
+  printf "   ${GRY}Mesure du débit descendant en cours…${NC}\n\n"
+  local tmp; tmp=$(mktemp)
+  ( curl -o /dev/null -s --max-time 30 -w '%{speed_download}' \
+      "https://speed.cloudflare.com/__down?bytes=50000000" > "$tmp" 2>/dev/null ) &
+  local pid=$! i=0 spin='|/-\'
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r   ${MAG}%s${NC}  téléchargement du test…   " "${spin:i++%4:1}"
+    sleep 0.15
+  done
+  wait "$pid" 2>/dev/null
+  local sp; sp=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
+  printf "\r%-45s\r" " "
+  if [ -n "$sp" ] && awk -v b="$sp" 'BEGIN{exit !(b>0)}'; then
+    local mbps; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
+    ok "Débit descendant : ${GRN}${mbps} Mbps${NC}"
+  else
+    printf "   ${CYN}➜${NC} Nouvel essai (autre source)…\n"
+    local t0 t1 bytes
+    t0=$(date +%s.%N)
+    bytes=$(curl -o /dev/null -s --max-time 25 -w '%{size_download}' "http://speedtest.tele2.net/50MB.zip" 2>/dev/null)
+    t1=$(date +%s.%N)
+    if [ -n "$bytes" ] && awk -v b="$bytes" 'BEGIN{exit !(b>0)}'; then
+      local mbps; mbps=$(awk -v b="$bytes" -v s="$t0" -v e="$t1" 'BEGIN{d=e-s; if(d<=0)d=1; printf "%.1f",(b*8)/(d*1000000)}')
+      ok "Débit descendant : ${GRN}${mbps} Mbps${NC}"
+    else
+      err "Test impossible — le réseau du serveur bloque peut-être les téléchargements."
+    fi
+  fi
   pause
 }
 restart_services(){
@@ -70,10 +96,6 @@ restart_services(){
     systemctl restart "$s" >/dev/null 2>&1 && printf "  ${GRN}✔${NC} %s\n" "$s"
   done
   pause
-}
-reboot_vps(){
-  header; read -rp " Redémarrer le VPS maintenant ? (o/n) : " r
-  confirm "$r" && { printf "${YLW}Redémarrage…${NC}\n"; sleep 1; reboot; }
 }
 renew_cert(){
   header; printf "${CYN}➜${NC} Renouvellement des certificats…\n"
@@ -122,12 +144,15 @@ change_banner(){
   esac
 }
 script_info(){
-  header
-  printf "   Marque   : ${WHT}%s${NC}\n" "$BRAND"
-  printf "   Contact  : ${CYN}%s${NC}\n" "$CONTACT"
-  printf "   IP       : ${WHT}%s${NC}\n" "$(cat /etc/nvpanel/ip 2>/dev/null)"
-  printf "   Domaine  : ${WHT}%s${NC}\n" "$(cat /etc/nvpanel/domain 2>/dev/null || echo 'non configuré')"
-  printf "   TLS      : %s\n" "$([ -f /etc/nvpanel/tls_on ] && printf "${GRN}actif${NC}" || printf "${RED}inactif${NC}")"
+  header; center " ℹ️  À PROPOS " "${BOLD}${WHT}"; echo
+  printf "   ${WHT}%s${NC}\n" "$BRAND"
+  printf "   ${GRY}Panel de gestion premium multi-protocoles${NC}\n"
+  printf "   ${CYN}Telegram : %s${NC}\n\n" "$CONTACT"
+  printf "   ${GRY}Protocoles :${NC} SSH · SlowDNS · UDP · Vmess · Vless\n"
+  printf "   ${GRY}             Trojan · Shadowsocks · WireGuard${NC}\n\n"
+  printf "   ${GRY}Compatible :${NC} Ubuntu 20.04/22.04/24.04 · Debian 10/11/12\n"
+  printf "   ${GRY}Architecture :${NC} x86_64 et ARM (aarch64)\n"
+  printf "   ${GRY}RAM minimum :${NC} 1 Go\n"
   pause
 }
 reset_traffic(){
@@ -158,18 +183,17 @@ while true; do
   entry "11" "♻️" "Redémarrer les services VPN"
   entry "12" "📜" "Renouveler les certificats"
   entry "13" "📝" "Ajouter une bannière SSH"
-  entry "14" "🔁" "Redémarrer le VPS"
-  entry "15" "ℹ️" "Info du script"
-  entry "16" "🧹" "Réinitialiser la consommation"
+  entry "14" "ℹ️" "Info du script"
+  entry "15" "🧹" "Réinitialiser la consommation"
   entry "0"  "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}➤ Choix [0-16] :${NC} ")" o
+  read -rp "$(printf " ${WHT}➤ Choix [0-15] :${NC} ")" o
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
     3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;
     7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
     11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
-    14) reboot_vps ;; 15) script_info ;; 16) reset_traffic ;; 0) break ;;
+    14) script_info ;; 15) reset_traffic ;; 0) break ;;
     *) warn "Invalide"; sleep 1 ;;
   esac
 done

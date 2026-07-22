@@ -38,7 +38,7 @@ entry() {
 }
 
 banner() {
-  clear
+  printf '\033[3J\033[H\033[2J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
   center "gestion premium des accès & tunnels" "${GRY}"
@@ -147,3 +147,17 @@ warn() { printf "${YLW}!${NC} %s\n" "$1"; }
 pause(){ echo; read -rp "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _; }
 # réponse affirmative, insensible à la casse (o/O/oui/OUI/y/yes)
 confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }
+
+# petite animation de chargement stylée (barre qui se remplit)
+loading(){
+  local msg="${1:-Chargement}" w=24 i
+  printf '\033[3J\033[H\033[2J'; echo; echo
+  for ((i=1;i<=w;i++)); do
+    printf "\r   ${MAG}%s${NC}  ${CYN}[" "$msg"
+    printf "${GRN}%s${NC}" "$(printf '▰%.0s' $(seq 1 "$i"))"
+    printf "${GRY}%s${NC}" "$(printf '▱%.0s' $(seq 1 $((w-i))))"
+    printf "${CYN}]${NC}"
+    sleep 0.02
+  done
+  printf "\n"
+}

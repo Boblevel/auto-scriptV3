@@ -82,7 +82,7 @@ while true; do
   entry "11" "📈" "Statut des services"
   entry "12" "⚙️" "Paramètres"
   entry "13" "🔁" "Redémarrer le serveur"
-  entry "14" "🔄" "Mettre à jour"
+  entry "14" "🔄" "Mettre à jour le script"
   entry "15" "🚀" "Optimiser le serveur"
   entry "16" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
@@ -99,8 +99,8 @@ while true; do
     08|8) run menu-pptp ;;
     09|9) run menu-sstp ;;
     10)   run menu-bot ;;
-    11)   services_status ;;
-    12)   run menu-settings ;;
+    11)   loading "Analyse des services"; services_status ;;
+    12)   loading "Ouverture des paramètres"; run menu-settings ;;
     13)   reboot_server ;;
     14)   run update ;;
     15)   optimize_server ;;

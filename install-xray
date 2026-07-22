@@ -77,7 +77,7 @@ else
 fi
 
 # --- Façade nginx : 80 (clair) + $XPORT (TLS) → Xray ---------
-mkdir -p /etc/nginx/conf.d
+mkdir -p /etc/nginx/conf.d /var/www/certbot
 cat > /etc/nginx/nvpanel-ws.conf <<'EOF'
 proxy_http_version 1.1;
 proxy_set_header Upgrade $http_upgrade;
@@ -92,6 +92,7 @@ cat > /etc/nginx/conf.d/rhaff.conf <<EOF
 server {
     listen 80;
     server_name _;
+    location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; default_type "text/plain"; }
     location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }
     location /vless  { proxy_pass http://127.0.0.1:8081; include /etc/nginx/nvpanel-ws.conf; }
     location /trojan { proxy_pass http://127.0.0.1:8082; include /etc/nginx/nvpanel-ws.conf; }
