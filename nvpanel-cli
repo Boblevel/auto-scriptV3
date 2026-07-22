@@ -145,9 +145,11 @@ case "$cmd" in
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     useradd -e "$exp" -s /bin/false -M "$user" &>/dev/null
-    # méthode robuste (chpasswd) + déverrouillage explicite du compte
-    printf '%s:%s\n' "$user" "$pass" | chpasswd 2>/dev/null
-    passwd -u "$user" &>/dev/null
+    # méthode identique au compte de test qui fonctionnait : on fournit le
+    # mot de passe deux fois à passwd (printf = aucune interprétation d'échappement)
+    printf '%s\n%s\n' "$pass" "$pass" | passwd "$user" &>/dev/null
+    passwd -u "$user" &>/dev/null          # s'assure que le compte est déverrouillé
+    chage -M 99999 "$user" &>/dev/null     # le mot de passe n'expire jamais
     echo "### $user $exp" >> "$DB"
     grep -q "^$user " "$LIMDB" && sed -i "s/^$user .*/$user $lim/" "$LIMDB" || echo "$user $lim" >> "$LIMDB"
     if [ "${gb:-0}" -gt 0 ] 2>/dev/null; then

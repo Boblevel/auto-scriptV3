@@ -81,11 +81,45 @@ renew_cert(){
   ok "Renouvellement terminé (voir certbot pour le détail)."; pause
 }
 change_banner(){
-  header; read -rp " Texte de la bannière SSH : " b
-  [ -z "$b" ] && { warn "Inchangé"; pause; return; }
-  echo "$b" > /etc/issue.net
-  grep -q '^Banner ' /etc/ssh/sshd_config || echo 'Banner /etc/issue.net' >> /etc/ssh/sshd_config
-  systemctl restart ssh 2>/dev/null; ok "Bannière mise à jour."; pause
+  header
+  printf "   ${WHT}Bannière SSH${NC} (s'affiche à la connexion au serveur)\n"
+  printf "   ${GRY}Actuelle :${NC} %s\n\n" "$([ -s /etc/banner ] && head -1 /etc/banner || echo 'aucune')"
+  entry "1" "➕" "Ajouter / modifier la bannière"
+  entry "2" "🗑️" "Supprimer la bannière"
+  entry "0" "⬅️" "Retour"
+  line; read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" b
+  case "$b" in
+    1)
+      echo; printf "   ${GRY}Saisis ton texte (une ligne). Entrée pour valider.${NC}\n"
+      read -rp "   Texte : " txt
+      [ -z "$txt" ] && { warn "Inchangé"; pause; return; }
+      printf '%s\n' "$txt" > /etc/banner
+      # --- OpenSSH ---
+      sed -i '/^[#[:space:]]*Banner[[:space:]]/d' /etc/ssh/sshd_config
+      echo 'Banner /etc/banner' >> /etc/ssh/sshd_config
+      systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+      # --- Dropbear ---
+      if [ -f /etc/default/dropbear ]; then
+        sed -i '/DROPBEAR_BANNER/d' /etc/default/dropbear
+        grep -q -- '-b /etc/banner' /etc/default/dropbear || \
+          sed -i 's|^DROPBEAR_EXTRA_ARGS=.*|DROPBEAR_EXTRA_ARGS="-b /etc/banner"|' /etc/default/dropbear
+        grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS="-b /etc/banner"' >> /etc/default/dropbear
+      fi
+      systemctl restart dropbear 2>/dev/null
+      ok "Bannière ajoutée (sshd + dropbear)."
+      printf "   ${GRY}Note : elle s'affiche si l'appli client montre la bannière SSH.${NC}\n"
+      pause ;;
+    2)
+      rm -f /etc/banner
+      sed -i '/^[#[:space:]]*Banner[[:space:]]/d' /etc/ssh/sshd_config
+      systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+      if [ -f /etc/default/dropbear ]; then
+        sed -i 's|-b /etc/banner||g' /etc/default/dropbear
+      fi
+      systemctl restart dropbear 2>/dev/null
+      ok "Bannière supprimée."; pause ;;
+    *) return ;;
+  esac
 }
 script_info(){
   header

@@ -39,14 +39,33 @@ list_clients() {
   pause
 }
 
+pick_client() {
+  PICK=""
+  mapfile -t _cl < <(nvpanel-cli xlist "$PROTO" | awk -F'|' 'NF{print $1"|"$2}')
+  if [ "${#_cl[@]}" -eq 0 ]; then err "Aucun client ${PROTO^^}."; pause; return 1; fi
+  echo; printf "   ${GRY}Clients ${PROTO^^} :${NC}\n"
+  local i=1 row
+  for row in "${_cl[@]}"; do
+    printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "${row##*|}"
+    i=$((i+1))
+  done
+  echo; read -rp "   ➤ Numéro (0 = annuler) : " n
+  [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
+  [ "$n" -eq 0 ] && return 1
+  [ "$n" -ge 1 ] && [ "$n" -le "${#_cl[@]}" ] || { err "Hors liste"; pause; return 1; }
+  PICK="${_cl[$((n-1))]%%|*}"; return 0
+}
+
 del_client() {
-  header; read -rp " Nom à supprimer : " name
+  header; pick_client || return; name="$PICK"
+  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$name"; read -r c; confirm "$c" || { pause; return; }
   r=$(nvpanel-cli xdel "$PROTO" "$name")
   echo "$r" | grep -q '^OK' && ok "$name supprimé" || err "$r"; pause
 }
 
 renew_client() {
-  header; read -rp " Nom : " name; read -rp " Ajouter (jours) : " days
+  header; pick_client || return; name="$PICK"
+  read -rp " Ajouter (jours) : " days
   r=$(nvpanel-cli xrenew "$PROTO" "$name" "$days")
   echo "$r" | grep -q '^OK' && ok "Prolongé jusqu'au $(echo "$r"|awk '{print $3}')" || err "$r"; pause
 }

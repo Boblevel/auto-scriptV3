@@ -15,6 +15,27 @@ DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null || echo "$IP")
 
 header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; }
 
+# Sélecteur : liste les comptes SSH gérés et renvoie celui choisi par numéro.
+# Résultat dans la variable PICK. Retour 1 si annulé / aucun compte.
+pick_user() {
+  PICK=""
+  mapfile -t _users < <(awk '/^### /{print $2}' "$DB" 2>/dev/null)
+  if [ "${#_users[@]}" -eq 0 ]; then err "Aucun compte SSH."; pause; return 1; fi
+  echo; printf "   ${GRY}Comptes disponibles :${NC}\n"
+  local i=1 u exp st
+  for u in "${_users[@]}"; do
+    exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
+    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="${RED}verrou${NC}"; else st="${GRN}actif${NC}"; fi
+    printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b\n" "$i" "$u" "${exp:-?}" "$st"
+    i=$((i+1))
+  done
+  echo; read -rp "   ➤ Numéro (0 = annuler) : " n
+  [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
+  [ "$n" -eq 0 ] && return 1
+  [ "$n" -ge 1 ] && [ "$n" -le "${#_users[@]}" ] || { err "Hors liste"; pause; return 1; }
+  PICK="${_users[$((n-1))]}"; return 0
+}
+
 create_account() {
   header
   read -rp " Utilisateur : " user
@@ -54,30 +75,29 @@ list_accounts() {
 }
 
 renew_account() {
-  header; read -rp " Utilisateur : " user
-  id "$user" &>/dev/null || { err "Inconnu"; pause; return; }
+  header; pick_user || return; user="$PICK"
   read -rp " Ajouter (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
-  exp=$(date -d "+$days days" +"%Y-%m-%d")
-  chage -E "$exp" "$user"; passwd -u "$user" &>/dev/null
-  sed -i "s/^### $user .*/### $user $exp/" "$DB"
-  sed -i "/^$user /d" /etc/nvpanel/db/quota_used 2>/dev/null   # reset compteur quota
-  ok "$user prolongé jusqu'au $exp (compteur quota remis à zéro)"; pause
+  out=$(nvpanel-cli renew "$user" "$days")
+  echo "$out" | grep -q '^OK' && ok "$user prolongé (compteur quota remis à zéro)" || err "Échec : $out"
+  pause
 }
 
 delete_account() {
-  header; read -rp " Utilisateur à supprimer : " user
-  id "$user" &>/dev/null || { err "Inconnu"; pause; return; }
-  userdel -f "$user" &>/dev/null
-  sed -i "/^### $user /d" "$DB"
-  sed -i "/^$user /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
-  ok "$user supprimé"; pause
+  header; pick_user || return; user="$PICK"
+  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$user"; read -r c
+  confirm "$c" || { pause; return; }
+  out=$(nvpanel-cli delete "$user")
+  echo "$out" | grep -q '^OK' && ok "$user supprimé (connexion coupée)" || err "Échec : $out"
+  pause
 }
 
 lock_toggle() {
-  header; read -rp " Utilisateur : " user
-  id "$user" &>/dev/null || { err "Inconnu"; pause; return; }
-  if passwd -S "$user" | grep -q ' L '; then passwd -u "$user" &>/dev/null; ok "déverrouillé"
-  else passwd -l "$user" &>/dev/null; ok "verrouillé"; fi
+  header; pick_user || return; user="$PICK"
+  if passwd -S "$user" 2>/dev/null | awk '{exit !($2=="L")}'; then
+    nvpanel-cli unlock "$user" >/dev/null; ok "$user déverrouillé"
+  else
+    nvpanel-cli lock "$user" >/dev/null; ok "$user verrouillé (connexion coupée)"
+  fi
   pause
 }
 
