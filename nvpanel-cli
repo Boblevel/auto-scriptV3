@@ -135,13 +135,19 @@ cmd="$1"; shift 2>/dev/null
 case "$cmd" in
   # ---------- SSH ----------
   create)
-    user="$1"; pass="$2"; days="${3:-30}"; lim="${4:-2}"; gb="${5:-0}"
+    # nettoie les caractères invisibles (CR/LF/tab) que les claviers mobiles
+    # peuvent glisser dans la saisie — cause fréquente d'échec d'auth
+    user=$(printf '%s' "$1" | tr -d '\r\n\t ')
+    pass=$(printf '%s' "$2" | tr -d '\r\n')
+    days="${3:-30}"; lim="${4:-2}"; gb="${5:-0}"
     { [ -z "$user" ] || [ -z "$pass" ]; } && { echo "ERR args"; exit 1; }
     id "$user" &>/dev/null && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     useradd -e "$exp" -s /bin/false -M "$user" &>/dev/null
-    echo -e "$pass\n$pass" | passwd "$user" &>/dev/null
+    # méthode robuste (chpasswd) + déverrouillage explicite du compte
+    printf '%s:%s\n' "$user" "$pass" | chpasswd 2>/dev/null
+    passwd -u "$user" &>/dev/null
     echo "### $user $exp" >> "$DB"
     grep -q "^$user " "$LIMDB" && sed -i "s/^$user .*/$user $lim/" "$LIMDB" || echo "$user $lim" >> "$LIMDB"
     if [ "${gb:-0}" -gt 0 ] 2>/dev/null; then
@@ -152,7 +158,7 @@ case "$cmd" in
     echo "OK $user $exp"
     ssh_box "$user" "$pass" "$cr" "$exp" ;;
   renew)
-    user="$1"; days="$2"
+    user=$(printf '%s' "$1" | tr -d '\r\n\t '); days="$2"
     id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
@@ -161,13 +167,15 @@ case "$cmd" in
     sed -i "/^$user /d" /etc/nvpanel/db/quota_used 2>/dev/null
     echo "OK $user $exp" ;;
   delete)
-    user="$1"; id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
+    user=$(printf '%s' "$1" | tr -d '\r\n\t ')
+    id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
+    pkill -KILL -u "$user" 2>/dev/null   # coupe immédiatement les sessions actives
     userdel -f "$user" &>/dev/null
     sed -i "/^### $user /d" "$DB"
     sed -i "/^$user /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
     echo "OK deleted" ;;
-  lock)   id "$1" &>/dev/null && { passwd -l "$1" &>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
-  unlock) id "$1" &>/dev/null && { passwd -u "$1" &>/dev/null; echo "OK unlocked"; } || echo "ERR nouser" ;;
+  lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
+  unlock) u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -u "$u" &>/dev/null; echo "OK unlocked"; } || echo "ERR nouser" ;;
   list)
     awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while read -r u; do
       e=$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | xargs)
@@ -189,7 +197,7 @@ case "$cmd" in
 
   # ---------- Xray / Shadowsocks ----------
   xadd)
-    proto="$1"; name="$2"; days="${3:-30}"
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"
     xmeta "$proto" || { echo "ERR proto"; exit 1; }
     [ -f "$XCONF" ] || { echo "ERR noxray"; exit 1; }
     touch "$XDB"; grep -q "^### $name " "$XDB" && { echo "ERR exists"; exit 1; }
@@ -213,13 +221,13 @@ case "$cmd" in
     xmeta "$1" || { echo "ERR proto"; exit 1; }
     touch "$XDB"; awk '/^### /{print $2"|"$4}' "$XDB" ;;
   xdel)
-    proto="$1"; name="$2"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
     jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
     sed -i "/^### $name /d" "$XDB"; systemctl restart xray >/dev/null 2>&1
     echo "OK deleted" ;;
   xrenew)
-    proto="$1"; name="$2"; days="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
