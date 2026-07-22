@@ -30,6 +30,38 @@ reboot_server() {
   fi
 }
 
+optimize_server() {
+  banner; center " 🚀  OPTIMISATION DU SERVEUR " "${BOLD}${WHT}"; line
+  printf "   ${GRY}Nettoyage sûr (n'affecte ni les comptes ni la config)…${NC}\n\n"
+  local ram_b disk_b ram_a disk_a rf df_
+  ram_b=$(free -m | awk '/Mem:/{print $3}')
+  disk_b=$(df -m / | awk 'NR==2{print $3}')
+  printf "   ${CYN}➜${NC} Paquets inutiles et cache APT…\n"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -y autoremove --purge >/dev/null 2>&1
+  apt-get -y clean >/dev/null 2>&1
+  apt-get -y autoclean >/dev/null 2>&1
+  printf "   ${CYN}➜${NC} Rotation des journaux système…\n"
+  journalctl --vacuum-time=3d >/dev/null 2>&1
+  journalctl --vacuum-size=50M >/dev/null 2>&1
+  find /var/log -type f \( -name "*.gz" -o -name "*.[0-9]" -o -name "*.old" \) -delete 2>/dev/null
+  find /var/log -type f -name "*.log" -size +20M -exec truncate -s 0 {} \; 2>/dev/null
+  printf "   ${CYN}➜${NC} Fichiers temporaires…\n"
+  find /tmp -type f -atime +2 -delete 2>/dev/null
+  rm -rf /var/tmp/* 2>/dev/null
+  rm -rf /root/.cache/* 2>/dev/null
+  printf "   ${CYN}➜${NC} Libération de la mémoire (caches)…\n"
+  sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+  ram_a=$(free -m | awk '/Mem:/{print $3}')
+  disk_a=$(df -m / | awk 'NR==2{print $3}')
+  rf=$(( ram_b - ram_a ));  [ "$rf" -lt 0 ] && rf=0
+  df_=$(( disk_b - disk_a )); [ "$df_" -lt 0 ] && df_=0
+  echo; ok "Serveur optimisé et nettoyé."
+  printf "   ${GRY}RAM libérée   :${NC} ${WHT}%s Mo${NC}  ${GRY}(%s → %s Mo utilisés)${NC}\n" "$rf" "$ram_b" "$ram_a"
+  printf "   ${GRY}Disque libéré :${NC} ${WHT}%s Mo${NC}  ${GRY}(%s → %s Mo utilisés)${NC}\n" "$df_" "$disk_b" "$disk_a"
+  pause
+}
+
 while true; do
   banner
   sysinfo
@@ -51,7 +83,8 @@ while true; do
   entry "12" "⚙️" "Paramètres"
   entry "13" "🔁" "Redémarrer le serveur"
   entry "14" "🔄" "Mettre à jour"
-  entry "15" "🗑️" "Désinstaller le script"
+  entry "15" "🚀" "Optimiser le serveur"
+  entry "16" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
   line
   read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" opt
@@ -70,7 +103,8 @@ while true; do
     12)   run menu-settings ;;
     13)   reboot_server ;;
     14)   run update ;;
-    15)   run menu-uninstall ;;
+    15)   optimize_server ;;
+    16)   run menu-uninstall ;;
     00|0) clear; exit 0 ;;
     *)    warn "Option invalide"; sleep 1 ;;
   esac
