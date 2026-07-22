@@ -35,43 +35,21 @@ if [ ! -f "$CERT/fullchain.pem" ]; then
   systemctl start nginx >/dev/null 2>&1; pause; exit 1
 fi
 
-# Vhost nginx : bloc TLS 443 (le port sans TLS reste servi par rhaff-http.conf)
-cat > /etc/nginx/conf.d/rhaff-tls.conf <<EOF
-server {
-    listen 443 ssl;
-    server_name $DOMAIN;
-    ssl_certificate     $CERT/fullchain.pem;
-    ssl_certificate_key $CERT/privkey.pem;
-
-    location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }
-    location /vless  { proxy_pass http://127.0.0.1:8081; include /etc/nginx/nvpanel-ws.conf; }
-    location /trojan { proxy_pass http://127.0.0.1:8082; include /etc/nginx/nvpanel-ws.conf; }
-    location / { return 200 "ok"; }
-}
-EOF
-
-cat > /etc/nginx/nvpanel-ws.conf <<'EOF'
-proxy_http_version 1.1;
-proxy_set_header Upgrade $http_upgrade;
-proxy_set_header Connection "upgrade";
-proxy_set_header Host $host;
-proxy_set_header X-Real-IP $remote_addr;
-proxy_read_timeout 300s;
-EOF
-
-# Retire le site par défaut s'il capte le 443
-rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+# Le certificat existe : on régénère la façade nginx (install-xray détecte
+# le certificat Let's Encrypt et l'utilise sur le port TLS à la place de l'auto-signé).
+touch /etc/nvpanel/tls_on
+if [ -x /usr/local/bin/install-xray ]; then
+  /usr/local/bin/install-xray auto >/dev/null 2>&1
+fi
 
 if nginx -t >/dev/null 2>&1; then
-  systemctl enable nginx >/dev/null 2>&1
   systemctl restart nginx
-  touch /etc/nvpanel/tls_on
   clear; banner; center " TLS ACTIF " "${BOLD}${GRN}"; line
-  ok "HTTPS activé sur $DOMAIN (port 443)."
-  printf "   ${GRY}Les nouveaux liens Vmess/Vless/Trojan utiliseront TLS + port 443.${NC}\n"
-  printf "   ${GRY}Renouvellement du certificat : automatique (certbot).${NC}\n"
+  ok "HTTPS activé sur $DOMAIN (certificat officiel Let's Encrypt)."
+  printf "   ${GRY}Les liens Vmess/Vless/Trojan en TLS utilisent maintenant un vrai certificat.${NC}\n"
+  printf "   ${GRY}Renouvellement automatique (certbot).${NC}\n"
 else
-  err "Configuration nginx invalide. TLS non activé."
+  err "Configuration nginx invalide."
   rm -f /etc/nvpanel/tls_on
 fi
 pause

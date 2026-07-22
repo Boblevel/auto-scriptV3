@@ -63,7 +63,20 @@ EOF
 systemctl enable xray >/dev/null 2>&1
 systemctl restart xray
 
-# --- Façade nginx : sert le port sans TLS (freesurf) --------
+# --- Certificat pour le 443 : Let's Encrypt si dispo, sinon auto-signé ---
+DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
+if [ -n "$DOMAIN" ] && [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+  CRT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+else
+  if [ ! -s "$NDIR/self.crt" ] || [ ! -s "$NDIR/self.key" ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout "$NDIR/self.key" -out "$NDIR/self.crt" \
+      -subj "/CN=${DOMAIN:-rhaffservice}" >/dev/null 2>&1
+  fi
+  CRT="$NDIR/self.crt"; KEY="$NDIR/self.key"
+fi
+
+# --- Façade nginx : 80 (clair) + $XPORT (TLS) → Xray ---------
 mkdir -p /etc/nginx/conf.d
 cat > /etc/nginx/nvpanel-ws.conf <<'EOF'
 proxy_http_version 1.1;
@@ -73,10 +86,22 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_read_timeout 300s;
 EOF
-cat > /etc/nginx/conf.d/rhaff-http.conf <<EOF
+# un seul fichier propre (remplace d'éventuelles anciennes confs)
+rm -f /etc/nginx/conf.d/rhaff-http.conf /etc/nginx/conf.d/rhaff-tls.conf 2>/dev/null
+cat > /etc/nginx/conf.d/rhaff.conf <<EOF
 server {
-    listen $XPORT;
+    listen 80;
     server_name _;
+    location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }
+    location /vless  { proxy_pass http://127.0.0.1:8081; include /etc/nginx/nvpanel-ws.conf; }
+    location /trojan { proxy_pass http://127.0.0.1:8082; include /etc/nginx/nvpanel-ws.conf; }
+    location / { return 200 "ok"; }
+}
+server {
+    listen $XPORT ssl;
+    server_name _;
+    ssl_certificate     $CRT;
+    ssl_certificate_key $KEY;
     location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }
     location /vless  { proxy_pass http://127.0.0.1:8081; include /etc/nginx/nvpanel-ws.conf; }
     location /trojan { proxy_pass http://127.0.0.1:8082; include /etc/nginx/nvpanel-ws.conf; }
@@ -87,13 +112,12 @@ rm -f /etc/nginx/sites-enabled/default 2>/dev/null
 if nginx -t >/dev/null 2>&1; then systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; fi
 
 if [ "$AUTO" = 1 ]; then
-  printf "  ${GRN}✔${NC} Xray + façade nginx (port %s) prêts.\n" "$XPORT"
+  printf "  ${GRN}✔${NC} Xray prêt (clair:80 · TLS:%s).\n" "$XPORT"
   exit 0
 fi
 
 clear; banner; center " 🟦  XRAY PRÊT " "${BOLD}${GRN}"; line
 ok "Cœur Xray installé et démarré."
-printf "   ${GRY}Sans TLS : port %s (paths /vmess /vless /trojan)${NC}\n" "$XPORT"
-printf "   ${GRY}Avec TLS  : active-le via menu-settings (port 443)${NC}\n"
-printf "   ${GRY}Shadowsocks : tcp/udp 8388${NC}\n"
+printf "   ${GRY}Sans TLS : port 80   ·   Avec TLS : port %s${NC}\n" "$XPORT"
+printf "   ${GRY}Paths : /vmess /vless /trojan · Shadowsocks 8388${NC}\n"
 pause

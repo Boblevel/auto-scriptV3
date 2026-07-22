@@ -14,7 +14,7 @@ if [ -f "$CONF" ]; then
   echo
 fi
 
-entry "1" "🔧" "Configurer / reconfigurer le bot"
+entry "1" "🔧" "Configurer le bot"
 entry "2" "▶️" "Démarrer le bot"
 entry "3" "⏹️" "Arrêter le bot"
 entry "4" "📄" "Voir le statut / logs"

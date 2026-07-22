@@ -50,7 +50,7 @@ iptables -D OUTPUT -j NVPANEL_QUOTA 2>/dev/null
 iptables -X NVPANEL_QUOTA 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
 rm -f /etc/nginx/conf.d/nvpanel.conf /etc/nginx/conf.d/rhaff-http.conf \
-      /etc/nginx/conf.d/rhaff-tls.conf /etc/nginx/nvpanel-ws.conf
+      /etc/nginx/conf.d/rhaff-tls.conf /etc/nginx/conf.d/rhaff.conf /etc/nginx/nvpanel-ws.conf
 systemctl reload nginx 2>/dev/null
 
 # 5) WireGuard (config créée par le script)

@@ -65,6 +65,13 @@ systemctl daemon-reload >/dev/null 2>&1
 systemctl is-active --quiet nvpanel-bot   && systemctl restart nvpanel-bot   >/dev/null 2>&1
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
 
+# régénère la façade nginx/Xray avec la config à jour (TLS 443 + clair 80),
+# uniquement si Xray est déjà installé sur ce serveur
+if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
+  printf "${CYN}➜${NC} Application de la configuration des protocoles…\n"
+  /usr/local/bin/install-xray auto >/dev/null 2>&1
+fi
+
 printf "\n${GRN}✔ Mise à jour terminée.${NC} Ouverture du menu…\n"
 sleep 1
 exec menu

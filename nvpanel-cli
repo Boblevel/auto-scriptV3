@@ -57,21 +57,21 @@ EOF
 _vmess_link(){ # id host port path tls(0/1) name
   local id="$1" host="$2" port="$3" path="$4" tls="$5" name="$6" sec add
   if [ "$tls" = 1 ]; then
-    printf 'vmess://%s' "$(printf '{"v":"2","ps":"XRAY_VMESS_%s","add":"%s","port":"443","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"tls","sni":"%s"}' "$name" "$host" "$id" "$host" "$path" "$host" | base64 -w0)"
+    printf 'vmess://%s' "$(printf '{"v":"2","ps":"XRAY_VMESS_%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"tls","sni":"%s"}' "$name" "$host" "$port" "$id" "$host" "$path" "$host" | base64 -w0)"
   else
     printf 'vmess://%s' "$(printf '{"v":"2","ps":"XRAY_VMESS_%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"none"}' "$name" "$host" "$port" "$id" "$host" "$path" | base64 -w0)"
   fi
 }
 _vless_link(){ # id host port path tls name
   if [ "$5" = 1 ]; then
-    printf 'vless://%s@%s:443?type=ws&encryption=none&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#XRAY_VLESS_%s' "$1" "$2" "$2" "$4" "$2" "$6"
+    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#XRAY_VLESS_%s' "$1" "$2" "$3" "$2" "$4" "$2" "$6"
   else
     printf 'vless://%s@%s:%s?type=ws&encryption=none&security=none&host=%s&path=%s#XRAY_VLESS_%s' "$1" "$2" "$3" "$2" "$4" "$6"
   fi
 }
 _trojan_link(){ # id host port path tls name
   if [ "$5" = 1 ]; then
-    printf 'trojan://%s@%s:443?type=ws&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#XRAY_TROJAN_%s' "$1" "$2" "$2" "$4" "$2" "$6"
+    printf 'trojan://%s@%s:%s?type=ws&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#XRAY_TROJAN_%s' "$1" "$2" "$3" "$2" "$4" "$2" "$6"
   else
     printf 'trojan://%s@%s:%s?type=ws&security=none&host=%s&path=%s#XRAY_TROJAN_%s' "$1" "$2" "$3" "$2" "$4" "$6"
   fi
@@ -80,20 +80,20 @@ _trojan_link(){ # id host port path tls name
 # ---- encadré Xray ------------------------------------------
 xray_box(){ # proto name id created exp
   local proto="$1" name="$2" id="$3" cr="$4" ex="$5"
-  local host port path label ltls lnotls ip
-  host=$(_host); ip=$(_ip); port=$(_xport)
+  local host path label ltls lnotls ip tlsp plainp
+  host=$(_host); ip=$(_ip); tlsp=$(_xport); plainp=80
   case "$proto" in
-    vmess)  path="/vmess";  label="VMESS";  ltls=$(_vmess_link "$id" "$host" "$port" "$path" 1 "$name");  lnotls=$(_vmess_link "$id" "$host" "$port" "$path" 0 "$name") ;;
-    vless)  path="/vless";  label="VLESS";  ltls=$(_vless_link "$id" "$host" "$port" "$path" 1 "$name");  lnotls=$(_vless_link "$id" "$host" "$port" "$path" 0 "$name") ;;
-    trojan) path="/trojan"; label="TROJAN"; ltls=$(_trojan_link "$id" "$host" "$port" "$path" 1 "$name"); lnotls=$(_trojan_link "$id" "$host" "$port" "$path" 0 "$name") ;;
+    vmess)  path="/vmess";  label="VMESS";  ltls=$(_vmess_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vmess_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
+    vless)  path="/vless";  label="VLESS";  ltls=$(_vless_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vless_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
+    trojan) path="/trojan"; label="TROJAN"; ltls=$(_trojan_link "$id" "$host" "$tlsp" "$path" 1 "$name"); lnotls=$(_trojan_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
   esac
   cat <<EOF
 ========== 🟦 XRAY / $label ==========
 📝 Remarks     : $name
 🖥️ IP/Host     : $ip
 🌐 Address     : $host
-🔒 Port TLS    : 443
-🔓 Port No TLS : $port
+🔒 Port TLS    : $tlsp
+🔓 Port No TLS : $plainp
 🆔 User ID     : $id
 🔐 Encryption  : none
 🌐 Network     : ws
