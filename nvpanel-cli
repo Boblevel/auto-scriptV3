@@ -8,6 +8,7 @@
 DB=/etc/nvpanel/db/ssh
 LIMDB=/etc/nvpanel/db/limit
 QDB=/etc/nvpanel/db/quota
+META=/etc/nvpanel/db/ssh_meta   # user|pass|created|exp  (permet de reconsulter un compte)
 XCONF=/usr/local/etc/xray/config.json
 NDIR=/etc/nvpanel/xray
 mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
@@ -158,6 +159,8 @@ case "$cmd" in
       nvpanel-quota add "$user" 2>/dev/null
     fi
     echo "OK $user $exp"
+    # mémorise les infos pour pouvoir reconsulter le compte plus tard
+    touch "$META"; sed -i "/^$user|/d" "$META"; printf '%s|%s|%s|%s\n' "$user" "$pass" "$cr" "$exp" >> "$META"
     ssh_box "$user" "$pass" "$cr" "$exp" ;;
   renew)
     user=$(printf '%s' "$1" | tr -d '\r\n\t '); days="$2"
@@ -166,14 +169,28 @@ case "$cmd" in
     exp=$(date -d "+$days days" +"%Y-%m-%d")
     chage -E "$exp" "$user"; passwd -u "$user" &>/dev/null
     sed -i "s/^### $user .*/### $user $exp/" "$DB"
+    sed -i "s/^\($user|[^|]*|[^|]*\)|.*/\1|$exp/" "$META" 2>/dev/null
     sed -i "/^$user /d" /etc/nvpanel/db/quota_used 2>/dev/null
     echo "OK $user $exp" ;;
+  info)
+    user=$(printf '%s' "$1" | tr -d '\r\n\t ')
+    id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
+    line_meta=$(grep "^$user|" "$META" 2>/dev/null | head -1)
+    if [ -n "$line_meta" ]; then
+      IFS='|' read -r _ pass cr ex <<< "$line_meta"
+    else
+      pass="(inconnu — compte créé avant le suivi)"; cr="-"
+      ex=$(awk -v u="$user" '$2==u{print $3}' "$DB")
+    fi
+    echo "OK $user"
+    ssh_box "$user" "$pass" "$cr" "$ex" ;;
   delete)
     user=$(printf '%s' "$1" | tr -d '\r\n\t ')
     id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
     pkill -KILL -u "$user" 2>/dev/null   # coupe immédiatement les sessions actives
     userdel -f "$user" &>/dev/null
     sed -i "/^### $user /d" "$DB"
+    sed -i "/^$user|/d" "$META" 2>/dev/null
     sed -i "/^$user /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
     echo "OK deleted" ;;
   lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
@@ -235,6 +252,13 @@ case "$cmd" in
     exp=$(date -d "+$days days" +"%Y-%m-%d")
     sed -i "s/^### $name \([^ ]*\) .*/### $name \1 $exp/" "$XDB"
     echo "OK $name $exp" ;;
+  xinfo)
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    row=$(grep "^### $name " "$XDB" 2>/dev/null | head -1)
+    [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
+    id=$(echo "$row" | awk '{print $3}'); exp=$(echo "$row" | awk '{print $4}')
+    echo "OK $name"
+    if [ "$proto" = ss ]; then ss_box "$name" "$id" "-" "$exp"; else xray_box "$proto" "$name" "$id" "-" "$exp"; fi ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|xadd|xlist|xdel|xrenew"; exit 1 ;;
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo"; exit 1 ;;
 esac

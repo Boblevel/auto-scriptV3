@@ -13,7 +13,7 @@ mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null || echo "$IP")
 
-header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; }
+header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; proto_dash ssh ssh; line; }
 
 # Sélecteur : liste les comptes SSH gérés et renvoie celui choisi par numéro.
 # Résultat dans la variable PICK. Retour 1 si annulé / aucun compte.
@@ -101,6 +101,18 @@ lock_toggle() {
   pause
 }
 
+view_account() {
+  header; pick_user || return; user="$PICK"
+  out=$(nvpanel-cli info "$user")
+  clear; header
+  if echo "$out" | head -1 | grep -q '^OK'; then
+    printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+  else
+    err "Introuvable : $out"
+  fi
+  pause
+}
+
 slowdns_menu() {
   header
   if systemctl is-active --quiet nvpanel-slowdns; then
@@ -130,17 +142,18 @@ while true; do
   header
   entry "1" "➕" "Créer un compte"
   entry "2" "📋" "Lister les comptes"
-  entry "3" "♻️" "Prolonger / réactiver"
-  entry "4" "🔒" "Verrouiller / déverrouiller"
-  entry "5" "🗑️" "Supprimer un compte"
-  entry "6" "🌐" "SlowDNS"
-  entry "7" "📡" "UDP (badvpn / udp-custom)"
+  entry "3" "🔍" "Revoir un compte (infos + clé)"
+  entry "4" "♻️" "Prolonger / réactiver"
+  entry "5" "🔒" "Verrouiller / déverrouiller"
+  entry "6" "🗑️" "Supprimer un compte"
+  entry "7" "🌐" "SlowDNS"
+  entry "8" "📡" "UDP (badvpn / udp-custom)"
   entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in
-    1) create_account ;; 2) list_accounts ;; 3) renew_account ;;
-    4) lock_toggle ;;   5) delete_account ;; 6) slowdns_menu ;;
-    7) udp_status ;;    0) break ;; *) warn "Invalide"; sleep 1 ;;
+    1) create_account ;; 2) list_accounts ;; 3) view_account ;;
+    4) renew_account ;;  5) lock_toggle ;;   6) delete_account ;;
+    7) slowdns_menu ;;   8) udp_status ;;    0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

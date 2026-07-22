@@ -8,7 +8,8 @@ source /etc/nvpanel/lib/ui.sh
 PROTO="$1"
 case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac
 
-header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; }
+case "$PROTO" in vmess) LPORT=8080 ;; vless) LPORT=8081 ;; trojan) LPORT=8082 ;; esac
+header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; proto_dash "$PROTO" "port:$LPORT"; line; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -70,18 +71,28 @@ renew_client() {
   echo "$r" | grep -q '^OK' && ok "Prolongé jusqu'au $(echo "$r"|awk '{print $3}')" || err "$r"; pause
 }
 
+view_client() {
+  header; pick_client || return; name="$PICK"
+  out=$(nvpanel-cli xinfo "$PROTO" "$name")
+  clear; header
+  if echo "$out" | head -1 | grep -q '^OK'; then printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+  else err "Introuvable : $out"; fi
+  pause
+}
+
 ensure_xray || exit 0
 while true; do
   header
   entry "1" "➕" "Ajouter un client"
   entry "2" "📋" "Lister les clients"
-  entry "3" "♻️" "Prolonger un client"
-  entry "4" "🗑️" "Supprimer un client"
+  entry "3" "🔍" "Revoir un client (infos + lien)"
+  entry "4" "♻️" "Prolonger un client"
+  entry "5" "🗑️" "Supprimer un client"
   entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in
-    1) add_client ;; 2) list_clients ;; 3) renew_client ;;
-    4) del_client ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+    1) add_client ;; 2) list_clients ;; 3) view_client ;;
+    4) renew_client ;; 5) del_client ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

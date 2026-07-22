@@ -108,6 +108,36 @@ stats() {
   printf " ${GRY}📊 Conso — hier:${NC} %s ${GRY}· auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$hier")" "$(_hr "$auj")" "$(_hr "$mois")"
 }
 
+# Tableau de bord d'un protocole précis (affiché en en-tête de son menu)
+#   $1 = fichier DB sous /etc/nvpanel/db/   ·   $2 = mode online : ssh | port:PORT | wg
+proto_dash() {
+  local dbf="$1" mode="$2" total online blocked hier auj mois
+  total=$(grep -c '^### ' "/etc/nvpanel/db/$dbf" 2>/dev/null); total=${total:-0}
+  online=0; blocked=0
+  case "$mode" in
+    ssh)
+      online=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
+                 uid=$(id -u "$pu" 2>/dev/null)
+                 [ -n "$uid" ] && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] && echo 1
+               done | wc -l)
+      if [ -f "/etc/nvpanel/db/$dbf" ]; then
+        while read -r _ u _; do
+          [ -z "$u" ] && continue
+          local st; st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
+          [ "$st" = "L" ] && blocked=$((blocked+1))
+        done < "/etc/nvpanel/db/$dbf"
+      fi ;;
+    port:*)
+      local p="${mode#port:}"
+      online=$(ss -tnH state established "( sport = :$p )" 2>/dev/null | wc -l) ;;
+    wg)
+      online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;
+  esac
+  IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
+  printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"
+  printf " ${GRY}📊 Trafic serveur — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+}
+
 # compat : ancien nom
 clientcount(){ stats; }
 

@@ -6,7 +6,7 @@
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
-header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; }
+header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_dash shadowsocks port:8388; line; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -58,13 +58,21 @@ renew_client() {
   r=$(nvpanel-cli xrenew ss "$name" "$days")
   echo "$r"|grep -q '^OK' && ok "Prolongé" || err "$r"; pause
 }
+view_client() {
+  header; pick_client || return; name="$PICK"
+  out=$(nvpanel-cli xinfo ss "$name")
+  clear; header
+  if echo "$out"|head -1|grep -q '^OK'; then printf "${GRN}"; echo "$out"|tail -n +2; printf "${NC}"; else err "Introuvable : $out"; fi
+  pause
+}
 
 ensure_xray || exit 0
 while true; do
   header
   entry "1" "➕" "Ajouter un client"; entry "2" "📋" "Lister les clients"
-  entry "3" "♻️" "Prolonger un client"; entry "4" "🗑️" "Supprimer un client"; entry "0" "⬅️" "Retour"
+  entry "3" "🔍" "Revoir un client"; entry "4" "♻️" "Prolonger un client"
+  entry "5" "🗑️" "Supprimer un client"; entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
-  case "$o" in 1) add_client ;; 2) list_clients ;; 3) renew_client ;; 4) del_client ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
+  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
 done
