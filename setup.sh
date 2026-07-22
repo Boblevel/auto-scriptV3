@@ -131,6 +131,21 @@ if [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto 2>/dev/null
 fi
 
+# --- SlowDNS : binaire + clé FIXE (clé affichée par défaut) --
+say "Préparation de SlowDNS (clé par défaut)…"
+mkdir -p /etc/nvpanel/slowdns
+for f in dns-server server.key server.pub; do
+  curl -fsSL "$REPO_RAW/$f" -o "/etc/nvpanel/slowdns/$f" 2>/dev/null
+done
+chmod +x /etc/nvpanel/slowdns/dns-server 2>/dev/null
+if [ ! -s /etc/nvpanel/slowdns/dns-server ]; then
+  printf "  ${YLW}! Binaire SlowDNS absent du dépôt (dns-server) — la clé ne s'affichera pas.${NC}\n"
+fi
+# Active SlowDNS automatiquement si un domaine a été fourni (NS = ns-<domaine>)
+if [ -n "$NVDOMAIN" ] && [ -s /etc/nvpanel/slowdns/dns-server ] && [ -x /usr/local/bin/install-slowdns ]; then
+  /usr/local/bin/install-slowdns auto "ns-$NVDOMAIN" 2>/dev/null
+fi
+
 # --- Remise à zéro des compteurs de trafic ------------------
 say "Réinitialisation des compteurs de trafic…"
 IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')

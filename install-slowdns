@@ -1,68 +1,79 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · installation SlowDNS (dnstt)  → tunnel DNS vers SSH
-#  commande : install-slowdns
+#  RHAFF SERVICE · SlowDNS (dnstt) — clé FIXE hébergée
+#  Le binaire + la paire de clés viennent de ton dépôt GitHub,
+#  donc la clé publique est la même chez tous tes clients
+#  (comme Nevermore). Chaque client configure seulement son NS.
+#  Usage :
+#    install-slowdns            (interactif : demande le NS)
+#    install-slowdns auto <NS>  (non-interactif : utilisé à l'install)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
-# Binaire dnstt-server : héberge le tien et mets l'URL ici
-# (c'est l'équivalent de tes liens raw.githubusercontent NevermoreSSH)
-SLDNS_BIN_URL="${SLDNS_BIN_URL:-https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/dns-server}"
+REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 DIR=/etc/nvpanel/slowdns
+mkdir -p "$DIR"
 
-banner; center " INSTALLATION SLOWDNS " "${BOLD}${WHT}"; line
+AUTO=0; NS_ARG=""
+[ "$1" = "auto" ] && { AUTO=1; NS_ARG="$2"; }
 
-read -rp " Nameserver (ex. ns.tondomaine.com) : " NS
-[ -z "$NS" ] && { err "Nameserver requis"; exit 1; }
+# --- Récupère le binaire + les clés fixes depuis le dépôt (si absents) ---
+dl(){ curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null; }
+[ -s "$DIR/dns-server" ] || dl dns-server "$DIR/dns-server"
+[ -s "$DIR/server.key" ] || dl server.key "$DIR/server.key"
+[ -s "$DIR/server.pub" ] || dl server.pub "$DIR/server.pub"
+chmod +x "$DIR/dns-server" 2>/dev/null
 
-mkdir -p "$DIR"; cd "$DIR"
-
-# 1) Binaire
-if [ ! -f "$DIR/dns-server" ]; then
-  say(){ printf "${CYN}➜${NC} %s\n" "$1"; }
-  printf "${CYN}➜${NC} Téléchargement du binaire dnstt…\n"
-  curl -sL "$SLDNS_BIN_URL" -o "$DIR/dns-server"
-  chmod +x "$DIR/dns-server"
+if [ ! -s "$DIR/dns-server" ] || [ ! -s "$DIR/server.key" ]; then
+  if [ "$AUTO" = 0 ]; then err "Binaire ou clés SlowDNS introuvables sur GitHub (dns-server / server.key)."; pause; fi
+  exit 1
 fi
 
-# 2) Clés
-if [ ! -f "$DIR/server.key" ]; then
-  "$DIR/dns-server" -gen-key -privkey-file "$DIR/server.key" -pubkey-file "$DIR/server.pub"
+# --- Nameserver (NS) ----------------------------------------
+if [ "$AUTO" = 1 ]; then
+  NS="$NS_ARG"
+else
+  banner; center " 🌐  INSTALLATION SLOWDNS " "${BOLD}${WHT}"; line
+  DOM=$(cat /etc/nvpanel/domain 2>/dev/null)
+  [ -n "$DOM" ] && printf " ${GRY}Suggestion pour ton domaine :${NC} ${WHT}ns-%s${NC}\n\n" "$DOM"
+  read -rp " Nameserver (NS, ex. ns-mondomaine.com) : " NS
 fi
-PUB=$(cat "$DIR/server.pub")
+[ -z "$NS" ] && { [ "$AUTO" = 0 ] && { err "NS requis"; pause; }; exit 1; }
 echo "$NS" > "$DIR/ns"
 
-# 3) Redirection UDP 53 → 5300
-iptables -I INPUT -p udp --dport 5300 -j ACCEPT
-iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
-mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+# --- Redirection UDP 53 -> 5300 -----------------------------
+iptables -I INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
+iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null \
+  || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
 
-# 4) Service (forward vers le SSH local sur 22)
+# --- Service (forward vers le SSH local sur 22) -------------
 cat > /etc/systemd/system/nvpanel-slowdns.service <<EOF
 [Unit]
-Description=nvpanel SlowDNS (dnstt)
+Description=RHAFF SlowDNS (dnstt)
 After=network.target
-
 [Service]
 ExecStart=$DIR/dns-server -udp :5300 -privkey-file $DIR/server.key $NS 127.0.0.1:22
 Restart=always
 User=root
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
 systemctl daemon-reload
 systemctl enable --now nvpanel-slowdns >/dev/null 2>&1
 
-clear; banner; center " SLOWDNS PRÊT " "${BOLD}${GRN}"; line
+if [ "$AUTO" = 1 ]; then
+  printf "  ${GRN}✔${NC} SlowDNS prêt (NS: %s)\n" "$NS"
+  exit 0
+fi
+
+PUB=$(cat "$DIR/server.pub")
+clear; banner; center " 🌐  SLOWDNS PRÊT " "${BOLD}${GRN}"; line
 ok "Service actif."
 echo
 printf "   ${GRY}À configurer chez ton registrar DNS :${NC}\n"
-printf "   • %s        A    → %s\n" "$NS" "$(cat /etc/nvpanel/ip)"
-printf "   • (sous-domaine)  NS   → %s\n" "$NS"
+printf "   • ${WHT}%s${NC}   →  enregistrement ${WHT}A${NC}  vers ${WHT}%s${NC}\n" "$NS" "$(cat /etc/nvpanel/ip 2>/dev/null)"
+printf "   • un sous-domaine  →  enregistrement ${WHT}NS${NC}  vers ${WHT}%s${NC}\n" "$NS"
 echo
-printf "   ${GRY}Clé publique (à donner au client) :${NC}\n"
-printf "   ${WHT}%s${NC}\n" "$PUB"
+printf "   ${GRY}Clé publique (dans chaque compte SSH) :${NC}\n   ${WHT}%s${NC}\n" "$PUB"
 pause
