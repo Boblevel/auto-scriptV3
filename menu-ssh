@@ -30,7 +30,7 @@ pick_user() {
     printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b\n" "$i" "$u" "${exp:-?}" "$st"
     i=$((i+1))
   done
-  echo; read -rp "   ➤ Numéro (0 = annuler) : " n
+  echo; ask "   ➤ Numéro (0 = annuler) : " n
   [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
   [ "$n" -eq 0 ] && return 1
   [ "$n" -ge 1 ] && [ "$n" -le "${#_users[@]}" ] || { err "Hors liste"; pause; return 1; }
@@ -39,13 +39,13 @@ pick_user() {
 
 create_account() {
   header
-  read -rp " Utilisateur : " user
+  ask " Utilisateur : " user
   [ -z "$user" ] && { err "Nom vide"; pause; return; }
   id "$user" &>/dev/null && { err "Existe déjà"; pause; return; }
-  read -rp " Mot de passe : " pass
-  read -rp " Durée (jours) : " days;   [[ "$days" =~ ^[0-9]+$ ]] || days=30
-  read -rp " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
-  read -rp " Quota (Go, 0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
+  ask " Mot de passe : " pass
+  ask " Durée (jours) : " days;   [[ "$days" =~ ^[0-9]+$ ]] || days=30
+  ask " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
+  ask " Quota (Go, 0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
 
   out=$(nvpanel-cli create "$user" "$pass" "$days" "$lim" "$gb")
   clear; header
@@ -65,7 +65,7 @@ list_accounts() {
   header
   printf " ${GRY}%-14s %-11s %-4s %-9s %s${NC}\n" "User" "Expire" "Dev" "Quota" "Statut"
   line
-  awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while read -r u; do
+  awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while ask "" u; do
     e=$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | xargs)
     l=$(awk -v u="$u" '$1==u{print $2}' "$LIMDB"); l=${l:-–}
     q=$(awk -v u="$u" '$1==u{printf "%dGo",$2/1073741824}' "$QDB"); q=${q:-illim}
@@ -77,7 +77,7 @@ list_accounts() {
 
 renew_account() {
   header; pick_user || return; user="$PICK"
-  read -rp " Ajouter (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
+  ask " Ajouter (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
   out=$(nvpanel-cli renew "$user" "$days")
   echo "$out" | grep -q '^OK' && ok "$user prolongé (compteur quota remis à zéro)" || err "Échec : $out"
   pause
@@ -85,7 +85,7 @@ renew_account() {
 
 delete_account() {
   header; pick_user || return; user="$PICK"
-  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$user"; read -r c
+  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$user"; ask "" c
   confirm "$c" || { pause; return; }
   out=$(nvpanel-cli delete "$user")
   echo "$out" | grep -q '^OK' && ok "$user supprimé (connexion coupée)" || err "Échec : $out"
@@ -124,7 +124,7 @@ slowdns_menu() {
     warn "SlowDNS non installé."
   fi
   echo; entry "1" "Installer / réinstaller SlowDNS"; entry "0" "⬅️" "Retour"; line
-  read -rp " Choix : " s
+  ask " Choix : " s
   [ "$s" = "1" ] && install-slowdns
 }
 
@@ -159,7 +159,7 @@ udp_status() {
     warn "UDP non installé — choisis 1 pour l'installer."
   fi
   echo; entry "1" "⬇️" "Installer / réinstaller UDP"; entry "0" "⬅️" "Retour"; line
-  read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" s
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
   [ "$s" = "1" ] && install-udp
 }
 
@@ -175,17 +175,17 @@ cleanup_menu() {
     entry "2" "💥" "Supprimer TOUS les comptes"
     entry "0" "⬅️" "Retour"
     line
-    read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) [ "$exp" -eq 0 ] && { warn "Aucun compte expiré."; pause; continue; }
-         printf "   ${YLW}Supprimer les %s compte(s) expiré(s) ? (o/n) : ${NC}" "$exp"; read -r r
+         printf "   ${YLW}Supprimer les %s compte(s) expiré(s) ? (o/n) : ${NC}" "$exp"; ask "" r
          confirm "$r" || continue
          out=$(nvpanel-cli purge ssh expired)
          ok "$(echo "$out" | awk '{print $2+0}') compte(s) supprimé(s)."; pause ;;
       2) [ "$tot" -eq 0 ] && { warn "Aucun compte."; pause; continue; }
          warn "Cela supprimera les $tot comptes SSH. Action irréversible."
-         printf "   ${RED}Tape SUPPRIMER (en majuscules) pour confirmer : ${NC}"; read -r r
-         [ "$r" = "SUPPRIMER" ] || { warn "Annulé."; pause; continue; }
+         printf "   ${RED}➤ Confirmer la suppression totale ? (o/n) : ${NC}"; ask "" r
+         confirm "$r" || { warn "Annulé."; pause; continue; }
          out=$(nvpanel-cli purge ssh all)
          ok "$(echo "$out" | awk '{print $2+0}') compte(s) supprimé(s)."; pause ;;
       0) break ;;
@@ -207,7 +207,7 @@ while true; do
   entry "9" "🧹" "Nettoyage (expirés / tout supprimer)"
   entry "0" "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}Choix :${NC} ")" o
+  ask "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in
     1) create_account ;; 2) list_accounts ;; 3) view_account ;;
     4) renew_account ;;  5) lock_toggle ;;   6) delete_account ;;

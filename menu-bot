@@ -36,15 +36,15 @@ entry "3" "⏹️" "Arrêter le bot"
 entry "4" "📄" "Voir le statut / logs"
 entry "0" "⬅️" "Retour"
 line
-read -rp "$(printf " ${WHT}Choix :${NC} ")" o
+ask "$(printf " ${WHT}Choix :${NC} ")" o
 
 case "$o" in
   1)
     echo
     printf " ${GRY}1) Crée un bot via @BotFather et copie le TOKEN.${NC}\n"
     printf " ${GRY}2) Récupère ton ID via @userinfobot.${NC}\n\n"
-    read -rp " TOKEN BotFather : " token
-    read -rp " Ton ID Telegram : " adminid
+    ask " TOKEN BotFather : " token
+    ask " Ton ID Telegram : " adminid
     [ -z "$token" ] || [ -z "$adminid" ] && { err "Token et ID requis"; pause; exit 1; }
     cat > "$CONF" <<EOF
 TOKEN=$token

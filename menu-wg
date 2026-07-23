@@ -43,7 +43,7 @@ EOF
 
 ensure_wg() {
   if ! command -v wg >/dev/null 2>&1 || [ ! -f "$WGCONF" ]; then
-    read -rp " WireGuard n'est pas installé. L'installer ? (o/n) : " r
+    ask " WireGuard n'est pas installé. L'installer ? (o/n) : " r
     confirm "$r" && install_wg || return 1
   fi
 }
@@ -55,10 +55,10 @@ next_ip() {
 }
 
 add_peer() {
-  header; read -rp " Nom du client : " name
+  header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   grep -q "^### $name " "$DB" && { err "Existe déjà"; pause; return; }
-  read -rp " Durée (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || days=30
+  ask " Durée (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || days=30
   local ppriv ppub ip exp spub
   ppriv=$(wg genkey); ppub=$(printf '%s' "$ppriv" | wg pubkey)
   ip="$NET.$(next_ip)"; exp=$(date -d "+$days days" +"%Y-%m-%d")
@@ -113,10 +113,10 @@ pick_peer() {
   echo; printf "   ${GRY}Clients WireGuard :${NC}\n"
   local i=1 row f
   for row in "${_pl[@]}"; do
-    IFS='|' read -r nm ip ex <<< "$row"
+    IFS='|' ask "" nm ip ex <<< "$row"
     printf "   ${WHT}%2d${NC}) %-16s ${GRY}%-14s exp %s${NC}\n" "$i" "$nm" "$ip" "$ex"; i=$((i+1))
   done
-  echo; read -rp "   ➤ Numéro (0 = annuler) : " n
+  echo; ask "   ➤ Numéro (0 = annuler) : " n
   [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
   [ "$n" -eq 0 ] && return 1
   [ "$n" -ge 1 ] && [ "$n" -le "${#_pl[@]}" ] || { err "Hors liste"; pause; return 1; }
@@ -125,7 +125,7 @@ pick_peer() {
 
 del_peer() {
   header; pick_peer || return; name="$PICK"
-  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$name"; read -r c; confirm "$c" || { pause; return; }
+  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$name"; ask "" c; confirm "$c" || { pause; return; }
   local pub; pub=$(awk -v n="$name" '$2==n{print $3}' "$DB")
   wg set wg0 peer "$pub" remove 2>/dev/null
   sed -i "/^# $name$/,/^AllowedIPs/d" "$WGCONF"
@@ -136,7 +136,7 @@ del_peer() {
 
 renew_peer() {
   header; pick_peer || return; name="$PICK"
-  read -rp " Ajouter (jours) : " days
+  ask " Ajouter (jours) : " days
   [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
   local exp; exp=$(date -d "+$days days" +"%Y-%m-%d")
   sed -i "s|^### $name \([^ ]*\) \([^ ]*\) .*|### $name \1 \2 $exp|" "$DB"
@@ -171,19 +171,19 @@ cleanup_menu() {
     entry "2" "💥" "Supprimer TOUS les clients"
     entry "0" "⬅️" "Retour"
     line
-    read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1|2)
         if [ "$c" = 1 ]; then
           [ "$exp" -eq 0 ] && { warn "Aucun client expiré."; pause; continue; }
-          printf "   ${YLW}Supprimer les %s client(s) expiré(s) ? (o/n) : ${NC}" "$exp"; read -r r
+          printf "   ${YLW}Supprimer les %s client(s) expiré(s) ? (o/n) : ${NC}" "$exp"; ask "" r
           confirm "$r" || continue
           list=$(awk -v d="$today" '/^### /{ if ($5!="" && $5<d) print $2 }' "$DB")
         else
           [ "$tot" -eq 0 ] && { warn "Aucun client."; pause; continue; }
           warn "Cela supprimera les $tot clients WireGuard. Action irréversible."
-          printf "   ${RED}Tape SUPPRIMER (en majuscules) pour confirmer : ${NC}"; read -r r
-          [ "$r" = "SUPPRIMER" ] || { warn "Annulé."; pause; continue; }
+          printf "   ${RED}➤ Confirmer la suppression totale ? (o/n) : ${NC}"; ask "" r
+          confirm "$r" || { warn "Annulé."; pause; continue; }
           list=$(awk '/^### /{print $2}' "$DB")
         fi
         n=0
@@ -213,7 +213,7 @@ while true; do
   entry "6" "🧹" "Nettoyage (expirés / tout supprimer)"
   entry "0" "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" o
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
   case "$o" in
     1) add_peer ;; 2) list_peers ;; 3) view_peer ;;
     4) renew_peer ;; 5) del_peer ;; 6) cleanup_menu ;;

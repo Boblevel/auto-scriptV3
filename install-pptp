@@ -1,0 +1,79 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · installation PPTP   (install-pptp [auto])
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+AUTO=0; [ "$1" = "auto" ] && AUTO=1
+NET=10.20.20
+IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
+
+[ "$AUTO" = 1 ] || { banner; center " INSTALLATION PPTP " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation…\n"; }
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y pptpd ppp iptables >/dev/null 2>&1
+
+cat > /etc/pptpd.conf <<EOF
+option /etc/ppp/pptpd-options
+logwtmp
+localip $NET.1
+remoteip $NET.10-200
+EOF
+
+cat > /etc/ppp/pptpd-options <<'EOF'
+name pptpd
+refuse-pap
+refuse-chap
+refuse-mschap
+require-mschap-v2
+require-mppe-128
+ms-dns 1.1.1.1
+ms-dns 8.8.8.8
+proxyarp
+nodefaultroute
+lock
+nobsdcomp
+novj
+novjccomp
+nologfd
+EOF
+
+# routage + NAT
+sed -i '/^net.ipv4.ip_forward/d' /etc/sysctl.conf
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+sysctl -p >/dev/null 2>&1
+if [ -n "$IFACE" ]; then
+  iptables -t nat -C POSTROUTING -s $NET.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s $NET.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
+fi
+iptables -C FORWARD -s $NET.0/24 -j ACCEPT 2>/dev/null || iptables -I FORWARD -s $NET.0/24 -j ACCEPT 2>/dev/null
+iptables -C FORWARD -d $NET.0/24 -j ACCEPT 2>/dev/null || iptables -I FORWARD -d $NET.0/24 -j ACCEPT 2>/dev/null
+iptables -C INPUT -p tcp --dport 1723 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 1723 -j ACCEPT 2>/dev/null
+iptables -C INPUT -p gre -j ACCEPT 2>/dev/null || iptables -I INPUT -p gre -j ACCEPT 2>/dev/null
+iptables -I FORWARD -p tcp --syn -s $NET.0/24 -j TCPMSS --set-mss 1356 2>/dev/null
+command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && { ufw allow 1723/tcp >/dev/null 2>&1; ufw allow proto gre from any >/dev/null 2>&1; }
+
+systemctl enable pptpd >/dev/null 2>&1
+systemctl restart pptpd >/dev/null 2>&1
+sleep 1
+OK=0; systemctl is-active --quiet pptpd && OK=1
+LIS=0
+{ ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null; } | grep -q ':1723' && LIS=1
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+
+if [ "$AUTO" = 1 ]; then
+  [ "$OK" = 1 ] && printf "  ${GRN}✔${NC} PPTP prêt.\n" || printf "  ${YLW}!${NC} PPTP non activé.\n"
+  exit 0
+fi
+clear; banner
+if [ "$OK" = 1 ] && [ "$LIS" = 1 ]; then
+  center " ✔  PPTP OPÉRATIONNEL " "${BOLD}${GRN}"; line
+  ok "Service actif, port 1723 en écoute."
+  printf "   ${GRY}Crée un compte depuis le menu PPTP, puis connecte-toi avec${NC}\n"
+  printf "   ${GRY}l'adresse du serveur, l'utilisateur et le mot de passe.${NC}\n"
+else
+  center " ✘  PPTP NON ACTIVÉ " "${BOLD}${RED}"; line
+  err "Le service PPTP n'a pas démarré."
+  printf "   ${GRY}Certains hébergeurs bloquent le protocole GRE, requis par PPTP.${NC}\n"
+  printf "   ${GRY}Dans ce cas, utilise plutôt L2TP ou SSTP.${NC}\n"
+fi
+pause

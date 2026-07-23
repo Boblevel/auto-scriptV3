@@ -16,7 +16,8 @@ services_status() {
   for pair in \
     "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray (Vmess/Vless/Trojan/SS)" \
     "nginx:Nginx (façade TLS/WS)" "nvpanel-slowdns:SlowDNS" "nvpanel-badvpn-7300:UDP (badvpn)" \
-    "wg-quick@wg0:WireGuard" "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
+    "wg-quick@wg0:WireGuard" "xl2tpd:L2TP (xl2tpd)" "strongswan-starter:L2TP (IPsec)" \
+    "pptpd:PPTP" "nvpanel-sstp:SSTP" "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
     s="${pair%%:*}"; name="${pair##*:}"
     if systemctl is-active --quiet "$s" 2>/dev/null; then
       printf "   ${GRN}● actif  ${NC} %s\n" "$name"
@@ -32,7 +33,7 @@ services_status() {
 reboot_server() {
   banner; center " 🔁  REDÉMARRAGE DU SERVEUR " "${BOLD}${WHT}"; line
   warn "Le serveur va redémarrer. Ta session SSH sera coupée quelques instants."
-  read -rp " Confirmer le redémarrage ? (o/n) : " r
+  ask " Confirmer le redémarrage ? (o/n) : " r
   if confirm "$r"; then
     printf "${YLW}Redémarrage en cours…${NC}\n"; sleep 1; reboot
   fi
@@ -95,7 +96,7 @@ while true; do
   entry "16" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
   line
-  read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" opt
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt
   case "$opt" in
     01|1) run menu-ssh ;;
     02|2) run menu-xray vmess ;;
@@ -103,9 +104,9 @@ while true; do
     04|4) run menu-xray trojan ;;
     05|5) run menu-ss ;;
     06|6) run menu-wg ;;
-    07|7) run menu-l2tp ;;
-    08|8) run menu-pptp ;;
-    09|9) run menu-sstp ;;
+    07|7) run menu-ppp l2tp ;;
+    08|8) run menu-ppp pptp ;;
+    09|9) run menu-ppp sstp ;;
     10)   run menu-bot ;;
     11)   loading "Analyse des services"; services_status ;;
     12)   loading "Ouverture des paramètres"; run menu-settings ;;

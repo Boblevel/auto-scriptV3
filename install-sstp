@@ -1,0 +1,107 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · installation SSTP   (install-sstp [auto])
+#  SSTP = PPP dans du TLS. Le port 443 est déjà pris par nginx,
+#  on écoute donc sur 4443 (modifiable).
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+AUTO=0; [ "$1" = "auto" ] && AUTO=1
+NET=10.30.30
+PORT=$(cat /etc/nvpanel/sstp_port 2>/dev/null); PORT=${PORT:-4443}
+echo "$PORT" > /etc/nvpanel/sstp_port
+IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
+DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
+IP=$(cat /etc/nvpanel/ip 2>/dev/null)
+DIR=/etc/nvpanel/sstp; mkdir -p "$DIR"
+
+[ "$AUTO" = 1 ] || { banner; center " INSTALLATION SSTP " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation (1 à 3 minutes)…\n"; }
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y ppp python3 python3-pip openssl iptables >/dev/null 2>&1
+pip3 install --break-system-packages sstp-server >/dev/null 2>&1 || pip3 install sstp-server >/dev/null 2>&1
+SSTPD=$(command -v sstpd 2>/dev/null)
+
+# certificat : Let's Encrypt si disponible, sinon auto-signé
+if [ -n "$DOMAIN" ] && [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+  CRT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+else
+  [ -s "$DIR/self.crt" ] || openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout "$DIR/self.key" -out "$DIR/self.crt" -subj "/CN=${DOMAIN:-${IP:-rhaffservice}}" >/dev/null 2>&1
+  CRT="$DIR/self.crt"; KEY="$DIR/self.key"
+fi
+
+cat > /etc/ppp/options.sstpd <<'EOF'
+name sstpd
+require-mschap-v2
+refuse-pap
+refuse-chap
+refuse-mschap
+nodefaultroute
+ms-dns 1.1.1.1
+ms-dns 8.8.8.8
+noccp
+auth
+mtu 1400
+mru 1400
+lock
+proxyarp
+EOF
+
+if [ -n "$SSTPD" ]; then
+  cat > /etc/systemd/system/nvpanel-sstp.service <<EOF
+[Unit]
+Description=RHAFF SERVICE SSTP
+After=network.target
+[Service]
+ExecStart=$SSTPD -p $PORT -c $CRT -k $KEY --local $NET.1 --remote $NET.10-200 --pppd-config /etc/ppp/options.sstpd
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable nvpanel-sstp >/dev/null 2>&1
+  systemctl restart nvpanel-sstp >/dev/null 2>&1
+  sleep 2
+fi
+
+# routage + NAT + port
+sed -i '/^net.ipv4.ip_forward/d' /etc/sysctl.conf
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+sysctl -p >/dev/null 2>&1
+if [ -n "$IFACE" ]; then
+  iptables -t nat -C POSTROUTING -s $NET.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s $NET.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
+fi
+iptables -C FORWARD -s $NET.0/24 -j ACCEPT 2>/dev/null || iptables -I FORWARD -s $NET.0/24 -j ACCEPT 2>/dev/null
+iptables -C FORWARD -d $NET.0/24 -j ACCEPT 2>/dev/null || iptables -I FORWARD -d $NET.0/24 -j ACCEPT 2>/dev/null
+iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null
+command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && ufw allow "$PORT"/tcp >/dev/null 2>&1
+
+LIS=0
+{ ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null; } | grep -q ":$PORT" && LIS=1
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+
+if [ "$AUTO" = 1 ]; then
+  [ "$LIS" = 1 ] && printf "  ${GRN}✔${NC} SSTP prêt (port %s).\n" "$PORT" || printf "  ${YLW}!${NC} SSTP non activé.\n"
+  exit 0
+fi
+clear; banner
+if [ "$LIS" = 1 ]; then
+  center " ✔  SSTP OPÉRATIONNEL " "${BOLD}${GRN}"; line
+  ok "Service actif, port $PORT en écoute."
+  printf "\n   ${WHT}Réglages à donner au client :${NC}\n"
+  printf "   ${GRY}• Serveur :${NC} ${WHT}%s:%s${NC}\n" "${DOMAIN:-$IP}" "$PORT"
+  printf "   ${GRY}• Identifiants : ceux du compte créé dans le menu SSTP${NC}\n"
+  [ "$CRT" = "$DIR/self.crt" ] && printf "   ${YLW}Certificat auto-signé : coche « ignorer le certificat » côté client.${NC}\n"
+else
+  center " ✘  SSTP NON ACTIVÉ " "${BOLD}${RED}"; line
+  if [ -z "$SSTPD" ]; then
+    err "Le composant SSTP n'a pas pu être installé sur ce serveur."
+    printf "   ${GRY}Il nécessite python3-pip et un accès Internet.${NC}\n"
+  else
+    err "Le service SSTP n'a pas démarré (port %s non ouvert)." "$PORT"
+  fi
+  printf "   ${GRY}Tu peux utiliser L2TP à la place.${NC}\n"
+fi
+pause

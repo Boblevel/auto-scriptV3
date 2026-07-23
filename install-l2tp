@@ -1,0 +1,120 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · installation L2TP/IPsec   (install-l2tp [auto])
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+AUTO=0; [ "$1" = "auto" ] && AUTO=1
+NET=10.10.10
+IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
+IP=$(cat /etc/nvpanel/ip 2>/dev/null)
+
+[ "$AUTO" = 1 ] || { banner; center " INSTALLATION L2TP / IPsec " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation (1 à 3 minutes)…\n"; }
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y strongswan xl2tpd ppp iptables >/dev/null 2>&1
+
+# clé partagée : générée une seule fois, puis conservée
+if [ ! -s /etc/nvpanel/l2tp_psk ]; then
+  openssl rand -hex 12 > /etc/nvpanel/l2tp_psk 2>/dev/null || echo "rhaffservice$(date +%s)" > /etc/nvpanel/l2tp_psk
+fi
+PSK=$(cat /etc/nvpanel/l2tp_psk)
+
+cat > /etc/ipsec.conf <<EOF
+config setup
+    uniqueids=no
+conn L2TP-PSK
+    authby=secret
+    auto=add
+    keyexchange=ikev1
+    type=transport
+    rekey=no
+    dpdaction=clear
+    left=%any
+    leftprotoport=17/1701
+    right=%any
+    rightprotoport=17/%any
+    ike=aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024!
+    esp=aes256-sha1,aes128-sha1,3des-sha1!
+EOF
+printf '%%any %%any : PSK "%s"\n' "$PSK" > /etc/ipsec.secrets
+chmod 600 /etc/ipsec.secrets
+
+cat > /etc/xl2tpd/xl2tpd.conf <<EOF
+[global]
+port = 1701
+[lns default]
+ip range = $NET.10-$NET.200
+local ip = $NET.1
+require chap = yes
+refuse pap = yes
+require authentication = yes
+name = l2tpd
+pppoptfile = /etc/ppp/options.xl2tpd
+length bit = yes
+EOF
+
+cat > /etc/ppp/options.xl2tpd <<'EOF'
+ipcp-accept-local
+ipcp-accept-remote
+ms-dns 1.1.1.1
+ms-dns 8.8.8.8
+noccp
+auth
+mtu 1400
+mru 1400
+lock
+proxyarp
+connect-delay 5000
+refuse-pap
+require-mschap-v2
+EOF
+
+# routage + NAT + ports IPsec
+sed -i '/^net.ipv4.ip_forward/d' /etc/sysctl.conf
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+sysctl -p >/dev/null 2>&1
+if [ -n "$IFACE" ]; then
+  iptables -t nat -C POSTROUTING -s $NET.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s $NET.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
+fi
+iptables -C FORWARD -s $NET.0/24 -j ACCEPT 2>/dev/null || iptables -I FORWARD -s $NET.0/24 -j ACCEPT 2>/dev/null
+iptables -C FORWARD -d $NET.0/24 -j ACCEPT 2>/dev/null || iptables -I FORWARD -d $NET.0/24 -j ACCEPT 2>/dev/null
+for p in 500 4500 1701; do
+  iptables -C INPUT -p udp --dport $p -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport $p -j ACCEPT 2>/dev/null
+done
+command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && for p in 500 4500 1701; do ufw allow $p/udp >/dev/null 2>&1; done
+
+# le nom du service strongSwan varie selon les distributions
+SSVC=""
+for u in strongswan-starter strongswan ipsec; do
+  systemctl list-unit-files 2>/dev/null | grep -q "^$u.service" && { SSVC="$u"; break; }
+done
+[ -n "$SSVC" ] && { systemctl enable "$SSVC" >/dev/null 2>&1; systemctl restart "$SSVC" >/dev/null 2>&1; }
+systemctl enable xl2tpd >/dev/null 2>&1
+systemctl restart xl2tpd >/dev/null 2>&1
+sleep 2
+
+OK=0
+systemctl is-active --quiet xl2tpd && OK=$((OK+1))
+[ -n "$SSVC" ] && systemctl is-active --quiet "$SSVC" && OK=$((OK+1))
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+
+if [ "$AUTO" = 1 ]; then
+  [ "$OK" -ge 2 ] && printf "  ${GRN}✔${NC} L2TP/IPsec prêt.\n" || printf "  ${YLW}!${NC} L2TP non activé.\n"
+  exit 0
+fi
+clear; banner
+if [ "$OK" -ge 2 ]; then
+  center " ✔  L2TP / IPsec OPÉRATIONNEL " "${BOLD}${GRN}"; line
+  ok "IPsec et xl2tpd actifs."
+  printf "\n   ${WHT}Réglages à donner au client :${NC}\n"
+  printf "   ${GRY}• Serveur       :${NC} ${WHT}%s${NC}\n" "${IP:-ton IP}"
+  printf "   ${GRY}• Type          :${NC} L2TP/IPsec avec clé pré-partagée\n"
+  printf "   ${GRY}• Clé partagée  :${NC} ${WHT}%s${NC}\n" "$PSK"
+  printf "   ${GRY}• Identifiants  :${NC} ceux du compte créé dans le menu L2TP\n"
+else
+  center " ✘  L2TP NON ACTIVÉ " "${BOLD}${RED}"; line
+  err "IPsec ou xl2tpd n'a pas démarré."
+  printf "   ${GRY}Certains VPS (conteneurs OpenVZ/LXC) ne supportent pas IPsec.${NC}\n"
+fi
+pause

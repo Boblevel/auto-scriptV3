@@ -1,0 +1,157 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · gestion L2TP / PPTP / SSTP
+#  Usage : menu-ppp l2tp|pptp|sstp
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+
+PROTO="$1"
+case "$PROTO" in
+  l2tp) LABEL="L2TP / IPsec"; INST=install-l2tp; SVC="xl2tpd" ;;
+  pptp) LABEL="PPTP";         INST=install-pptp; SVC="pptpd" ;;
+  sstp) LABEL="SSTP";         INST=install-sstp; SVC="nvpanel-sstp" ;;
+  *) err "Protocole inconnu"; exit 1 ;;
+esac
+DB=/etc/nvpanel/db/$PROTO
+mkdir -p /etc/nvpanel/db; touch "$DB"
+
+dash(){
+  local tot on blk today
+  today=$(date +%F)
+  tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
+  blk=$(awk -v d="$today" '/^### /{ if ($4!="" && $4<d) c++ } END{print c+0}' "$DB" 2>/dev/null)
+  on=$(nvpanel-ppp online "$PROTO" 2>/dev/null); on=${on:-0}
+  printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Expirés:${NC} ${RED}%s${NC}\n" "$tot" "$on" "$blk"
+  if systemctl is-active --quiet "$SVC" 2>/dev/null; then
+    printf " ${GRY}⚙️  Service :${NC} ${GRN}actif${NC}\n"
+  else
+    printf " ${GRY}⚙️  Service :${NC} ${RED}arrêté / non installé${NC}\n"
+  fi
+}
+header(){ banner; center " 🔐  $LABEL " "${BOLD}${WHT}"; line; dash; line; }
+
+ensure(){
+  systemctl is-active --quiet "$SVC" 2>/dev/null && return 0
+  header
+  warn "$LABEL n'est pas encore installé sur ce serveur."
+  printf "   ${YLW}L'installer maintenant ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" && { "$INST"; return 1; }
+  return 1
+}
+
+pick(){
+  PICK=""
+  mapfile -t _l < <(awk '/^### /{print $2"|"$4}' "$DB" 2>/dev/null)
+  [ "${#_l[@]}" -eq 0 ] && { err "Aucun compte."; pause; return 1; }
+  echo; printf "   ${GRY}Comptes $LABEL :${NC}\n"
+  local i=1 row
+  for row in "${_l[@]}"; do
+    printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "${row##*|}"; i=$((i+1))
+  done
+  echo; ask "   ➤ Numéro (0 = annuler) : " n
+  [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
+  [ "$n" -eq 0 ] && return 1
+  [ "$n" -ge 1 ] && [ "$n" -le "${#_l[@]}" ] || { err "Hors liste"; pause; return 1; }
+  PICK="${_l[$((n-1))]%%|*}"; return 0
+}
+
+create(){
+  header; ask " Nom d'utilisateur : " u
+  [ -z "$u" ] && { err "Nom vide"; pause; return; }
+  ask " Mot de passe : " p
+  [ -z "$p" ] && { err "Mot de passe vide"; pause; return; }
+  ask " Durée (jours) : " d; [[ "$d" =~ ^[0-9]+$ ]] || d=30
+  out=$(nvpanel-ppp add "$PROTO" "$u" "$p" "$d")
+  clear; header
+  if echo "$out" | head -1 | grep -q '^OK'; then
+    printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+  else
+    case "$out" in *exists*) err "Ce nom existe déjà." ;; *) err "Échec : $out" ;; esac
+  fi
+  pause
+}
+
+list_all(){
+  header
+  printf " ${WHT}%-20s %s${NC}\n" "COMPTE" "EXPIRE"
+  nvpanel-ppp list "$PROTO" | while IFS='|' read -r n e; do printf " %-20s %s\n" "$n" "$e"; done
+  pause
+}
+
+view(){
+  header; pick || return
+  out=$(nvpanel-ppp info "$PROTO" "$PICK")
+  clear; header
+  if echo "$out" | head -1 | grep -q '^OK'; then printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+  else err "Introuvable"; fi
+  pause
+}
+
+renew(){
+  header; pick || return
+  ask " Ajouter (jours) : " d
+  out=$(nvpanel-ppp renew "$PROTO" "$PICK" "$d")
+  echo "$out" | grep -q '^OK' && ok "Prolongé jusqu'au $(echo "$out"|awk '{print $3}')" || err "Échec"
+  pause
+}
+
+del(){
+  header; pick || return
+  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$PICK"; ask "" c
+  confirm "$c" || { pause; return; }
+  out=$(nvpanel-ppp del "$PROTO" "$PICK")
+  echo "$out" | grep -q '^OK' && ok "$PICK supprimé" || err "Échec"
+  pause
+}
+
+cleanup_menu(){
+  while true; do
+    header; center " 🧹  NETTOYAGE $LABEL " "${BOLD}${WHT}"; line
+    local tot exp today c r out
+    today=$(date +%F)
+    tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
+    exp=$(awk -v d="$today" '/^### /{ if ($4!="" && $4<d) c++ } END{print c+0}' "$DB" 2>/dev/null)
+    printf "   ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
+    entry "1" "🧽" "Supprimer les comptes expirés"
+    entry "2" "💥" "Supprimer TOUS les comptes"
+    entry "0" "⬅️" "Retour"
+    line
+    ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    case "$c" in
+      1) [ "$exp" -eq 0 ] && { warn "Aucun compte expiré."; pause; continue; }
+         printf "   ${YLW}Supprimer les %s compte(s) expiré(s) ? (o/n) : ${NC}" "$exp"; ask "" r
+         confirm "$r" || continue
+         out=$(nvpanel-ppp purge "$PROTO" expired)
+         ok "$(echo "$out"|awk '{print $2+0}') compte(s) supprimé(s)."; pause ;;
+      2) [ "$tot" -eq 0 ] && { warn "Aucun compte."; pause; continue; }
+         warn "Cela supprimera les $tot comptes $LABEL. Action irréversible."
+         printf "   ${RED}➤ Confirmer la suppression totale ? (o/n) : ${NC}"; ask "" r
+         confirm "$r" || { warn "Annulé."; pause; continue; }
+         out=$(nvpanel-ppp purge "$PROTO" all)
+         ok "$(echo "$out"|awk '{print $2+0}') compte(s) supprimé(s)."; pause ;;
+      0) break ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
+ensure || true
+while true; do
+  header
+  entry "1" "➕" "Créer un compte"
+  entry "2" "📋" "Lister les comptes"
+  entry "3" "🔍" "Revoir un compte"
+  entry "4" "♻️" "Prolonger un compte"
+  entry "5" "🗑️" "Supprimer un compte"
+  entry "6" "🧹" "Nettoyage (expirés / tout supprimer)"
+  entry "7" "⬇️" "Installer / réinstaller $LABEL"
+  entry "0" "⬅️" "Retour"
+  line
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
+  case "$o" in
+    1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) del ;;
+    6) cleanup_menu ;; 7) "$INST" ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+  esac
+done

@@ -10,12 +10,12 @@ BKDIR=/root
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
 
 set_domain(){
-  header; read -rp " Domaine (ex. vpn.mondomaine.com) : " d
+  header; ask " Domaine (ex. vpn.mondomaine.com) : " d
   [ -n "$d" ] && { echo "$d" > /etc/nvpanel/domain; ok "Domaine : $d"; } || warn "Inchangé"; pause
 }
 change_port(){
   header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null || echo '?')"
-  read -rp " Nouveau port Dropbear : " p
+  ask " Nouveau port Dropbear : " p
   [[ "$p" =~ ^[0-9]+$ ]] || { err "Port invalide"; pause; return; }
   if grep -q DROPBEAR_PORT /etc/default/dropbear 2>/dev/null; then
     sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$p/" /etc/default/dropbear
@@ -36,14 +36,14 @@ restore_data(){
   header; local files=("$BKDIR"/rhaff-backup-*.tar.gz)
   [ -e "${files[0]}" ] || { err "Aucune sauvegarde trouvée"; pause; return; }
   local i=1; for f in "${files[@]}"; do printf "  ${GRN}%s)${NC} %s\n" "$i" "$(basename "$f")"; i=$((i+1)); done
-  read -rp " Numéro à restaurer : " n
+  ask " Numéro à restaurer : " n
   local sel="${files[$((n-1))]}"
   [ -f "$sel" ] || { err "Choix invalide"; pause; return; }
   tar xzf "$sel" -C / && ok "Restauré depuis $(basename "$sel")"; pause
 }
 ram_usage(){ header; free -h; echo; command -v vnstat >/dev/null && vnstat --oneline 2>/dev/null; pause; }
 swap_ram(){
-  header; read -rp " Taille du swap en Mo (ex. 1024) : " s
+  header; ask " Taille du swap en Mo (ex. 1024) : " s
   [[ "$s" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
   fallocate -l "${s}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$s" 2>/dev/null
   chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile 2>/dev/null
@@ -163,11 +163,11 @@ change_banner(){
   entry "1" "➕" "Ajouter / modifier la bannière"
   entry "2" "🗑️" "Supprimer la bannière"
   entry "0" "⬅️" "Retour"
-  line; read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" b
+  line; ask "$(printf " ${WHT}➤ Choix :${NC} ")" b
   case "$b" in
     1)
       echo; printf "   ${GRY}Saisis ton texte (une ligne). Entrée pour valider.${NC}\n"
-      read -rp "   Texte : " txt
+      ask "   Texte : " txt
       [ -z "$txt" ] && { warn "Inchangé"; pause; return; }
       printf '%s\n' "$txt" > /etc/banner
       chmod 644 /etc/banner
@@ -247,7 +247,7 @@ script_info(){
 }
 reset_traffic(){
   header; warn "Cela remet à zéro les compteurs de consommation (hier/aujourd'hui/mois)."
-  read -rp " Confirmer ? (o/n) : " r; confirm "$r" || { pause; return; }
+  ask " Confirmer ? (o/n) : " r; confirm "$r" || { pause; return; }
   # compteur de trafic CLIENTS
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso reset >/dev/null 2>&1
   local ifc; ifc=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
@@ -279,7 +279,7 @@ while true; do
   entry "15" "🧹" "Réinitialiser la consommation"
   entry "0"  "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}➤ Choix [0-15] :${NC} ")" o
+  ask "$(printf " ${WHT}➤ Choix [0-15] :${NC} ")" o
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
     3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;

@@ -48,6 +48,14 @@ systemctl daemon-reload >/dev/null 2>&1
 iptables -F NVPANEL_QUOTA 2>/dev/null
 iptables -D OUTPUT -j NVPANEL_QUOTA 2>/dev/null
 iptables -X NVPANEL_QUOTA 2>/dev/null
+# protocoles PPP (L2TP / PPTP / SSTP)
+for u in xl2tpd pptpd nvpanel-sstp strongswan-starter strongswan; do
+  systemctl disable --now "$u" >/dev/null 2>&1
+done
+rm -f /etc/systemd/system/nvpanel-sstp.service
+rm -f /etc/ppp/options.xl2tpd /etc/ppp/options.sstpd /etc/ppp/pptpd-options
+rm -rf /etc/nvpanel/sstp /etc/nvpanel/l2tp_psk /etc/nvpanel/sstp_port
+sed -i '/[[:space:]]\(l2tpd\|pptpd\|sstpd\)[[:space:]]/d' /etc/ppp/chap-secrets 2>/dev/null
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso remove 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
 rm -f /etc/nginx/conf.d/nvpanel.conf /etc/nginx/conf.d/rhaff-http.conf \
@@ -66,7 +74,7 @@ rm -rf /usr/local/etc/xray
 
 # 7) Binaires, raccourcis et données
 rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-xray,menu-ss,menu-wg,menu-bot,menu-settings,menu-uninstall,uninstall,update} \
-      /usr/local/bin/{nvpanel-cli,nvpanel-bot,nvpanel-limit,nvpanel-quota,nvpanel-clean,nvpanel-conso} \
+      /usr/local/bin/{nvpanel-cli,nvpanel-bot,nvpanel-limit,nvpanel-quota,nvpanel-clean,nvpanel-conso,nvpanel-ppp} \
       /usr/local/bin/{install-slowdns,install-udp,install-xray,install-tls}
 rm -rf /etc/nvpanel
 

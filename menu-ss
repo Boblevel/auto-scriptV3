@@ -12,15 +12,15 @@ header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_da
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
     warn "Xray n'est pas installé."
-    read -rp " L'installer maintenant ? (o/n) : " r
+    ask " L'installer maintenant ? (o/n) : " r
     confirm "$r" && install-xray || return 1
   fi
 }
 
 add_client() {
-  header; read -rp " Nom du client : " name
+  header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
-  read -rp " Durée (jours) : " days
+  ask " Durée (jours) : " days
   out=$(nvpanel-cli xadd ss "$name" "$days")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
@@ -31,7 +31,7 @@ add_client() {
 }
 list_clients() {
   header; printf " ${GRY}%-20s %s${NC}\n" "Nom" "Expire"; line
-  nvpanel-cli xlist ss | while IFS='|' read -r n e; do printf " %-20s %s\n" "$n" "$e"; done
+  nvpanel-cli xlist ss | while IFS='|' ask "" n e; do printf " %-20s %s\n" "$n" "$e"; done
   pause
 }
 pick_client() {
@@ -43,7 +43,7 @@ pick_client() {
   for row in "${_cl[@]}"; do
     printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "${row##*|}"; i=$((i+1))
   done
-  echo; read -rp "   ➤ Numéro (0 = annuler) : " n
+  echo; ask "   ➤ Numéro (0 = annuler) : " n
   [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
   [ "$n" -eq 0 ] && return 1
   [ "$n" -ge 1 ] && [ "$n" -le "${#_cl[@]}" ] || { err "Hors liste"; pause; return 1; }
@@ -51,11 +51,11 @@ pick_client() {
 }
 del_client() {
   header; pick_client || return; name="$PICK"
-  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$name"; read -r c; confirm "$c" || { pause; return; }
+  printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$name"; ask "" c; confirm "$c" || { pause; return; }
   r=$(nvpanel-cli xdel ss "$name"); echo "$r"|grep -q '^OK' && ok "$name supprimé" || err "$r"; pause
 }
 renew_client() {
-  header; pick_client || return; name="$PICK"; read -rp " Ajouter (jours) : " days
+  header; pick_client || return; name="$PICK"; ask " Ajouter (jours) : " days
   r=$(nvpanel-cli xrenew ss "$name" "$days")
   echo "$r"|grep -q '^OK' && ok "Prolongé" || err "$r"; pause
 }
@@ -79,17 +79,17 @@ cleanup_menu() {
     entry "2" "💥" "Supprimer TOUS les clients"
     entry "0" "⬅️" "Retour"
     line
-    read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) [ "$exp" -eq 0 ] && { warn "Aucun client expiré."; pause; continue; }
-         printf "   ${YLW}Supprimer les %s client(s) expiré(s) ? (o/n) : ${NC}" "$exp"; read -r r
+         printf "   ${YLW}Supprimer les %s client(s) expiré(s) ? (o/n) : ${NC}" "$exp"; ask "" r
          confirm "$r" || continue
          out=$(nvpanel-cli purge ss expired)
          ok "$(echo "$out" | awk '{print $2+0}') client(s) supprimé(s)."; pause ;;
       2) [ "$tot" -eq 0 ] && { warn "Aucun client."; pause; continue; }
          warn "Cela supprimera les $tot clients Shadowsocks. Action irréversible."
-         printf "   ${RED}Tape SUPPRIMER (en majuscules) pour confirmer : ${NC}"; read -r r
-         [ "$r" = "SUPPRIMER" ] || { warn "Annulé."; pause; continue; }
+         printf "   ${RED}➤ Confirmer la suppression totale ? (o/n) : ${NC}"; ask "" r
+         confirm "$r" || { warn "Annulé."; pause; continue; }
          out=$(nvpanel-cli purge ss all)
          ok "$(echo "$out" | awk '{print $2+0}') client(s) supprimé(s)."; pause ;;
       0) break ;;
@@ -106,6 +106,6 @@ while true; do
   entry "5" "🗑️" "Supprimer un client"; entry "6" "🧹" "Nettoyage (expirés / tout)"
   entry "0" "⬅️" "Retour"
   line
-  read -rp "$(printf " ${WHT}Choix :${NC} ")" o
+  ask "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
 done
