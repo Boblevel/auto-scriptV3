@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  nvpanel · nettoyage automatique des comptes expirés
-#  (appelé par cron) — SSH + clients Xray/Shadowsocks
+#  (appelé par cron) — SSH + Xray/Shadowsocks + L2TP/PPTP/SSTP
 # ============================================================
 now=$(date +%s)
 XCONF=/usr/local/etc/xray/config.json
@@ -40,6 +40,14 @@ purge_proto /etc/nvpanel/db/vmess       vmess-in
 purge_proto /etc/nvpanel/db/vless       vless-in
 purge_proto /etc/nvpanel/db/trojan      trojan-in
 purge_proto /etc/nvpanel/db/shadowsocks ss-in
+
+# --- Comptes L2TP / PPTP / SSTP -----------------------------
+# Sans cela, un compte expiré continuerait de fonctionner :
+# le fichier chap-secrets ne gère aucune date d'expiration.
+for p in l2tp pptp sstp; do
+  [ -f "/etc/nvpanel/db/$p" ] || continue
+  [ -x /usr/local/bin/nvpanel-ppp ] && /usr/local/bin/nvpanel-ppp purge "$p" expired >/dev/null 2>&1
+done
 
 [ "$changed" = "1" ] && systemctl restart xray >/dev/null 2>&1
 exit 0

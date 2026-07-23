@@ -150,6 +150,10 @@ proto_dash() {
       online=$(ss -tnH state established "( sport = :$p )" 2>/dev/null | wc -l) ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;
+    ppp:*)
+      local pp="${mode#ppp:}"
+      online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}
+      blocked=$(awk -v d="$(date +%F)" '/^### /{ if ($4!="" && $4<d) c++ } END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null) ;;
   esac
   IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
   printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"

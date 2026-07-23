@@ -131,6 +131,10 @@ $ltls
 🔗 Link No TLS :
 $lnotls
 ===================================
+⚠️ IMPORTE le lien dans l'application (bouton Import / Coller).
+   Si tu saisis les champs à la main, le nom du compte
+   « $(_remark "${proto^^}" "$name") » ne s'affichera pas.
+===================================
 EOF
 }
 

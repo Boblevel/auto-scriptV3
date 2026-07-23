@@ -205,7 +205,7 @@ while true; do
   header
   entry "1" "➕" "Ajouter un client"
   entry "2" "📋" "Lister les clients"
-  entry "3" "🔍" "Revoir un client (config + QR)"
+  entry "3" "🔍" "Revoir un client (config)"
   entry "4" "♻️" "Prolonger un client"
   entry "5" "🗑️" "Supprimer un client"
   entry "6" "🧹" "Nettoyage (expirés / tout supprimer)"

@@ -90,14 +90,17 @@ case "$cmd" in
     done
     echo "OK $n" ;;
   online)
-    # nombre de sessions PPP actives pour ce protocole
+    # Sessions PPP réellement connectées. On identifie chaque session par le
+    # fichier d'options que pppd utilise : cela évite de compter le service
+    # lui-même (xl2tpd, pptpd...) comme un client connecté.
     proto=$(_clean "$1")
     case "$proto" in
-      l2tp) pgrep -fc 'xl2tpd|pppd.*l2tp' 2>/dev/null || echo 0 ;;
-      pptp) pgrep -fc 'pptpd.*pppd|pppd.*pptp' 2>/dev/null || echo 0 ;;
-      sstp) pgrep -fc 'sstpd.*pppd|pppd.*sstp' 2>/dev/null || echo 0 ;;
-      *) echo 0 ;;
-    esac ;;
+      l2tp) n=$(pgrep -fc 'pppd.*options\.xl2tpd' 2>/dev/null) ;;
+      pptp) n=$(pgrep -fc 'pppd.*pptpd-options' 2>/dev/null) ;;
+      sstp) n=$(pgrep -fc 'pppd.*options\.sstpd' 2>/dev/null) ;;
+      *)    n=0 ;;
+    esac
+    printf '%s\n' "${n:-0}" ;;
   *) echo "usage: nvpanel-ppp add|list|info|del|renew|purge|online <proto> ..."; exit 1 ;;
 esac
 exit 0

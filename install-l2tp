@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  RHAFF SERVICE · installation L2TP/IPsec   (install-l2tp [auto])
+#  RHAFF SERVICE · installation L2TP   (install-l2tp [auto])
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
@@ -9,8 +9,9 @@ NET=10.10.10
 IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 
-[ "$AUTO" = 1 ] || { banner; center " INSTALLATION L2TP / IPsec " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation (1 à 3 minutes)…\n"; }
+[ "$AUTO" = 1 ] || { banner; center " INSTALLATION L2TP " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation (1 à 3 minutes)…\n"; }
 export DEBIAN_FRONTEND=noninteractive
+apt-get update -y >/dev/null 2>&1
 apt-get install -y strongswan xl2tpd ppp iptables >/dev/null 2>&1
 
 # clé partagée : générée une seule fois, puis conservée
@@ -100,21 +101,21 @@ systemctl is-active --quiet xl2tpd && OK=$((OK+1))
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
 
 if [ "$AUTO" = 1 ]; then
-  [ "$OK" -ge 2 ] && printf "  ${GRN}✔${NC} L2TP/IPsec prêt.\n" || printf "  ${YLW}!${NC} L2TP non activé.\n"
+  [ "$OK" -ge 2 ] && printf "  ${GRN}✔${NC} L2TP prêt.\n" || printf "  ${YLW}!${NC} L2TP non activé.\n"
   exit 0
 fi
 clear; banner
 if [ "$OK" -ge 2 ]; then
-  center " ✔  L2TP / IPsec OPÉRATIONNEL " "${BOLD}${GRN}"; line
-  ok "IPsec et xl2tpd actifs."
+  center " ✔  L2TP OPÉRATIONNEL " "${BOLD}${GRN}"; line
+  ok "Services L2TP actifs."
   printf "\n   ${WHT}Réglages à donner au client :${NC}\n"
   printf "   ${GRY}• Serveur       :${NC} ${WHT}%s${NC}\n" "${IP:-ton IP}"
-  printf "   ${GRY}• Type          :${NC} L2TP/IPsec avec clé pré-partagée\n"
+  printf "   ${GRY}• Type          :${NC} L2TP avec clé pré-partagée (PSK)\n"
   printf "   ${GRY}• Clé partagée  :${NC} ${WHT}%s${NC}\n" "$PSK"
   printf "   ${GRY}• Identifiants  :${NC} ceux du compte créé dans le menu L2TP\n"
 else
   center " ✘  L2TP NON ACTIVÉ " "${BOLD}${RED}"; line
-  err "IPsec ou xl2tpd n'a pas démarré."
-  printf "   ${GRY}Certains VPS (conteneurs OpenVZ/LXC) ne supportent pas IPsec.${NC}\n"
+  err "Le service L2TP n'a pas démarré."
+  printf "   ${GRY}Certains VPS en conteneur (OpenVZ/LXC) ne supportent pas ce protocole.${NC}\n"
 fi
 pause

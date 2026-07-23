@@ -9,7 +9,7 @@ ui_enter; trap ui_leave EXIT
 
 PROTO="$1"
 case "$PROTO" in
-  l2tp) LABEL="L2TP / IPsec"; INST=install-l2tp; SVC="xl2tpd" ;;
+  l2tp) LABEL="L2TP"; INST=install-l2tp; SVC="xl2tpd" ;;
   pptp) LABEL="PPTP";         INST=install-pptp; SVC="pptpd" ;;
   sstp) LABEL="SSTP";         INST=install-sstp; SVC="nvpanel-sstp" ;;
   *) err "Protocole inconnu"; exit 1 ;;
@@ -18,12 +18,7 @@ DB=/etc/nvpanel/db/$PROTO
 mkdir -p /etc/nvpanel/db; touch "$DB"
 
 dash(){
-  local tot on blk today
-  today=$(date +%F)
-  tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
-  blk=$(awk -v d="$today" '/^### /{ if ($4!="" && $4<d) c++ } END{print c+0}' "$DB" 2>/dev/null)
-  on=$(nvpanel-ppp online "$PROTO" 2>/dev/null); on=${on:-0}
-  printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Expirés:${NC} ${RED}%s${NC}\n" "$tot" "$on" "$blk"
+  proto_dash "$PROTO" "ppp:$PROTO"
   if systemctl is-active --quiet "$SVC" 2>/dev/null; then
     printf " ${GRY}⚙️  Service :${NC} ${GRN}actif${NC}\n"
   else
