@@ -88,8 +88,8 @@ cat <<'DONE'
 DONE
 printf "${NC}\n"
 if [ -n "$FAILED" ]; then
-  printf "   ${RED}⚠ Fichiers manquants sur GitHub :${NC}${YLW}%s${NC}\n" "$FAILED"
-  printf "   ${GRY}Uploade-les à la racine du dépôt, puis relance : update${NC}\n\n"
+  printf "   ${YLW}⚠ Mise à jour partielle : certains composants n'ont pas pu être${NC}\n"
+  printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion du serveur et relance : update${NC}\n\n"
 fi
 # Le bot n'est jamais redémarré automatiquement : on le signale clairement.
 if systemctl is-active --quiet nvpanel-bot 2>/dev/null; then

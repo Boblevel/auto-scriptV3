@@ -30,7 +30,7 @@ dl(){ curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null; }
 chmod +x "$DIR/dns-server" 2>/dev/null
 
 if [ ! -s "$DIR/dns-server" ] || [ ! -s "$DIR/server.key" ]; then
-  if [ "$AUTO" = 0 ]; then err "Binaire ou clés SlowDNS introuvables sur GitHub (dns-server / server.key)."; pause; fi
+  if [ "$AUTO" = 0 ]; then err "Le module SlowDNS n'a pas pu être installé. Réessaie, ou contacte le support : $CONTACT"; pause; fi
   exit 1
 fi
 

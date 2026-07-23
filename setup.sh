@@ -157,6 +157,6 @@ printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\
 printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
 printf "   ${GRY}🌐 IP : %s   ·   📨 Support : %s${NC}\n\n" "$IPADDR" "$CONTACT"
 if [ -n "$FAILED" ]; then
-  printf "   ${RED}⚠ Fichiers manquants :${NC}${YLW}%s${NC}\n" "$FAILED"
-  printf "   ${GRY}Uploade-les sur GitHub puis tape : update${NC}\n\n"
+  printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"
+  printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion puis tape : update${NC}\n\n"
 fi
