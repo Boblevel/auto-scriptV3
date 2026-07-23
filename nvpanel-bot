@@ -73,6 +73,35 @@ def sys_info():
         pass
     return up, ram, load
 
+def sh(cmd):
+    try:
+        return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=15).stdout.strip()
+    except Exception:
+        return ""
+
+def _int(s):
+    try:
+        return int(str(s).strip())
+    except Exception:
+        return 0
+
+def ssh_online():
+    return _int(sh("ps -eo user,comm | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | "
+                   "while read u; do i=$(id -u \"$u\" 2>/dev/null); "
+                   "[ -n \"$i\" ] && [ \"$i\" -ge 1000 ] && [ \"$i\" -lt 60000 ] && echo 1; done | wc -l"))
+
+def ssh_blocked():
+    return _int(sh("c=0; while read _ u _; do [ -z \"$u\" ] && continue; "
+                   "s=$(passwd -S \"$u\" 2>/dev/null | awk '{print $2}'); "
+                   "[ \"$s\" = L ] && c=$((c+1)); done < /etc/nvpanel/db/ssh 2>/dev/null; echo $c"))
+
+def port_online(p):
+    return _int(sh("ss -tnH state established '( sport = :%s )' 2>/dev/null | wc -l" % p))
+
+def wg_online():
+    return _int(sh("wg show wg0 latest-handshakes 2>/dev/null | "
+                   "awk -v n=$(date +%s) '$2>0 && (n-$2)<180{c++} END{print c+0}'"))
+
 def main_kb():
     return {"inline_keyboard": [
         [{"text": "\U0001F4CA Surveillance", "callback_data": "monitor"}, {"text": "\U0001F5A5 Serveur", "callback_data": "status"}],
@@ -90,6 +119,9 @@ def proto_kb(p):
         [{"text": "\U0001F5D1 Supprimer", "callback_data": "pd:%s" % p}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
     ]}
 
+def cancel_kb():
+    return {"inline_keyboard": [[{"text": "\u274C Annuler / Retour", "callback_data": "cancel"}]]}
+
 def send(chat, text, kb=None):
     mk = kb if kb is not None else main_kb()
     api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
@@ -104,6 +136,10 @@ def do_monitor(chat):
     ssh = count_db("ssh"); vm = count_db("vmess"); vl = count_db("vless")
     tr = count_db("trojan"); ss = count_db("shadowsocks"); wg = count_db("wireguard")
     total = ssh + vm + vl + tr + ss + wg
+    on_ssh = ssh_online(); bl_ssh = ssh_blocked()
+    on_vm = port_online(8080); on_vl = port_online(8081)
+    on_tr = port_online(8082); on_ss = port_online(8388); on_wg = wg_online()
+    total_on = on_ssh + on_vm + on_vl + on_tr + on_ss + on_wg
     txt = (
         "<b>\U0001F4CA SURVEILLANCE \u2014 RHAFF SERVICE</b>\n\n"
         "\U0001F5A5 <b>Serveur</b>\n"
@@ -112,14 +148,16 @@ def do_monitor(chat):
         "Uptime  : %s\n"
         "RAM     : %s\n"
         "Charge  : %s</code>\n\n"
-        "\U0001F465 <b>Comptes (%d au total)</b>\n"
-        "<code>SSH         : %d\n"
-        "Vmess       : %d\n"
-        "Vless       : %d\n"
-        "Trojan      : %d\n"
-        "Shadowsocks : %d\n"
-        "WireGuard   : %d</code>"
-    ) % (ip, dom, up, ram, load, total, ssh, vm, vl, tr, ss, wg)
+        "\U0001F465 <b>Total : %d comptes \u00b7 %d en ligne \u00b7 %d bloqu\u00e9</b>\n\n"
+        "<code>Protocole    Comptes  Ligne\n"
+        "SSH          %-7d  %d  (bloq: %d)\n"
+        "Vmess        %-7d  %d\n"
+        "Vless        %-7d  %d\n"
+        "Trojan       %-7d  %d\n"
+        "Shadowsocks  %-7d  %d\n"
+        "WireGuard    %-7d  %d</code>"
+    ) % (ip, dom, up, ram, load, total, total_on, bl_ssh,
+         ssh, on_ssh, bl_ssh, vm, on_vm, vl, on_vl, tr, on_tr, ss, on_ss, wg, on_wg)
     send(chat, txt)
 
 def do_list(chat):
@@ -145,7 +183,11 @@ def do_xlist(chat, proto):
 
 def handle_callback(chat, data):
     if data == "menu":
-        show_menu(chat); return
+        STATE.pop(chat, None); show_menu(chat); return
+    if data == "cancel":
+        STATE.pop(chat, None)
+        send(chat, "\u274C Action annul\u00e9e.")
+        return
     if data == "monitor":
         do_monitor(chat); return
     if data == "list":
@@ -158,20 +200,20 @@ def handle_callback(chat, data):
         do_xlist(chat, data[3:]); return
     if data.startswith("pa:"):
         STATE[chat] = {"action": "xadd", "proto": data[3:]}
-        send(chat, "Envoie : <code>nom jours</code>  (ex : <code>client1 30</code>)", kb=None); return
+        send(chat, "Envoie : <code>nom jours</code>  (ex : <code>client1 30</code>)", kb=cancel_kb()); return
     if data.startswith("pd:"):
         STATE[chat] = {"action": "xdel", "proto": data[3:]}
-        send(chat, "Envoie le <b>nom</b> du client a supprimer :", kb=None); return
+        send(chat, "Envoie le <b>nom</b> du client \u00e0 supprimer :", kb=cancel_kb()); return
     prompts = {
         "create": "Nouveau compte SSH.\n<code>user motdepasse jours [limite] [quotaGo]</code>\nex : <code>client1 pass123 30 2 50</code>",
-        "delete": "Nom du compte SSH a supprimer :",
-        "lock":   "Nom du compte a verrouiller :",
-        "unlock": "Nom du compte a deverrouiller :",
+        "delete": "Nom du compte SSH \u00e0 supprimer :",
+        "lock":   "Nom du compte \u00e0 verrouiller :",
+        "unlock": "Nom du compte \u00e0 d\u00e9verrouiller :",
         "renew":  "Envoie : <code>user jours</code>",
     }
     if data in prompts:
         STATE[chat] = {"action": data}
-        send(chat, prompts[data], kb=None)
+        send(chat, prompts[data], kb=cancel_kb())
 
 def handle_text(chat, text):
     st = STATE.pop(chat, None)

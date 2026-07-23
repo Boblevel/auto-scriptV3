@@ -4,6 +4,7 @@
 #  Interface — logique dans nvpanel-cli (proto = ss)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_dash shadowsocks port:8388; line; }

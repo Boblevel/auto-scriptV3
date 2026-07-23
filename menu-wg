@@ -3,6 +3,7 @@
 #  RHAFF SERVICE · WireGuard   (commande : menu-wg)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 WGCONF=/etc/wireguard/wg0.conf
@@ -14,7 +15,7 @@ PORT=51820
 mkdir -p /etc/nvpanel/db "$NDIR"
 touch "$DB"
 
-header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; }
+header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; proto_dash wireguard wg; line; }
 
 install_wg() {
   header; printf "${CYN}➜${NC} Installation de WireGuard…\n"
@@ -141,17 +142,33 @@ renew_peer() {
 }
 
 ensure_wg || exit 0
+view_peer() {
+  header; pick_peer || return; name="$PICK"
+  local conf="$NDIR/$name.conf"
+  clear; header
+  if [ -s "$conf" ]; then
+    ok "Configuration de $name"
+    echo; printf "${GRY}--- Config client (.conf) ---${NC}\n"
+    printf "${WHT}"; cat "$conf"; printf "${NC}\n"
+    command -v qrencode >/dev/null 2>&1 && { printf "\n${GRY}--- QR code ---${NC}\n"; qrencode -t ANSIUTF8 < "$conf"; }
+  else
+    err "Fichier de configuration introuvable pour $name."
+  fi
+  pause
+}
+
 while true; do
   header
   entry "1" "➕" "Ajouter un client"
   entry "2" "📋" "Lister les clients"
-  entry "3" "♻️" "Prolonger un client"
-  entry "4" "🗑️" "Supprimer un client"
+  entry "3" "🔍" "Revoir un client (config + QR)"
+  entry "4" "♻️" "Prolonger un client"
+  entry "5" "🗑️" "Supprimer un client"
   entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" o
   case "$o" in
-    1) add_peer ;; 2) list_peers ;; 3) renew_peer ;;
-    4) del_peer ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+    1) add_peer ;; 2) list_peers ;; 3) view_peer ;;
+    4) renew_peer ;; 5) del_peer ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

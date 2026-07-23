@@ -4,6 +4,7 @@
 #  commande : menu-ssh
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 DB=/etc/nvpanel/db/ssh

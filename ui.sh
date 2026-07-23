@@ -38,7 +38,7 @@ entry() {
 }
 
 banner() {
-  printf '\033[3J\033[H\033[2J'
+  printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
   center "gestion premium des accès & tunnels" "${GRY}"
@@ -147,6 +147,12 @@ warn() { printf "${YLW}!${NC} %s\n" "$1"; }
 pause(){ echo; read -rp "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _; }
 # réponse affirmative, insensible à la casse (o/O/oui/OUI/y/yes)
 confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }
+
+# Écran alterné : le panel s'affiche dans un buffer séparé (comme htop/vim),
+# ce qui empêche TOUTE accumulation de bannières dans l'historique du terminal.
+# En sortie, l'écran d'origine est restauré proprement.
+ui_enter(){ printf '\033[?1049h\033[H'; }
+ui_leave(){ printf '\033[?1049l'; }
 
 # animation de chargement stylée avec pourcentage (comme l'installation)
 loading(){

@@ -3,6 +3,7 @@
 #  nvpanel · configuration du bot Telegram   (commande : menu-bot)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 CONF=/etc/nvpanel/bot.conf
 
@@ -15,7 +16,7 @@ if [ -f "$CONF" ]; then
 fi
 
 entry "1" "🔧" "Configurer le bot"
-entry "2" "▶️" "Démarrer le bot"
+entry "2" "🔁" "Redémarrer le bot"
 entry "3" "⏹️" "Arrêter le bot"
 entry "4" "📄" "Voir le statut / logs"
 entry "0" "⬅️" "Retour"
@@ -56,7 +57,7 @@ EOF
       err "Le bot n'a pas démarré. Vérifie avec : journalctl -u nvpanel-bot -n 20"
     fi
     pause ;;
-  2) systemctl start nvpanel-bot && ok "Démarré"; pause ;;
+  2) systemctl restart nvpanel-bot >/dev/null 2>&1 && ok "Bot redémarré" || err "Échec du redémarrage"; pause ;;
   3) systemctl stop nvpanel-bot && ok "Arrêté"; pause ;;
   4) systemctl status nvpanel-bot --no-pager -l | head -n 15; pause ;;
   0) exit 0 ;;

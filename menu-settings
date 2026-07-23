@@ -3,6 +3,7 @@
 #  RHAFF SERVICE · Paramètres système   (commande : menu-settings)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 BKDIR=/root
 
@@ -60,36 +61,41 @@ enable_bbr(){
 }
 speedtest(){
   header; center " 📶  TEST DE VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
-  # Latence
   local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
   printf "   ${GRY}📡 Latence  :${NC} ${WHT}%s ms${NC}\n" "${lat:-n/a}"
-  printf "   ${GRY}⬇  Téléchargement en cours…${NC}\n\n"
+  printf "   ${GRY}⬇  Mesure du débit en cours…${NC}\n\n"
 
-  local tmp t0 pid last=0 now inst f bar mo
-  tmp=$(mktemp); t0=$(date +%s.%N)
-  curl -s --max-time 30 -o "$tmp" "https://speed.cloudflare.com/__down?bytes=100000000" &
-  pid=$!
+  local tmp; tmp=$(mktemp)
+  # essaie plusieurs sources fiables jusqu'à en trouver une qui répond
+  (
+    for url in \
+      "https://speed.cloudflare.com/__down?bytes=50000000" \
+      "http://speedtest.tele2.net/50MB.zip" \
+      "https://proof.ovh.net/files/100Mb.dat" \
+      "http://ipv4.download.thinkbroadband.com/50MB.zip" \
+      "https://fra.download.datapacket.com/50mb.bin"; do
+      sp=$(curl -o /dev/null -sL --max-time 20 -w '%{speed_download}' "$url" 2>/dev/null)
+      if awk -v b="${sp:-0}" 'BEGIN{exit !(b>50000)}'; then echo "$sp" > "$tmp"; break; fi
+    done
+  ) &
+  local pid=$! i=0
+  local frames=( "▰▱▱▱▱▱" "▱▰▱▱▱▱" "▱▱▰▱▱▱" "▱▱▱▰▱▱" "▱▱▱▱▰▱" "▱▱▱▱▱▰" "▱▱▱▱▰▱" "▱▱▱▰▱▱" "▱▱▰▱▱▱" "▱▰▱▱▱▱" )
   while kill -0 "$pid" 2>/dev/null; do
-    sleep 0.5
-    now=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
-    inst=$(awk -v a="$last" -v b="$now" 'BEGIN{printf "%.1f", ((b-a)*8)/(0.5*1000000)}'); last=$now
-    f=$(awk -v m="$inst" 'BEGIN{x=int(m/6); if(x>20)x=20; if(x<0)x=0; print x}')
-    mo=$(awk -v b="$now" 'BEGIN{printf "%.0f", b/1048576}')
-    bar=$(printf '▰%.0s' $(seq 1 "$f" 2>/dev/null))$(printf '▱%.0s' $(seq 1 $((20-f)) 2>/dev/null))
-    printf "\r   ${CYN}[${GRN}%s${CYN}]${NC} ${WHT}%7s Mbps${NC}  ${GRY}%s Mo${NC}   " "$bar" "$inst" "$mo"
+    printf "\r   ${CYN}[${GRN}%s${CYN}]${NC}  ${GRY}analyse du réseau…${NC}   " "${frames[i % ${#frames[@]}]}"
+    i=$((i+1)); sleep 0.12
   done
   wait "$pid" 2>/dev/null
-  local t1 total avg; t1=$(date +%s.%N)
-  total=$(stat -c%s "$tmp" 2>/dev/null || echo 0); rm -f "$tmp"
-  printf "\r%-64s\r" " "
-  if [ "$total" -gt 200000 ] 2>/dev/null; then
-    avg=$(awk -v b="$total" -v s="$t0" -v e="$t1" 'BEGIN{d=e-s; if(d<=0)d=1; printf "%.1f",(b*8)/(d*1000000)}')
-    mo=$(awk -v b="$total" 'BEGIN{printf "%.0f", b/1048576}')
+  local sp; sp=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
+  printf "\r%-52s\r" " "
+  if [ -n "$sp" ] && awk -v b="$sp" 'BEGIN{exit !(b>50000)}'; then
+    local mbps mbs; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
+    mbs=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b/1048576}')
     line
-    printf "   ${GRN}✔ Débit moyen :${NC} ${WHT}%s Mbps${NC}\n" "$avg"
-    printf "   ${GRY}   Données     : %s Mo   ·   Latence : %s ms${NC}\n" "$mo" "${lat:-n/a}"
+    printf "   ${GRN}✔ Débit descendant :${NC} ${WHT}%s Mbps${NC}  ${GRY}(%s Mo/s)${NC}\n" "$mbps" "$mbs"
+    printf "   ${GRY}   Latence : %s ms${NC}\n" "${lat:-n/a}"
   else
-    err "Test impossible — le réseau du serveur bloque peut-être les téléchargements."
+    err "Aucune source de test n'a répondu (réseau du serveur restreint ou pare-feu)."
+    printf "   ${GRY}Latence mesurée : %s ms${NC}\n" "${lat:-n/a}"
   fi
   pause
 }
