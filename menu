@@ -11,13 +11,20 @@ run() {
 
 services_status() {
   banner; center " 📊  STATUT DES SERVICES " "${BOLD}${WHT}"; line
-  for s in ssh dropbear xray nginx wg-quick@wg0 nvpanel-slowdns nvpanel-badvpn-7300 nvpanel-limit nvpanel-bot; do
+  local s name
+  for pair in \
+    "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray (Vmess/Vless/Trojan/SS)" \
+    "nginx:Nginx (façade TLS/WS)" "nvpanel-slowdns:SlowDNS" "nvpanel-badvpn-7300:UDP (badvpn)" \
+    "wg-quick@wg0:WireGuard" "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
+    s="${pair%%:*}"; name="${pair##*:}"
     if systemctl is-active --quiet "$s" 2>/dev/null; then
-      printf "  ${GRN}●${NC} %s\n" "$s"
+      printf "   ${GRN}● actif  ${NC} %s\n" "$name"
     else
-      printf "  ${RED}○${NC} %s\n" "$s"
+      printf "   ${RED}○ arrêté ${NC} ${GRY}%s${NC}\n" "$name"
     fi
   done
+  echo
+  printf "   ${GRY}● = en cours   ○ = arrêté / non installé${NC}\n"
   pause
 }
 

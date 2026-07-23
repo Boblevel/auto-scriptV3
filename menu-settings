@@ -59,48 +59,90 @@ enable_bbr(){
   pause
 }
 speedtest(){
-  header; center " 📶  VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
-  printf "   ${GRY}Mesure du débit descendant en cours…${NC}\n\n"
-  local tmp; tmp=$(mktemp)
-  ( curl -o /dev/null -s --max-time 30 -w '%{speed_download}' \
-      "https://speed.cloudflare.com/__down?bytes=50000000" > "$tmp" 2>/dev/null ) &
-  local pid=$! i=0 spin='|/-\'
+  header; center " 📶  TEST DE VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
+  # Latence
+  local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
+  printf "   ${GRY}📡 Latence  :${NC} ${WHT}%s ms${NC}\n" "${lat:-n/a}"
+  printf "   ${GRY}⬇  Téléchargement en cours…${NC}\n\n"
+
+  local tmp t0 pid last=0 now inst f bar mo
+  tmp=$(mktemp); t0=$(date +%s.%N)
+  curl -s --max-time 30 -o "$tmp" "https://speed.cloudflare.com/__down?bytes=100000000" &
+  pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    printf "\r   ${MAG}%s${NC}  téléchargement du test…   " "${spin:i++%4:1}"
-    sleep 0.15
+    sleep 0.5
+    now=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
+    inst=$(awk -v a="$last" -v b="$now" 'BEGIN{printf "%.1f", ((b-a)*8)/(0.5*1000000)}'); last=$now
+    f=$(awk -v m="$inst" 'BEGIN{x=int(m/6); if(x>20)x=20; if(x<0)x=0; print x}')
+    mo=$(awk -v b="$now" 'BEGIN{printf "%.0f", b/1048576}')
+    bar=$(printf '▰%.0s' $(seq 1 "$f" 2>/dev/null))$(printf '▱%.0s' $(seq 1 $((20-f)) 2>/dev/null))
+    printf "\r   ${CYN}[${GRN}%s${CYN}]${NC} ${WHT}%7s Mbps${NC}  ${GRY}%s Mo${NC}   " "$bar" "$inst" "$mo"
   done
   wait "$pid" 2>/dev/null
-  local sp; sp=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
-  printf "\r%-45s\r" " "
-  if [ -n "$sp" ] && awk -v b="$sp" 'BEGIN{exit !(b>0)}'; then
-    local mbps; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
-    ok "Débit descendant : ${GRN}${mbps} Mbps${NC}"
+  local t1 total avg; t1=$(date +%s.%N)
+  total=$(stat -c%s "$tmp" 2>/dev/null || echo 0); rm -f "$tmp"
+  printf "\r%-64s\r" " "
+  if [ "$total" -gt 200000 ] 2>/dev/null; then
+    avg=$(awk -v b="$total" -v s="$t0" -v e="$t1" 'BEGIN{d=e-s; if(d<=0)d=1; printf "%.1f",(b*8)/(d*1000000)}')
+    mo=$(awk -v b="$total" 'BEGIN{printf "%.0f", b/1048576}')
+    line
+    printf "   ${GRN}✔ Débit moyen :${NC} ${WHT}%s Mbps${NC}\n" "$avg"
+    printf "   ${GRY}   Données     : %s Mo   ·   Latence : %s ms${NC}\n" "$mo" "${lat:-n/a}"
   else
-    printf "   ${CYN}➜${NC} Nouvel essai (autre source)…\n"
-    local t0 t1 bytes
-    t0=$(date +%s.%N)
-    bytes=$(curl -o /dev/null -s --max-time 25 -w '%{size_download}' "http://speedtest.tele2.net/50MB.zip" 2>/dev/null)
-    t1=$(date +%s.%N)
-    if [ -n "$bytes" ] && awk -v b="$bytes" 'BEGIN{exit !(b>0)}'; then
-      local mbps; mbps=$(awk -v b="$bytes" -v s="$t0" -v e="$t1" 'BEGIN{d=e-s; if(d<=0)d=1; printf "%.1f",(b*8)/(d*1000000)}')
-      ok "Débit descendant : ${GRN}${mbps} Mbps${NC}"
-    else
-      err "Test impossible — le réseau du serveur bloque peut-être les téléchargements."
-    fi
+    err "Test impossible — le réseau du serveur bloque peut-être les téléchargements."
   fi
   pause
 }
 restart_services(){
-  header; printf "${CYN}➜${NC} Redémarrage des services…\n"
-  for s in ssh dropbear xray nginx wg-quick@wg0 nvpanel-slowdns nvpanel-limit nvpanel-bot; do
-    systemctl restart "$s" >/dev/null 2>&1 && printf "  ${GRN}✔${NC} %s\n" "$s"
+  header; center " ♻️  REDÉMARRAGE DES SERVICES " "${BOLD}${WHT}"; line
+  local s name pair done=0
+  for pair in \
+    "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray" "nginx:Nginx (TLS/WS)" \
+    "nvpanel-slowdns:SlowDNS" "nvpanel-badvpn-7100:UDP 7100" "nvpanel-badvpn-7200:UDP 7200" \
+    "nvpanel-badvpn-7300:UDP 7300" "nvpanel-udp-custom:UDP custom" "wg-quick@wg0:WireGuard" \
+    "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
+    s="${pair%%:*}"; name="${pair##*:}"
+    if systemctl is-active --quiet "$s" 2>/dev/null || systemctl is-enabled --quiet "$s" 2>/dev/null; then
+      if systemctl restart "$s" >/dev/null 2>&1; then
+        printf "   ${GRN}✔ redémarré  ${NC} %s\n" "$name"; done=$((done+1))
+      else
+        printf "   ${RED}✘ échec      ${NC} %s\n" "$name"
+      fi
+    else
+      printf "   ${GRY}– non installé${NC} ${GRY}%s${NC}\n" "$name"
+    fi
   done
+  echo; ok "$done service(s) redémarré(s)."
   pause
 }
 renew_cert(){
-  header; printf "${CYN}➜${NC} Renouvellement des certificats…\n"
-  certbot renew --quiet 2>/dev/null && systemctl reload nginx 2>/dev/null
-  ok "Renouvellement terminé (voir certbot pour le détail)."; pause
+  header; center " 📜  RENOUVELLEMENT DES CERTIFICATS " "${BOLD}${WHT}"; line
+  if ! command -v certbot >/dev/null 2>&1; then
+    err "certbot n'est pas installé (le TLS n'a jamais été activé)."; pause; return
+  fi
+  if ! ls /etc/letsencrypt/live/*/fullchain.pem >/dev/null 2>&1; then
+    warn "Aucun certificat Let's Encrypt trouvé."
+    printf "   ${GRY}Active d'abord le TLS (Paramètres → option 2) pour obtenir un certificat.${NC}\n"
+    pause; return
+  fi
+  printf "${CYN}➜${NC} Vérification et renouvellement…\n\n"
+  local out; out=$(certbot renew --non-interactive 2>&1)
+  systemctl reload nginx >/dev/null 2>&1
+  if echo "$out" | grep -qiE 'not yet due|no renewals|no certificates'; then
+    ok "Certificat encore valide — aucun renouvellement nécessaire."
+  elif echo "$out" | grep -qiE 'renewed|congratulations|successfully'; then
+    ok "Certificat renouvelé avec succès."
+  else
+    ok "Vérification terminée."
+  fi
+  local c d exp
+  for c in /etc/letsencrypt/live/*/cert.pem; do
+    [ -f "$c" ] || continue
+    d=$(basename "$(dirname "$c")")
+    exp=$(openssl x509 -enddate -noout -in "$c" 2>/dev/null | cut -d= -f2)
+    printf "   ${GRY}%s${NC} → expire le ${WHT}%s${NC}\n" "$d" "$exp"
+  done
+  pause
 }
 change_banner(){
   header

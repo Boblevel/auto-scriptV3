@@ -27,6 +27,9 @@ SSKEY=$(cat "$NDIR/ss_key" 2>/dev/null)
 [ -z "$SSKEY" ] && { SSKEY=$(openssl rand -base64 32); echo "$SSKEY" > "$NDIR/ss_key"; }
 
 # config de base : 4 entrées, chacune identifiée par un "tag"
+# IMPORTANT : on ne l'écrit QUE si elle n'existe pas encore, pour ne JAMAIS
+# écraser les comptes (clients) déjà créés lors d'une régénération (ex. activation TLS).
+if [ ! -s "$XDIR/config.json" ]; then
 cat > "$XDIR/config.json" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -59,6 +62,7 @@ cat > "$XDIR/config.json" <<EOF
   "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
+fi
 
 systemctl enable xray >/dev/null 2>&1
 systemctl restart xray

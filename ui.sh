@@ -148,16 +148,17 @@ pause(){ echo; read -rp "$(printf "${GRY}Entrée pour revenir au menu…${NC}")"
 # réponse affirmative, insensible à la casse (o/O/oui/OUI/y/yes)
 confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }
 
-# petite animation de chargement stylée (barre qui se remplit)
+# animation de chargement stylée avec pourcentage (comme l'installation)
 loading(){
-  local msg="${1:-Chargement}" w=24 i
+  local msg="${1:-Chargement}" w=28 i p
   printf '\033[3J\033[H\033[2J'; echo; echo
-  for ((i=1;i<=w;i++)); do
+  for ((p=0;p<=100;p+=4)); do
+    i=$(( p*w/100 ))
     printf "\r   ${MAG}%s${NC}  ${CYN}[" "$msg"
-    printf "${GRN}%s${NC}" "$(printf '▰%.0s' $(seq 1 "$i"))"
-    printf "${GRY}%s${NC}" "$(printf '▱%.0s' $(seq 1 $((w-i))))"
-    printf "${CYN}]${NC}"
-    sleep 0.02
+    printf "${GRN}%s${NC}" "$(printf '▰%.0s' $(seq 1 "$i" 2>/dev/null))"
+    printf "${GRY}%s${NC}" "$(printf '▱%.0s' $(seq 1 $((w-i)) 2>/dev/null))"
+    printf "${CYN}]${NC} ${WHT}%3d%%${NC}" "$p"
+    sleep 0.012
   done
   printf "\n"
 }

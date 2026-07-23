@@ -38,14 +38,50 @@ def cli(*args):
     except Exception as e:
         return "ERR %s" % e
 
+def read_file(p):
+    try:
+        with open(p) as f: return f.read().strip()
+    except Exception:
+        return ""
+
+def count_db(name):
+    try:
+        with open("/etc/nvpanel/db/" + name) as f:
+            return sum(1 for l in f if l.startswith("### "))
+    except Exception:
+        return 0
+
+def sys_info():
+    up = ram = load = "?"
+    try:
+        s = float(read_file("/proc/uptime").split()[0])
+        d = int(s // 86400); h = int((s % 86400) // 3600); m = int((s % 3600) // 60)
+        up = ("%dj %dh %dm" % (d, h, m)) if d else ("%dh %dm" % (h, m))
+    except Exception:
+        pass
+    try:
+        mem = {}
+        for ln in open("/proc/meminfo"):
+            k, v = ln.split(":"); mem[k] = int(v.strip().split()[0])
+        tot = mem["MemTotal"] // 1024; avail = mem.get("MemAvailable", 0) // 1024
+        ram = "%d/%d Mo" % (tot - avail, tot)
+    except Exception:
+        pass
+    try:
+        load = " ".join(read_file("/proc/loadavg").split()[:3])
+    except Exception:
+        pass
+    return up, ram, load
+
 def main_kb():
     return {"inline_keyboard": [
-        [{"text": "\u2795 SSH", "callback_data": "create"}, {"text": "\U0001F4CB SSH", "callback_data": "list"}],
-        [{"text": "\U0001F512 Verrouiller", "callback_data": "lock"}, {"text": "\U0001F513 Deverrouiller", "callback_data": "unlock"}],
+        [{"text": "\U0001F4CA Surveillance", "callback_data": "monitor"}, {"text": "\U0001F5A5 Serveur", "callback_data": "status"}],
+        [{"text": "\u2795 Cr\u00e9er SSH", "callback_data": "create"}, {"text": "\U0001F4CB Comptes SSH", "callback_data": "list"}],
         [{"text": "\u267B\uFE0F Prolonger", "callback_data": "renew"}, {"text": "\U0001F5D1 Suppr SSH", "callback_data": "delete"}],
+        [{"text": "\U0001F512 Verrouiller", "callback_data": "lock"}, {"text": "\U0001F513 D\u00e9verrouiller", "callback_data": "unlock"}],
         [{"text": "\U0001F7E3 Vmess", "callback_data": "p:vmess"}, {"text": "\U0001F535 Vless", "callback_data": "p:vless"}],
         [{"text": "\U0001F7E0 Trojan", "callback_data": "p:trojan"}, {"text": "\U0001F7E2 Shadowsocks", "callback_data": "p:ss"}],
-        [{"text": "\U0001F4CA Serveur", "callback_data": "status"}, {"text": "\U0001F504 Menu", "callback_data": "menu"}],
+        [{"text": "\U0001F504 Rafra\u00eechir le menu", "callback_data": "menu"}],
     ]}
 
 def proto_kb(p):
@@ -59,7 +95,32 @@ def send(chat, text, kb=None):
     api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
 
 def show_menu(chat):
-    send(chat, "<b>NVPANEL</b> - gestion des comptes\nChoisis une action :")
+    send(chat, "<b>\U0001F6F0 RHAFF SERVICE</b>\n<i>Gestion premium des acc\u00e8s &amp; tunnels</i>\n\nChoisis une action :")
+
+def do_monitor(chat):
+    up, ram, load = sys_info()
+    ip = read_file("/etc/nvpanel/ip") or "?"
+    dom = read_file("/etc/nvpanel/domain") or "non configur\u00e9"
+    ssh = count_db("ssh"); vm = count_db("vmess"); vl = count_db("vless")
+    tr = count_db("trojan"); ss = count_db("shadowsocks"); wg = count_db("wireguard")
+    total = ssh + vm + vl + tr + ss + wg
+    txt = (
+        "<b>\U0001F4CA SURVEILLANCE \u2014 RHAFF SERVICE</b>\n\n"
+        "\U0001F5A5 <b>Serveur</b>\n"
+        "<code>IP      : %s\n"
+        "Domaine : %s\n"
+        "Uptime  : %s\n"
+        "RAM     : %s\n"
+        "Charge  : %s</code>\n\n"
+        "\U0001F465 <b>Comptes (%d au total)</b>\n"
+        "<code>SSH         : %d\n"
+        "Vmess       : %d\n"
+        "Vless       : %d\n"
+        "Trojan      : %d\n"
+        "Shadowsocks : %d\n"
+        "WireGuard   : %d</code>"
+    ) % (ip, dom, up, ram, load, total, ssh, vm, vl, tr, ss, wg)
+    send(chat, txt)
 
 def do_list(chat):
     out = cli("list")
@@ -85,10 +146,12 @@ def do_xlist(chat, proto):
 def handle_callback(chat, data):
     if data == "menu":
         show_menu(chat); return
+    if data == "monitor":
+        do_monitor(chat); return
     if data == "list":
         do_list(chat); return
     if data == "status":
-        send(chat, "<b>Serveur</b>\n<code>%s</code>" % cli("status")); return
+        send(chat, "<b>\U0001F5A5 \u00c9tat du serveur</b>\n<code>%s</code>" % cli("status")); return
     if data.startswith("p:"):
         p = data[2:]; send(chat, "<b>%s</b> - choisis :" % p.upper(), kb=proto_kb(p)); return
     if data.startswith("pl:"):
