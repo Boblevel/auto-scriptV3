@@ -85,6 +85,7 @@ for pair in \
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
+  "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
   "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls" \
   "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp" \
   "update.sh:/usr/local/bin/update"; do
@@ -109,9 +110,15 @@ EOF
 systemctl daemon-reload 2>/dev/null
 systemctl enable --now nvpanel-limit >/dev/null 2>&1
 ( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null
+# compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
 
 fill 80 "Préparation des protocoles…"
 [ -x /usr/local/bin/install-xray ] && /usr/local/bin/install-xray auto >/dev/null 2>&1
+# UDP (UDPGW) activé d'office : le paquet badvpn vient des dépôts officiels,
+# donc cela fonctionne sur tous les VPS Debian/Ubuntu sans binaire à héberger.
+[ -x /usr/local/bin/install-udp ] && /usr/local/bin/install-udp auto >/dev/null 2>&1
 
 fill 90 "Préparation de SlowDNS…"
 mkdir -p /etc/nvpanel/slowdns

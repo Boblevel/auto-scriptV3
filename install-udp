@@ -1,59 +1,150 @@
 #!/bin/bash
 # ============================================================
-#  nvpanel · installation UDP  (badvpn-udpgw + udp-custom)
-#  commande : install-udp
+#  RHAFF SERVICE · installation UDP   (commande : install-udp)
+#
+#  badvpn-udpgw (UDPGW 7100/7200/7300) : installé depuis les
+#  dépôts officiels de la distribution → fonctionne sur TOUS
+#  les VPS (Debian/Ubuntu, x86_64 et ARM), sans binaire à héberger.
+#  Si le paquet n'existe pas, on retombe sur le binaire du dépôt.
+#
+#  udp-custom : optionnel, nécessite un binaire hébergé.
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
-# Binaires à héberger toi-même (comme pour SlowDNS)
-BADVPN_URL="${BADVPN_URL:-https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/badvpn-udpgw}"
-UDPCUSTOM_URL="${UDPCUSTOM_URL:-https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main/udp-custom}"
+REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 DIR=/etc/nvpanel/udp
 mkdir -p "$DIR"
+AUTO=0; [ "$1" = "auto" ] && AUTO=1
 
-banner; center " INSTALLATION UDP " "${BOLD}${WHT}"; line
+case "$(uname -m)" in
+  aarch64|arm64) UDPC_SRC="udp-custom-arm64" ;;
+  *)             UDPC_SRC="udp-custom" ;;
+esac
 
-# --- badvpn-udpgw (ports 7100/7200/7300) --------------------
-printf "${CYN}➜${NC} badvpn-udpgw…\n"
-curl -sL "$BADVPN_URL" -o "$DIR/badvpn-udpgw" && chmod +x "$DIR/badvpn-udpgw"
+# vrai binaire exécutable ? (évite qu'une page « 404 » soit prise pour un binaire)
+is_bin(){
+  [ -s "$1" ] || return 1
+  local sig; sig=$(head -c 4 "$1" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+  [ "$sig" = "7f454c46" ]
+}
 
-for p in 7100 7200 7300; do
-cat > /etc/systemd/system/nvpanel-badvpn-$p.service <<EOF
+[ "$AUTO" = 1 ] || { banner; center " INSTALLATION UDP " "${BOLD}${WHT}"; line; }
+
+# ---------- 1) badvpn-udpgw ---------------------------------
+[ "$AUTO" = 1 ] || printf "${CYN}➜${NC} Installation de badvpn-udpgw…\n"
+BADVPN=""
+export DEBIAN_FRONTEND=noninteractive
+
+# a) paquet officiel de la distribution (méthode universelle)
+if ! command -v badvpn-udpgw >/dev/null 2>&1; then
+  apt-get update -y >/dev/null 2>&1
+  apt-get install -y badvpn >/dev/null 2>&1
+fi
+command -v badvpn-udpgw >/dev/null 2>&1 && BADVPN=$(command -v badvpn-udpgw)
+
+# b) secours : binaire hébergé dans le dépôt
+if [ -z "$BADVPN" ]; then
+  case "$(uname -m)" in
+    aarch64|arm64) BSRC="badvpn-udpgw-arm64" ;;
+    *)             BSRC="badvpn-udpgw" ;;
+  esac
+  curl -fsSL "$REPO_RAW/$BSRC" -o "$DIR/badvpn-udpgw" 2>/dev/null
+  if is_bin "$DIR/badvpn-udpgw"; then
+    chmod +x "$DIR/badvpn-udpgw"; BADVPN="$DIR/badvpn-udpgw"
+  else
+    rm -f "$DIR/badvpn-udpgw"
+  fi
+fi
+
+UDPGW_OK=0
+if [ -n "$BADVPN" ]; then
+  for p in 7100 7200 7300; do
+    cat > /etc/systemd/system/nvpanel-badvpn-$p.service <<EOF
 [Unit]
-Description=nvpanel badvpn-udpgw $p
+Description=RHAFF SERVICE badvpn-udpgw $p
 After=network.target
 [Service]
-ExecStart=$DIR/badvpn-udpgw --listen-addr 127.0.0.1:$p --max-clients 500 --max-connections-for-client 10
+ExecStart=$BADVPN --listen-addr 127.0.0.1:$p --max-clients 500 --max-connections-for-client 10 --udp-mtu 8192
 Restart=always
+RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl enable --now nvpanel-badvpn-$p >/dev/null 2>&1
-done
+  done
+  systemctl daemon-reload >/dev/null 2>&1
+  for p in 7100 7200 7300; do
+    systemctl enable --now nvpanel-badvpn-$p >/dev/null 2>&1
+  done
+  sleep 1
+  for p in 7100 7200 7300; do
+    systemctl is-active --quiet nvpanel-badvpn-$p && UDPGW_OK=$((UDPGW_OK+1))
+  done
+fi
 
-# --- udp-custom (optionnel, port 5300 UDP par défaut) -------
-printf "${CYN}➜${NC} udp-custom…\n"
-if curl -sL "$UDPCUSTOM_URL" -o "$DIR/udp-custom" && [ -s "$DIR/udp-custom" ]; then
+# ---------- 2) udp-custom (optionnel) -----------------------
+[ "$AUTO" = 1 ] || printf "${CYN}➜${NC} udp-custom (optionnel)…\n"
+UDPC_OK=0
+curl -fsSL "$REPO_RAW/$UDPC_SRC" -o "$DIR/udp-custom" 2>/dev/null
+if is_bin "$DIR/udp-custom"; then
   chmod +x "$DIR/udp-custom"
   [ -f "$DIR/config.json" ] || cat > "$DIR/config.json" <<'EOF'
 { "listen": ":36712", "stream_buffer": 33554432, "receive_buffer": 83886080, "auth": { "mode": "passwords" } }
 EOF
-cat > /etc/systemd/system/nvpanel-udp-custom.service <<EOF
+  cat > /etc/systemd/system/nvpanel-udp-custom.service <<EOF
 [Unit]
-Description=nvpanel udp-custom
+Description=RHAFF SERVICE udp-custom
 After=network.target
 [Service]
 WorkingDirectory=$DIR
 ExecStart=$DIR/udp-custom server -exclude 1-21,23-52,54-79
 Restart=always
+RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+  systemctl daemon-reload >/dev/null 2>&1
   systemctl enable --now nvpanel-udp-custom >/dev/null 2>&1
+  sleep 1
+  systemctl is-active --quiet nvpanel-udp-custom && UDPC_OK=1
+else
+  rm -f "$DIR/udp-custom"
 fi
 
-clear; banner; center " UDP PRÊT " "${BOLD}${GRN}"; line
-ok "badvpn-udpgw : 7100 / 7200 / 7300"
-ok "udp-custom   : 36712 (si binaire fourni)"
+# ---------- 3) pare-feu : autoriser l'UDP -------------------
+if command -v iptables >/dev/null 2>&1; then
+  iptables -C INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+fi
+command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && \
+  ufw allow 36712/udp >/dev/null 2>&1
+
+# le compteur de conso doit connaître les nouveaux ports
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+
+# ---------- 4) rapport honnête ------------------------------
+if [ "$AUTO" = 1 ]; then
+  [ "$UDPGW_OK" -gt 0 ] && printf "  ${GRN}✔${NC} UDP (UDPGW) actif.\n" || printf "  ${YLW}!${NC} UDP non activé.\n"
+  exit 0
+fi
+
+clear; banner
+if [ "$UDPGW_OK" -gt 0 ]; then
+  center " ✔  UDP PRÊT " "${BOLD}${GRN}"; line
+  ok "UDPGW actif sur les ports 7100 / 7200 / 7300 ($UDPGW_OK/3)"
+  printf "   ${GRY}Dans l'appli client, mets « UDPGW » ou « Payload UDP » sur${NC} ${WHT}7300${NC}${GRY}.${NC}\n"
+else
+  center " ✘  UDP NON ACTIVÉ " "${BOLD}${RED}"; line
+  err "badvpn-udpgw n'a pas pu être installé."
+  printf "   ${GRY}Le paquet « badvpn » est introuvable dans les dépôts de ce VPS.${NC}\n"
+  printf "   ${GRY}Solution : dépose un binaire « badvpn-udpgw » (et « badvpn-udpgw-arm64 »${NC}\n"
+  printf "   ${GRY}pour les VPS ARM) à la racine de ton dépôt GitHub, puis relance.${NC}\n"
+fi
+echo
+if [ "$UDPC_OK" = 1 ]; then
+  ok "udp-custom actif (port 36712)"
+else
+  printf "   ${GRY}udp-custom : non installé (binaire « %s » absent du dépôt).${NC}\n" "$UDPC_SRC"
+  printf "   ${GRY}Ce module est facultatif : l'UDP fonctionne sans lui.${NC}\n"
+fi
 pause

@@ -66,15 +66,18 @@ speedtest(){
   printf "   ${GRY}⬇  Mesure du débit en cours…${NC}\n\n"
 
   local tmp; tmp=$(mktemp)
-  # essaie plusieurs sources fiables jusqu'à en trouver une qui répond
+  # Mesure sur une DURÉE FIXE (8 s) : bien plus fiable qu'un petit fichier,
+  # qui se termine en une fraction de seconde et gonfle le résultat.
   (
     for url in \
-      "https://speed.cloudflare.com/__down?bytes=50000000" \
-      "http://speedtest.tele2.net/50MB.zip" \
-      "https://proof.ovh.net/files/100Mb.dat" \
-      "http://ipv4.download.thinkbroadband.com/50MB.zip" \
-      "https://fra.download.datapacket.com/50mb.bin"; do
-      sp=$(curl -o /dev/null -sL --max-time 20 -w '%{speed_download}' "$url" 2>/dev/null)
+      "https://speed.cloudflare.com/__down?bytes=1000000000" \
+      "https://proof.ovh.net/files/1Gb.dat" \
+      "http://speedtest.tele2.net/1GB.zip" \
+      "http://ipv4.download.thinkbroadband.com/512MB.zip" \
+      "https://fra.download.datapacket.com/100mb.bin"; do
+      res=$(curl -o /dev/null -sL --max-time 8 -w '%{size_download} %{time_total}' "$url" 2>/dev/null)
+      dl=${res%% *}; tt=${res##* }
+      sp=$(awk -v b="${dl:-0}" -v t="${tt:-0}" 'BEGIN{ if(t<=0){print 0} else {printf "%d", b/t} }')
       if awk -v b="${sp:-0}" 'BEGIN{exit !(b>50000)}'; then echo "$sp" > "$tmp"; break; fi
     done
   ) &
@@ -92,7 +95,10 @@ speedtest(){
     mbs=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b/1048576}')
     line
     printf "   ${GRN}✔ Débit descendant :${NC} ${WHT}%s Mbps${NC}  ${GRY}(%s Mo/s)${NC}\n" "$mbps" "$mbs"
-    printf "   ${GRY}   Latence : %s ms${NC}\n" "${lat:-n/a}"
+    printf "   ${GRY}   Latence : %s ms${NC}\n\n" "${lat:-n/a}"
+    printf "   ${GRY}Il s'agit de la vitesse de TON SERVEUR vers Internet,${NC}\n"
+    printf "   ${GRY}pas de la vitesse ressentie par un client dans le tunnel${NC}\n"
+    printf "   ${GRY}(elle dépend aussi de sa connexion mobile).${NC}\n"
   else
     err "Aucune source de test n'a répondu (réseau du serveur restreint ou pare-feu)."
     printf "   ${GRY}Latence mesurée : %s ms${NC}\n" "${lat:-n/a}"
@@ -164,29 +170,64 @@ change_banner(){
       read -rp "   Texte : " txt
       [ -z "$txt" ] && { warn "Inchangé"; pause; return; }
       printf '%s\n' "$txt" > /etc/banner
-      # --- OpenSSH ---
+      chmod 644 /etc/banner
+      cp -f /etc/banner /etc/issue.net 2>/dev/null
+
+      # --- OpenSSH : affiche la bannière AVANT l'authentification ---
       sed -i '/^[#[:space:]]*Banner[[:space:]]/d' /etc/ssh/sshd_config
       echo 'Banner /etc/banner' >> /etc/ssh/sshd_config
-      systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
-      # --- Dropbear ---
-      if [ -f /etc/default/dropbear ]; then
-        sed -i '/DROPBEAR_BANNER/d' /etc/default/dropbear
+      systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1
+
+      # --- Dropbear : option -b (utilisé par les tunnels WebSocket/SSL) ---
+      touch /etc/default/dropbear 2>/dev/null
+      sed -i '/DROPBEAR_BANNER/d' /etc/default/dropbear
+      if grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear; then
         grep -q -- '-b /etc/banner' /etc/default/dropbear || \
-          sed -i 's|^DROPBEAR_EXTRA_ARGS=.*|DROPBEAR_EXTRA_ARGS="-b /etc/banner"|' /etc/default/dropbear
-        grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS="-b /etc/banner"' >> /etc/default/dropbear
+          sed -i 's|^DROPBEAR_EXTRA_ARGS="\?\(.*\)"\?$|DROPBEAR_EXTRA_ARGS="\1 -b /etc/banner"|' /etc/default/dropbear
+      else
+        echo 'DROPBEAR_EXTRA_ARGS="-b /etc/banner"' >> /etc/default/dropbear
       fi
-      systemctl restart dropbear 2>/dev/null
-      ok "Bannière ajoutée (sshd + dropbear)."
-      printf "   ${GRY}Note : elle s'affiche si l'appli client montre la bannière SSH.${NC}\n"
+      systemctl restart dropbear >/dev/null 2>&1
+      sleep 1
+
+      # Certains systèmes ignorent /etc/default/dropbear : filet de sécurité
+      # → on force l'option directement dans le service systemd.
+      if systemctl is-active --quiet dropbear 2>/dev/null && ! pgrep -af dropbear 2>/dev/null | grep -q -- '-b /etc/banner'; then
+        local ex
+        ex=$(systemctl show -p ExecStart --value dropbear 2>/dev/null | sed -n 's/.*argv\[\]=\([^;]*\).*/\1/p' | head -1)
+        if [ -n "$ex" ]; then
+          mkdir -p /etc/systemd/system/dropbear.service.d
+          printf '[Service]\nExecStart=\nExecStart=%s -b /etc/banner\n' "$ex" \
+            > /etc/systemd/system/dropbear.service.d/nvpanel-banner.conf
+          systemctl daemon-reload >/dev/null 2>&1
+          systemctl restart dropbear >/dev/null 2>&1
+          sleep 1
+        fi
+      fi
+
+      ok "Bannière enregistrée."
+      echo
+      if pgrep -af dropbear 2>/dev/null | grep -q -- '-b /etc/banner'; then
+        printf "   ${GRN}✔${NC} Dropbear  ${GRY}(SSH WebSocket / SSL)${NC}\n"
+      else
+        printf "   ${YLW}–${NC} Dropbear  ${GRY}(non actif sur ce serveur)${NC}\n"
+      fi
+      grep -q '^Banner /etc/banner' /etc/ssh/sshd_config && \
+        printf "   ${GRN}✔${NC} OpenSSH   ${GRY}(SSH direct, SlowDNS, UDP)${NC}\n"
+      echo
+      printf "   ${GRY}La bannière fait partie du protocole SSH : elle apparaît sur${NC}\n"
+      printf "   ${GRY}tous les accès SSH (direct, SlowDNS, UDP, WebSocket/SSL).${NC}\n"
+      printf "   ${GRY}Vmess, Vless, Trojan, Shadowsocks et WireGuard ne sont pas${NC}\n"
+      printf "   ${GRY}du SSH : ces protocoles n'ont pas de bannière.${NC}\n"
       pause ;;
     2)
       rm -f /etc/banner
       sed -i '/^[#[:space:]]*Banner[[:space:]]/d' /etc/ssh/sshd_config
-      systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
-      if [ -f /etc/default/dropbear ]; then
-        sed -i 's|-b /etc/banner||g' /etc/default/dropbear
-      fi
-      systemctl restart dropbear 2>/dev/null
+      systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1
+      [ -f /etc/default/dropbear ] && sed -i 's| *-b /etc/banner||g' /etc/default/dropbear
+      rm -f /etc/systemd/system/dropbear.service.d/nvpanel-banner.conf
+      systemctl daemon-reload >/dev/null 2>&1
+      systemctl restart dropbear >/dev/null 2>&1
       ok "Bannière supprimée."; pause ;;
     *) return ;;
   esac
@@ -206,6 +247,8 @@ script_info(){
 reset_traffic(){
   header; warn "Cela remet à zéro les compteurs de consommation (hier/aujourd'hui/mois)."
   read -rp " Confirmer ? (o/n) : " r; confirm "$r" || { pause; return; }
+  # compteur de trafic CLIENTS
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso reset >/dev/null 2>&1
   local ifc; ifc=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
   if [ -n "$ifc" ] && command -v vnstat >/dev/null 2>&1; then
     vnstat --remove -i "$ifc" --force >/dev/null 2>&1

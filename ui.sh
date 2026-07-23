@@ -37,7 +37,18 @@ entry() {
   fi
 }
 
+# Vide les touches restées en attente dans le terminal.
+# Sans ça, les touches tapées pendant une opération longue (mise à jour,
+# test de vitesse...) ressortent ensuite dans la saisie sous forme de ^[[A.
+flush_in(){
+  [ -t 0 ] || return 0
+  local _j
+  while IFS= read -r -s -t 0.01 -n 512 _j 2>/dev/null; do :; done
+  return 0
+}
+
 banner() {
+  flush_in
   printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
@@ -52,7 +63,14 @@ _hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go T
 
 # renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
 _conso_raw(){
-  local ifc j jm t y m
+  local ifc j jm t y m r
+  # Compteur CLIENTS : ne compte que le trafic des tunnels (comptes vendus).
+  # Le trafic propre du serveur (apt, mise à jour du script, test de vitesse,
+  # certificats...) est volontairement exclu.
+  if [ -x /usr/local/bin/nvpanel-conso ]; then
+    r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
+    case "$r" in *'|'*'|'*) echo "$r"; return ;; esac
+  fi
   ifc=$(_iface)
   command -v vnstat >/dev/null 2>&1 || { echo "0|0|0"; return; }
   j=$(vnstat -i "$ifc" --json d 2>/dev/null)

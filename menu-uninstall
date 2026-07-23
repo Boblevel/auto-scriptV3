@@ -42,12 +42,13 @@ done
 systemctl daemon-reload >/dev/null 2>&1
 
 # 3) Tâches cron
-( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|rhaff-backup' ) | crontab - 2>/dev/null
+( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|nvpanel-conso|rhaff-backup' ) | crontab - 2>/dev/null
 
 # 4) Règles iptables + configs nginx
 iptables -F NVPANEL_QUOTA 2>/dev/null
 iptables -D OUTPUT -j NVPANEL_QUOTA 2>/dev/null
 iptables -X NVPANEL_QUOTA 2>/dev/null
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso remove 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
 rm -f /etc/nginx/conf.d/nvpanel.conf /etc/nginx/conf.d/rhaff-http.conf \
       /etc/nginx/conf.d/rhaff-tls.conf /etc/nginx/conf.d/rhaff.conf /etc/nginx/nvpanel-ws.conf
@@ -65,7 +66,7 @@ rm -rf /usr/local/etc/xray
 
 # 7) Binaires, raccourcis et données
 rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-xray,menu-ss,menu-wg,menu-bot,menu-settings,menu-uninstall,uninstall,update} \
-      /usr/local/bin/{nvpanel-cli,nvpanel-bot,nvpanel-limit,nvpanel-quota,nvpanel-clean} \
+      /usr/local/bin/{nvpanel-cli,nvpanel-bot,nvpanel-limit,nvpanel-quota,nvpanel-clean,nvpanel-conso} \
       /usr/local/bin/{install-slowdns,install-udp,install-xray,install-tls}
 rm -rf /etc/nvpanel
 

@@ -1,0 +1,113 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · compteur de consommation CLIENTS
+#  Ne compte QUE le trafic des tunnels (comptes vendus).
+#  Le trafic propre du serveur (apt, mises à jour du script,
+#  test de vitesse, certbot...) n'est PAS compté.
+#
+#  Principe : deux chaînes iptables qui ne comptent que
+#    - INPUT  : paquets ARRIVANT sur un port de service
+#    - OUTPUT : paquets PARTANT d'un port de service
+#  Un téléchargement fait par le serveur est OUTPUT vers le
+#  port 443 DISTANT (et non depuis notre port 443) : ignoré.
+# ============================================================
+DBDIR=/etc/nvpanel/db
+DB="$DBDIR/conso"
+CIN=NVCONSO_IN
+COUT=NVCONSO_OUT
+mkdir -p "$DBDIR"; touch "$DB"
+
+_ports_tcp(){
+  local p="22,80,8388" x d
+  x=$(cat /etc/nvpanel/xport 2>/dev/null); [ -n "$x" ] && p="$p,$x" || p="$p,443"
+  d=$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null)
+  [ -n "$d" ] && p="$p,$d"
+  # ports Dropbear additionnels éventuels
+  for extra in 109 143; do
+    grep -q "\b$extra\b" /etc/default/dropbear 2>/dev/null && p="$p,$extra"
+  done
+  # dédoublonnage (multiport refuse les doublons et est limité à 15 ports)
+  printf '%s' "$p" | tr ',' '\n' | awk 'NF && !seen[$0]++' | head -15 | paste -sd, -
+}
+
+_ports_udp(){
+  local p="53,5300,7100,7200,7300,51820" u
+  u=$(grep -oP '"listen"\s*:\s*":?\K[0-9]+' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
+  [ -n "$u" ] && p="$p,$u"
+  printf '%s' "$p" | tr ',' '\n' | awk 'NF && !seen[$0]++' | head -15 | paste -sd, -
+}
+
+setup_chains(){
+  command -v iptables >/dev/null 2>&1 || return 1
+  local TCP UDP
+  TCP=$(_ports_tcp); UDP=$(_ports_udp)
+  iptables -N "$CIN"  2>/dev/null; iptables -F "$CIN"  2>/dev/null
+  iptables -N "$COUT" 2>/dev/null; iptables -F "$COUT" 2>/dev/null
+  iptables -C INPUT  -j "$CIN"  2>/dev/null || iptables -I INPUT  -j "$CIN"  2>/dev/null
+  iptables -C OUTPUT -j "$COUT" 2>/dev/null || iptables -I OUTPUT -j "$COUT" 2>/dev/null
+  # entrant : destination = un de nos ports de service
+  iptables -A "$CIN"  -p tcp -m multiport --dports "$TCP" -j RETURN 2>/dev/null
+  iptables -A "$CIN"  -p udp -m multiport --dports "$UDP" -j RETURN 2>/dev/null
+  # sortant : source = un de nos ports de service (réponses aux clients)
+  iptables -A "$COUT" -p tcp -m multiport --sports "$TCP" -j RETURN 2>/dev/null
+  iptables -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
+  return 0
+}
+
+_chain_bytes(){ # somme des octets d'une chaîne
+  iptables -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
+}
+
+poll(){
+  command -v iptables >/dev/null 2>&1 || return 0
+  iptables -nL "$CIN" >/dev/null 2>&1 || setup_chains
+  local b=0 i o today cur
+  i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT")
+  b=$(( i + o ))
+  iptables -Z "$CIN"  2>/dev/null
+  iptables -Z "$COUT" 2>/dev/null
+  [ "$b" -le 0 ] && return 0
+  today=$(date +%F)
+  cur=$(awk -F'|' -v d="$today" '$1==d{print $2}' "$DB" 2>/dev/null | tail -1)
+  cur=${cur:-0}
+  sed -i "/^$today|/d" "$DB" 2>/dev/null
+  printf '%s|%s\n' "$today" "$(( cur + b ))" >> "$DB"
+  # on ne garde que 90 jours d'historique
+  tail -n 120 "$DB" > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
+  return 0
+}
+
+read_vals(){ # affiche "hier|aujourdhui|mois" en octets
+  poll >/dev/null 2>&1
+  local t y m today yest month
+  today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
+  t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  m=$(awk -F'|' -v p="$month" 'index($1,p)==1{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  echo "${y:-0}|${t:-0}|${m:-0}"
+}
+
+reset_all(){
+  : > "$DB"
+  iptables -Z "$CIN"  2>/dev/null
+  iptables -Z "$COUT" 2>/dev/null
+  return 0
+}
+
+remove_all(){
+  iptables -D INPUT  -j "$CIN"  2>/dev/null
+  iptables -D OUTPUT -j "$COUT" 2>/dev/null
+  iptables -F "$CIN"  2>/dev/null; iptables -X "$CIN"  2>/dev/null
+  iptables -F "$COUT" 2>/dev/null; iptables -X "$COUT" 2>/dev/null
+  return 0
+}
+
+case "$1" in
+  setup)  setup_chains ;;
+  poll)   poll ;;
+  read)   read_vals ;;
+  reset)  reset_all ;;
+  remove) remove_all ;;
+  *)      echo "usage: nvpanel-conso setup|poll|read|reset|remove" ;;
+esac
+exit 0

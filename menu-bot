@@ -12,6 +12,21 @@ banner; center " BOT TELEGRAM " "${BOLD}${WHT}"; line
 if [ -f "$CONF" ]; then
   printf " ${GRY}Bot déjà configuré. Statut : ${NC}"
   systemctl is-active --quiet nvpanel-bot && printf "${GRN}actif${NC}\n" || printf "${RED}arrêté${NC}\n"
+  # Le bot n'est jamais redémarré automatiquement (ni par la mise à jour).
+  # Si le fichier du bot est plus récent que le processus en cours,
+  # c'est qu'une nouvelle version attend un redémarrage manuel.
+  if systemctl is-active --quiet nvpanel-bot 2>/dev/null; then
+    _started=$(systemctl show -p ActiveEnterTimestampMonotonic --value nvpanel-bot 2>/dev/null)
+    _now=$(awk '{printf "%d", $1*1000000}' /proc/uptime 2>/dev/null)
+    _fmtime=$(stat -c %Y /usr/local/bin/nvpanel-bot 2>/dev/null)
+    _boot=$(date +%s); _boot=$(( _boot - $(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null) ))
+    if [ -n "$_started" ] && [ -n "$_fmtime" ] && [ "$_started" -gt 0 ] 2>/dev/null; then
+      _startepoch=$(( _boot + _started/1000000 ))
+      if [ "$_fmtime" -gt "$_startepoch" ] 2>/dev/null; then
+        printf " ${YLW}⚠ Nouvelle version installée — choisis 2 pour l'appliquer.${NC}\n"
+      fi
+    fi
+  fi
   echo
 fi
 

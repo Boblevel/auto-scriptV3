@@ -48,6 +48,7 @@ for pair in \
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
+  "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
   "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls" \
   "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp" \
   "update.sh:/usr/local/bin/update"; do
@@ -60,14 +61,20 @@ ln -sf /usr/local/bin/menu /usr/local/bin/acc 2>/dev/null
 ln -sf /usr/local/bin/menu /usr/local/bin/dgh 2>/dev/null
 ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 
-fill 88 "Redémarrage des services…"
+fill 88 "Mise à jour des services…"
 systemctl daemon-reload >/dev/null 2>&1
-systemctl is-active --quiet nvpanel-bot   && systemctl restart nvpanel-bot   >/dev/null 2>&1
+# Le bot Telegram n'est PAS redémarré ici : c'est à toi de le faire
+# depuis le menu (Bot Telegram → « Redémarrer le bot »).
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
 
 fill 96 "Application de la configuration…"
 if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto >/dev/null 2>&1
+fi
+# compteur de consommation CLIENTS (exclut le trafic propre du serveur)
+if [ -x /usr/local/bin/nvpanel-conso ]; then
+  /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+  ( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
 fi
 fill 100 "Terminé"
 sleep 0.3
@@ -84,6 +91,14 @@ if [ -n "$FAILED" ]; then
   printf "   ${RED}⚠ Fichiers manquants sur GitHub :${NC}${YLW}%s${NC}\n" "$FAILED"
   printf "   ${GRY}Uploade-les à la racine du dépôt, puis relance : update${NC}\n\n"
 fi
+# Le bot n'est jamais redémarré automatiquement : on le signale clairement.
+if systemctl is-active --quiet nvpanel-bot 2>/dev/null; then
+  printf "   ${YLW}ℹ Le bot Telegram tourne encore sur l'ANCIENNE version.${NC}\n"
+  printf "   ${GRY}  Il n'a pas été redémarré automatiquement.${NC}\n"
+  printf "   ${GRY}  Pour appliquer la mise à jour : menu → 10 → 2 (Redémarrer le bot).${NC}\n\n"
+fi
 printf "   ${GRY}Ouverture du menu…${NC}\n"
 sleep 1
+# vide les touches tapées pendant la mise à jour (sinon elles ressortent en ^[[A)
+while IFS= read -r -s -t 0.01 -n 512 _ 2>/dev/null; do :; done
 exec menu

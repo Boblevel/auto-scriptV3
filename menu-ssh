@@ -129,13 +129,28 @@ slowdns_menu() {
 }
 
 udp_status() {
-  header
+  header; center " 📡  UDP (UDPGW) " "${BOLD}${WHT}"; line
+  local on=0
   for p in 7100 7200 7300; do
-    if systemctl is-active --quiet nvpanel-badvpn-$p; then ok "badvpn $p actif"; else warn "badvpn $p inactif"; fi
+    if systemctl is-active --quiet nvpanel-badvpn-$p 2>/dev/null; then
+      printf "   ${GRN}● actif  ${NC} UDPGW port %s\n" "$p"; on=$((on+1))
+    else
+      printf "   ${RED}○ arrêté ${NC} ${GRY}UDPGW port %s${NC}\n" "$p"
+    fi
   done
-  systemctl is-active --quiet nvpanel-udp-custom && ok "udp-custom actif" || warn "udp-custom inactif"
-  echo; entry "1" "Installer / réinstaller UDP"; entry "0" "⬅️" "Retour"; line
-  read -rp " Choix : " s
+  if systemctl is-active --quiet nvpanel-udp-custom 2>/dev/null; then
+    printf "   ${GRN}● actif  ${NC} udp-custom (36712)\n"
+  else
+    printf "   ${GRY}– absent ${NC} ${GRY}udp-custom (facultatif)${NC}\n"
+  fi
+  echo
+  if [ "$on" -gt 0 ]; then
+    printf "   ${GRY}Dans l'appli client, mets « UDPGW » / « Payload UDP » sur${NC} ${WHT}7300${NC}${GRY}.${NC}\n"
+  else
+    warn "UDP non installé — choisis 1 pour l'installer."
+  fi
+  echo; entry "1" "⬇️" "Installer / réinstaller UDP"; entry "0" "⬅️" "Retour"; line
+  read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" s
   [ "$s" = "1" ] && install-udp
 }
 
