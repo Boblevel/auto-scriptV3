@@ -18,10 +18,11 @@ COUT=NVCONSO_OUT
 mkdir -p "$DBDIR"; touch "$DB"
 
 _ports_tcp(){
-  local p="22,80,8388" x d
+  local p="22,80,8388,1723" x d s
   x=$(cat /etc/nvpanel/xport 2>/dev/null); [ -n "$x" ] && p="$p,$x" || p="$p,443"
   d=$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null)
   [ -n "$d" ] && p="$p,$d"
+  s=$(cat /etc/nvpanel/sstp_port 2>/dev/null); [ -n "$s" ] && p="$p,$s"
   # ports Dropbear additionnels éventuels
   for extra in 109 143; do
     grep -q "\b$extra\b" /etc/default/dropbear 2>/dev/null && p="$p,$extra"
@@ -31,7 +32,7 @@ _ports_tcp(){
 }
 
 _ports_udp(){
-  local p="53,5300,7100,7200,7300,51820" u
+  local p="53,5300,7100,7200,7300,51820,500,4500,1701" u
   u=$(grep -oP '"listen"\s*:\s*":?\K[0-9]+' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
   [ -n "$u" ] && p="$p,$u"
   printf '%s' "$p" | tr ',' '\n' | awk 'NF && !seen[$0]++' | head -15 | paste -sd, -

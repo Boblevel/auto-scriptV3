@@ -162,15 +162,46 @@ clientcount(){ stats; }
 ok()   { printf "${GRN}✔${NC} %s\n" "$1"; }
 err()  { printf "${RED}✘${NC} %s\n" "$1"; }
 warn() { printf "${YLW}!${NC} %s\n" "$1"; }
-pause(){ echo; read -rp "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _; }
+pause(){ echo; ask "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _pausevar; }
 # réponse affirmative, insensible à la casse (o/O/oui/OUI/y/yes)
 confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }
 
 # Écran alterné : le panel s'affiche dans un buffer séparé (comme htop/vim),
 # ce qui empêche TOUTE accumulation de bannières dans l'historique du terminal.
 # En sortie, l'écran d'origine est restauré proprement.
-ui_enter(){ printf '\033[?1049h\033[H'; }
-ui_leave(){ printf '\033[?1049l'; }
+
+# Saisie protégée : les flèches / le défilement de l'écran envoient des
+# séquences d'échappement (^[[A, ^[[B...). On les avale au lieu de les écrire
+# dans la réponse.  Usage : ask "invite" nom_de_variable
+ask(){
+  local __v="$2" buf="" ch
+  [ -n "$1" ] && printf '%b' "$1"
+  if [ ! -t 0 ]; then IFS= read -r buf; printf -v "$__v" '%s' "$buf"; return 0; fi
+  while IFS= read -rsn1 ch 2>/dev/null; do
+    case "$ch" in
+      '')       break ;;                                  # Entrée
+      $'\e')    # séquence d'échappement : on l'avale jusqu'à son caractère final
+                local e=''
+                read -rsn1 -t 0.05 e 2>/dev/null || continue
+                if [ "$e" = '[' ] || [ "$e" = 'O' ]; then
+                  while read -rsn1 -t 0.05 e 2>/dev/null; do
+                    case "$e" in [A-Za-z~]) break ;; esac
+                  done
+                fi
+                continue ;;
+      $'\177'|$'\b')
+                [ -n "$buf" ] && { buf="${buf%?}"; printf '\b \b'; }; continue ;;
+      $'\t')    continue ;;
+      *)        buf="$buf$ch"; printf '%s' "$ch" ;;
+    esac
+  done
+  printf '\n'
+  printf -v "$__v" '%s' "$buf"
+  return 0
+}
+
+ui_enter(){ printf '\033[?1049h\033[?1007l\033[?1000l\033[H'; }
+ui_leave(){ printf '\033[?1007h\033[?1049l'; }
 
 # animation de chargement stylée avec pourcentage (comme l'installation)
 loading(){

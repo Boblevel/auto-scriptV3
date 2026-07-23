@@ -86,6 +86,9 @@ for pair in \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
   "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
+  "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp" \
+  "install-l2tp:/usr/local/bin/install-l2tp" "install-pptp:/usr/local/bin/install-pptp" \
+  "install-sstp:/usr/local/bin/install-sstp" \
   "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls" \
   "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp" \
   "update.sh:/usr/local/bin/update"; do

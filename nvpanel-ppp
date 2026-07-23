@@ -1,0 +1,103 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · comptes L2TP / PPTP / SSTP
+#  Ces trois protocoles reposent tous sur PPP : les comptes
+#  vivent dans /etc/ppp/chap-secrets, l'expiration est suivie
+#  dans /etc/nvpanel/db/<proto>.
+#  Usage : nvpanel-ppp add|list|del|renew|info|purge <proto> ...
+# ============================================================
+SECRETS=/etc/ppp/chap-secrets
+DBDIR=/etc/nvpanel/db
+mkdir -p "$DBDIR" /etc/ppp; touch "$SECRETS"; chmod 600 "$SECRETS"
+
+_srv(){ case "$1" in l2tp) echo l2tpd ;; pptp) echo pptpd ;; sstp) echo sstpd ;; *) return 1 ;; esac; }
+_db(){ echo "$DBDIR/$1"; }
+_clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
+
+_box(){ # proto user pass created exp
+  local proto="$1" u="$2" p="$3" cr="$4" ex="$5" ip host port
+  ip=$(cat /etc/nvpanel/ip 2>/dev/null)
+  host=$(cat /etc/nvpanel/domain 2>/dev/null); [ -z "$host" ] && host="$ip"
+  case "$proto" in
+    l2tp) port="UDP 500 / 4500 / 1701" ;;
+    pptp) port="TCP 1723 (+ GRE)" ;;
+    sstp) port="TCP $(cat /etc/nvpanel/sstp_port 2>/dev/null || echo 4443)" ;;
+  esac
+  cat <<EOF
+========== 🔐 COMPTE ${proto^^} ==========
+🖥️ IP serveur  : $ip
+🌐 Hôte        : $host
+👤 Utilisateur : $u
+🔑 Mot de passe: $p
+🔌 Ports       : $port
+EOF
+  [ "$proto" = l2tp ] && printf '🗝️ Clé partagée: %s\n' "$(cat /etc/nvpanel/l2tp_psk 2>/dev/null)"
+  cat <<EOF
+📅 Créé le     : $cr
+⏳ Expire le   : $ex
+==================================
+EOF
+}
+
+cmd="$1"; shift 2>/dev/null
+case "$cmd" in
+  add)
+    proto=$(_clean "$1"); user=$(_clean "$2"); pass=$(_clean "$3"); days="$4"
+    srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    [ -z "$user" ] || [ -z "$pass" ] && { echo "ERR args"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    db=$(_db "$proto"); touch "$db"
+    grep -q "^### $user " "$db" && { echo "ERR exists"; exit 1; }
+    exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
+    printf '%s %s %s *\n' "$user" "$srv" "$pass" >> "$SECRETS"
+    echo "### $user $pass $exp" >> "$db"
+    echo "OK $user $exp"
+    _box "$proto" "$user" "$pass" "$cr" "$exp" ;;
+  list)
+    proto=$(_clean "$1"); db=$(_db "$proto")
+    awk '/^### /{print $2"|"$4}' "$db" 2>/dev/null ;;
+  info)
+    proto=$(_clean "$1"); user=$(_clean "$2"); db=$(_db "$proto")
+    row=$(grep "^### $user " "$db" 2>/dev/null | head -1)
+    [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
+    echo "OK $user"
+    _box "$proto" "$user" "$(echo "$row" | awk '{print $3}')" "-" "$(echo "$row" | awk '{print $4}')" ;;
+  del)
+    proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    db=$(_db "$proto")
+    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "/^$user[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
+    sed -i "/^### $user /d" "$db"
+    pkill -f "pppd.*$user" 2>/dev/null
+    echo "OK deleted" ;;
+  renew)
+    proto=$(_clean "$1"); user=$(_clean "$2"); days="$3"; db=$(_db "$proto")
+    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
+    exp=$(date -d "+$days days" +"%Y-%m-%d")
+    sed -i "s|^### $user \([^ ]*\) .*|### $user \1 $exp|" "$db"
+    echo "OK $user $exp" ;;
+  purge)
+    proto=$(_clean "$1"); mode=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    db=$(_db "$proto"); today=$(date +%F); n=0
+    list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$db" 2>/dev/null)
+    for u in $list; do
+      [ -z "$u" ] && continue
+      sed -i "/^$u[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
+      sed -i "/^### $u /d" "$db"
+      pkill -f "pppd.*$u" 2>/dev/null
+      n=$((n+1))
+    done
+    echo "OK $n" ;;
+  online)
+    # nombre de sessions PPP actives pour ce protocole
+    proto=$(_clean "$1")
+    case "$proto" in
+      l2tp) pgrep -fc 'xl2tpd|pppd.*l2tp' 2>/dev/null || echo 0 ;;
+      pptp) pgrep -fc 'pptpd.*pppd|pppd.*pptp' 2>/dev/null || echo 0 ;;
+      sstp) pgrep -fc 'sstpd.*pppd|pppd.*sstp' 2>/dev/null || echo 0 ;;
+      *) echo 0 ;;
+    esac ;;
+  *) echo "usage: nvpanel-ppp add|list|info|del|renew|purge|online <proto> ..."; exit 1 ;;
+esac
+exit 0
