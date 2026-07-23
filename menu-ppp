@@ -132,6 +132,77 @@ cleanup_menu(){
   done
 }
 
+uninstall_proto(){
+  header; center " 🗑️  DÉSINSTALLER $LABEL " "${BOLD}${RED}"; line
+  warn "Cela supprime le service $LABEL et TOUS ses comptes."
+  printf "   ${GRY}Les autres protocoles ne sont pas touchés.${NC}\n\n"
+  printf "   ${RED}➤ Confirmer la désinstallation ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { warn "Annulé."; pause; return; }
+
+  printf "\n${CYN}➜${NC} Suppression des comptes…\n"
+  nvpanel-ppp purge "$PROTO" all >/dev/null 2>&1
+  rm -f "/etc/nvpanel/db/$PROTO"
+
+  printf "${CYN}➜${NC} Arrêt et retrait du service…\n"
+  export DEBIAN_FRONTEND=noninteractive
+  case "$PROTO" in
+    l2tp)
+      for u in xl2tpd strongswan-starter strongswan ipsec; do systemctl disable --now "$u" >/dev/null 2>&1; done
+      apt-get purge -y xl2tpd strongswan >/dev/null 2>&1
+      apt-get autoremove -y >/dev/null 2>&1
+      rm -f /etc/xl2tpd/xl2tpd.conf /etc/ppp/options.xl2tpd /etc/ipsec.conf /etc/ipsec.secrets /etc/nvpanel/l2tp_psk
+      for p in 500 4500 1701; do iptables -D INPUT -p udp --dport $p -j ACCEPT 2>/dev/null; done
+      iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o "$(ip route 2>/dev/null | awk '/default/{print $5; exit}')" -j MASQUERADE 2>/dev/null
+      iptables -D FORWARD -s 10.10.10.0/24 -j ACCEPT 2>/dev/null
+      iptables -D FORWARD -d 10.10.10.0/24 -j ACCEPT 2>/dev/null ;;
+    pptp)
+      systemctl disable --now pptpd >/dev/null 2>&1
+      apt-get purge -y pptpd >/dev/null 2>&1
+      apt-get autoremove -y >/dev/null 2>&1
+      rm -f /etc/pptpd.conf /etc/ppp/pptpd-options
+      iptables -D INPUT -p tcp --dport 1723 -j ACCEPT 2>/dev/null
+      iptables -D INPUT -p gre -j ACCEPT 2>/dev/null
+      iptables -t nat -D POSTROUTING -s 10.20.20.0/24 -o "$(ip route 2>/dev/null | awk '/default/{print $5; exit}')" -j MASQUERADE 2>/dev/null
+      iptables -D FORWARD -s 10.20.20.0/24 -j ACCEPT 2>/dev/null
+      iptables -D FORWARD -d 10.20.20.0/24 -j ACCEPT 2>/dev/null ;;
+    sstp)
+      systemctl disable --now nvpanel-sstp >/dev/null 2>&1
+      rm -f /etc/systemd/system/nvpanel-sstp.service /etc/ppp/options.sstpd
+      local sp; sp=$(cat /etc/nvpanel/sstp_port 2>/dev/null)
+      [ -n "$sp" ] && iptables -D INPUT -p tcp --dport "$sp" -j ACCEPT 2>/dev/null
+      rm -rf /etc/nvpanel/sstp /etc/nvpanel/sstp_port
+      iptables -t nat -D POSTROUTING -s 10.30.30.0/24 -o "$(ip route 2>/dev/null | awk '/default/{print $5; exit}')" -j MASQUERADE 2>/dev/null
+      iptables -D FORWARD -s 10.30.30.0/24 -j ACCEPT 2>/dev/null
+      iptables -D FORWARD -d 10.30.30.0/24 -j ACCEPT 2>/dev/null ;;
+  esac
+  systemctl daemon-reload >/dev/null 2>&1
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+  ok "$LABEL a été désinstallé."
+  pause
+}
+
+setup_menu(){
+  while true; do
+    header; center " ⚙️  INSTALLER / DÉSINSTALLER $LABEL " "${BOLD}${WHT}"; line
+    if systemctl is-active --quiet "$SVC" 2>/dev/null; then
+      printf "   ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}\n\n"
+    else
+      printf "   ${GRY}État actuel :${NC} ${RED}non installé${NC}\n\n"
+    fi
+    entry "1" "⬇️" "Installer / réinstaller"
+    entry "2" "🗑️" "Désinstaller"
+    entry "0" "⬅️" "Retour"
+    line
+    ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    case "$c" in
+      1) "$INST" ;;
+      2) uninstall_proto ;;
+      0) break ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
 ensure || true
 while true; do
   header
@@ -141,12 +212,12 @@ while true; do
   entry "4" "♻️" "Prolonger un compte"
   entry "5" "🗑️" "Supprimer un compte"
   entry "6" "🧹" "Nettoyage (expirés / tout supprimer)"
-  entry "7" "⬇️" "Installer / réinstaller $LABEL"
+  entry "7" "⚙️" "Installer / désinstaller $LABEL"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
   case "$o" in
     1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) del ;;
-    6) cleanup_menu ;; 7) "$INST" ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+    6) cleanup_menu ;; 7) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

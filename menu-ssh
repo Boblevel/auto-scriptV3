@@ -123,9 +123,27 @@ slowdns_menu() {
   else
     warn "SlowDNS non installé."
   fi
-  echo; entry "1" "Installer / réinstaller SlowDNS"; entry "0" "⬅️" "Retour"; line
-  ask " Choix : " s
-  [ "$s" = "1" ] && install-slowdns
+  echo; entry "1" "⬇️" "Installer / réinstaller SlowDNS"
+  entry "2" "🗑️" "Désinstaller SlowDNS"
+  entry "0" "⬅️" "Retour"; line
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
+  case "$s" in
+    1) install-slowdns ;;
+    2) uninstall_slowdns ;;
+  esac
+}
+
+uninstall_slowdns() {
+  header; center " 🗑️  DÉSINSTALLER SLOWDNS " "${BOLD}${RED}"; line
+  warn "SlowDNS sera retiré. Les comptes SSH ne sont pas touchés."
+  printf "   ${RED}➤ Confirmer ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { warn "Annulé."; pause; return; }
+  systemctl disable --now nvpanel-slowdns >/dev/null 2>&1
+  rm -f /etc/systemd/system/nvpanel-slowdns.service
+  iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+  rm -rf /etc/nvpanel/slowdns
+  systemctl daemon-reload >/dev/null 2>&1
+  ok "SlowDNS a été désinstallé."; pause
 }
 
 udp_status() {
@@ -158,9 +176,32 @@ udp_status() {
   else
     warn "UDP non installé — choisis 1 pour l'installer."
   fi
-  echo; entry "1" "⬇️" "Installer / réinstaller UDP"; entry "0" "⬅️" "Retour"; line
+  echo; entry "1" "⬇️" "Installer / réinstaller UDP"
+  entry "2" "🗑️" "Désinstaller UDP"
+  entry "0" "⬅️" "Retour"; line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
-  [ "$s" = "1" ] && install-udp
+  case "$s" in
+    1) install-udp ;;
+    2) uninstall_udp ;;
+  esac
+}
+
+uninstall_udp() {
+  header; center " 🗑️  DÉSINSTALLER UDP " "${BOLD}${RED}"; line
+  warn "Le module UDP sera retiré. Les comptes SSH ne sont pas touchés."
+  printf "   ${RED}➤ Confirmer ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { warn "Annulé."; pause; return; }
+  for p in 7100 7200 7300; do
+    systemctl disable --now nvpanel-badvpn-$p >/dev/null 2>&1
+    rm -f /etc/systemd/system/nvpanel-badvpn-$p.service
+  done
+  systemctl disable --now nvpanel-udp-custom >/dev/null 2>&1
+  rm -f /etc/systemd/system/nvpanel-udp-custom.service
+  iptables -D INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+  rm -rf /etc/nvpanel/udp
+  systemctl daemon-reload >/dev/null 2>&1
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+  ok "Le module UDP a été désinstallé."; pause
 }
 
 cleanup_menu() {

@@ -98,14 +98,63 @@ cleanup_menu() {
   done
 }
 
+uninstall_xray(){
+  header; center " 🗑️  DÉSINSTALLER XRAY " "${BOLD}${RED}"; line
+  warn "ATTENTION : le cœur Xray gère 4 protocoles à la fois."
+  printf "   ${YLW}Vmess · Vless · Trojan · Shadowsocks seront TOUS supprimés,${NC}\n"
+  printf "   ${YLW}avec l'ensemble de leurs clients.${NC}\n"
+  printf "   ${GRY}SSH, SlowDNS, UDP, WireGuard, L2TP, PPTP et SSTP ne sont pas touchés.${NC}\n\n"
+  printf "   ${RED}➤ Confirmer la désinstallation ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { warn "Annulé."; pause; return; }
+
+  printf "\n${CYN}➜${NC} Arrêt et retrait de Xray…\n"
+  systemctl disable --now xray >/dev/null 2>&1
+  bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) remove --purge >/dev/null 2>&1
+  rm -rf /usr/local/etc/xray /etc/nvpanel/xray
+
+  printf "${CYN}➜${NC} Suppression des clients…\n"
+  rm -f /etc/nvpanel/db/vmess /etc/nvpanel/db/vless /etc/nvpanel/db/trojan /etc/nvpanel/db/shadowsocks
+
+  printf "${CYN}➜${NC} Retrait de la façade web…\n"
+  rm -f /etc/nginx/conf.d/rhaff.conf /etc/nginx/nvpanel-ws.conf
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+  ok "Xray a été désinstallé (Vmess, Vless, Trojan, Shadowsocks)."
+  pause
+}
+
+setup_menu(){
+  while true; do
+    header; center " ⚙️  INSTALLER / DÉSINSTALLER XRAY " "${BOLD}${WHT}"; line
+    if systemctl is-active --quiet xray 2>/dev/null; then
+      printf "   ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}\n"
+    else
+      printf "   ${GRY}État actuel :${NC} ${RED}non installé${NC}\n"
+    fi
+    printf "   ${GRY}Concerne Vmess · Vless · Trojan · Shadowsocks${NC}\n\n"
+    entry "1" "⬇️" "Installer / réinstaller"
+    entry "2" "🗑️" "Désinstaller"
+    entry "0" "⬅️" "Retour"
+    line
+    ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    case "$c" in
+      1) install-xray ;;
+      2) uninstall_xray ;;
+      0) break ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
 ensure_xray || exit 0
 while true; do
   header
   entry "1" "➕" "Ajouter un client"; entry "2" "📋" "Lister les clients"
   entry "3" "🔍" "Revoir un client"; entry "4" "♻️" "Prolonger un client"
   entry "5" "🗑️" "Supprimer un client"; entry "6" "🧹" "Nettoyage (expirés / tout)"
+  entry "7" "⚙️" "Installer / désinstaller Xray"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}Choix :${NC} ")" o
-  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
+  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
 done
