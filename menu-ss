@@ -67,13 +67,45 @@ view_client() {
   pause
 }
 
+cleanup_menu() {
+  while true; do
+    header; center " 🧹  NETTOYAGE SHADOWSOCKS " "${BOLD}${WHT}"; line
+    local tot exp today c r out
+    today=$(date +%F)
+    tot=$(nvpanel-cli xlist ss 2>/dev/null | grep -c '|')
+    exp=$(nvpanel-cli xlist ss 2>/dev/null | awk -F'|' -v d="$today" 'NF && $2!="" && $2<d {c++} END{print c+0}')
+    printf "   ${GRY}Clients au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
+    entry "1" "🧽" "Supprimer les clients expirés"
+    entry "2" "💥" "Supprimer TOUS les clients"
+    entry "0" "⬅️" "Retour"
+    line
+    read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    case "$c" in
+      1) [ "$exp" -eq 0 ] && { warn "Aucun client expiré."; pause; continue; }
+         printf "   ${YLW}Supprimer les %s client(s) expiré(s) ? (o/n) : ${NC}" "$exp"; read -r r
+         confirm "$r" || continue
+         out=$(nvpanel-cli purge ss expired)
+         ok "$(echo "$out" | awk '{print $2+0}') client(s) supprimé(s)."; pause ;;
+      2) [ "$tot" -eq 0 ] && { warn "Aucun client."; pause; continue; }
+         warn "Cela supprimera les $tot clients Shadowsocks. Action irréversible."
+         printf "   ${RED}Tape SUPPRIMER (en majuscules) pour confirmer : ${NC}"; read -r r
+         [ "$r" = "SUPPRIMER" ] || { warn "Annulé."; pause; continue; }
+         out=$(nvpanel-cli purge ss all)
+         ok "$(echo "$out" | awk '{print $2+0}') client(s) supprimé(s)."; pause ;;
+      0) break ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
 ensure_xray || exit 0
 while true; do
   header
   entry "1" "➕" "Ajouter un client"; entry "2" "📋" "Lister les clients"
   entry "3" "🔍" "Revoir un client"; entry "4" "♻️" "Prolonger un client"
-  entry "5" "🗑️" "Supprimer un client"; entry "0" "⬅️" "Retour"
+  entry "5" "🗑️" "Supprimer un client"; entry "6" "🧹" "Nettoyage (expirés / tout)"
+  entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
-  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
+  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
 done

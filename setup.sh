@@ -59,7 +59,7 @@ export DEBIAN_FRONTEND=noninteractive
 fill 20 "Installation des dépendances…"
 apt-get update -y >/dev/null 2>&1
 apt-get install -y curl wget jq unzip cron screen socat python3 openssl \
-    net-tools dropbear stunnel4 fail2ban vnstat iptables nginx certbot >/dev/null 2>&1
+    net-tools dropbear stunnel4 fail2ban vnstat iptables nginx certbot qrencode >/dev/null 2>&1
 
 fill 40 "Déploiement du panel…"
 mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
@@ -155,7 +155,7 @@ DONE
 printf "${NC}\n"
 printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\n"
 printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
-printf "   ${GRY}🌐 IP : %s   ·   📨 Support : %s${NC}\n\n" "$IPADDR" "$CONTACT"
+printf "   ${GRY}🌐 IP du serveur : %s${NC}\n\n" "$IPADDR"
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion puis tape : update${NC}\n\n"

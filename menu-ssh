@@ -163,6 +163,37 @@ udp_status() {
   [ "$s" = "1" ] && install-udp
 }
 
+cleanup_menu() {
+  while true; do
+    header; center " 🧹  NETTOYAGE DES COMPTES SSH " "${BOLD}${WHT}"; line
+    local tot exp today c r out
+    today=$(date +%F)
+    tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
+    exp=$(awk -v d="$today" '/^### /{ if ($3!="" && $3<d) c++ } END{print c+0}' "$DB" 2>/dev/null)
+    printf "   ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
+    entry "1" "🧽" "Supprimer les comptes expirés"
+    entry "2" "💥" "Supprimer TOUS les comptes"
+    entry "0" "⬅️" "Retour"
+    line
+    read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    case "$c" in
+      1) [ "$exp" -eq 0 ] && { warn "Aucun compte expiré."; pause; continue; }
+         printf "   ${YLW}Supprimer les %s compte(s) expiré(s) ? (o/n) : ${NC}" "$exp"; read -r r
+         confirm "$r" || continue
+         out=$(nvpanel-cli purge ssh expired)
+         ok "$(echo "$out" | awk '{print $2+0}') compte(s) supprimé(s)."; pause ;;
+      2) [ "$tot" -eq 0 ] && { warn "Aucun compte."; pause; continue; }
+         warn "Cela supprimera les $tot comptes SSH. Action irréversible."
+         printf "   ${RED}Tape SUPPRIMER (en majuscules) pour confirmer : ${NC}"; read -r r
+         [ "$r" = "SUPPRIMER" ] || { warn "Annulé."; pause; continue; }
+         out=$(nvpanel-cli purge ssh all)
+         ok "$(echo "$out" | awk '{print $2+0}') compte(s) supprimé(s)."; pause ;;
+      0) break ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
 while true; do
   header
   entry "1" "➕" "Créer un compte"
@@ -173,12 +204,14 @@ while true; do
   entry "6" "🗑️" "Supprimer un compte"
   entry "7" "🌐" "SlowDNS"
   entry "8" "📡" "UDP (badvpn / udp-custom)"
+  entry "9" "🧹" "Nettoyage (expirés / tout supprimer)"
   entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}Choix :${NC} ")" o
   case "$o" in
     1) create_account ;; 2) list_accounts ;; 3) view_account ;;
     4) renew_account ;;  5) lock_toggle ;;   6) delete_account ;;
-    7) slowdns_menu ;;   8) udp_status ;;    0) break ;; *) warn "Invalide"; sleep 1 ;;
+    7) slowdns_menu ;;   8) udp_status ;;    9) cleanup_menu ;;
+    0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

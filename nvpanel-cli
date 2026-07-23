@@ -58,18 +58,22 @@ EOF
 # Le champ « remarks » (#... des liens, "ps" pour vmess) est le texte que
 # l'application montre à côté de la connexion. On y met la bannière définie
 # dans Paramètres → 13, pour que le message apparaisse sur TOUS les protocoles.
+# Étiquette nettoyée : uniquement lettres, chiffres, . _ -
+# Aucun espace ni caractère spécial => le lien reste valide dans TOUTES les applis.
 _label(){
-  local b
-  b=$(head -1 /etc/banner 2>/dev/null | tr -d '\r\n' | tr -d '"\\')
-  printf '%s' "$b"
+  head -1 /etc/banner 2>/dev/null \
+    | tr -d '\r\n' \
+    | sed 's/[^A-Za-z0-9._-]/_/g; s/__*/_/g; s/^_//; s/_*$//' \
+    | cut -c1-40
 }
-# nom complet : « BANNIÈRE - client »  (ou format par défaut si pas de bannière)
+# nom complet : « BANNIERE-client »  (ou format par défaut si pas de bannière)
 _remark(){ # $1 = PROTO (VMESS/VLESS/TROJAN/SS)  $2 = nom du compte
-  local b; b=$(_label)
-  if [ -n "$b" ]; then printf '%s - %s' "$b" "$2"; else printf 'XRAY_%s_%s' "$1" "$2"; fi
+  local b n; b=$(_label)
+  n=$(printf '%s' "$2" | sed 's/[^A-Za-z0-9._-]/_/g')
+  if [ -n "$b" ]; then printf '%s-%s' "$b" "$n"; else printf 'XRAY_%s_%s' "$1" "$n"; fi
 }
-# version encodée pour la partie « # » d'une URL
-_remark_url(){ _remark "$1" "$2" | sed 's/%/%25/g; s/ /%20/g; s/#/%23/g; s/&/%26/g; s/?/%3F/g'; }
+# rien à encoder : _remark ne produit que des caractères sûrs
+_remark_url(){ _remark "$1" "$2"; }
 
 # ---- liens Xray --------------------------------------------
 _vmess_link(){ # id host port path tls(0/1) name
@@ -128,6 +132,15 @@ $ltls
 $lnotls
 ===================================
 EOF
+  _qr "$ltls"
+}
+
+# Affiche un QR code du lien : on le scanne depuis l'appli, plus besoin de copier.
+_qr(){
+  command -v qrencode >/dev/null 2>&1 || return 0
+  printf '\n📱 QR CODE (lien TLS) — scanne-le depuis ton application :\n\n'
+  printf '%s' "$1" | qrencode -t ANSIUTF8 2>/dev/null
+  printf '\n'
 }
 
 # ---- encadré Shadowsocks -----------------------------------
@@ -149,6 +162,7 @@ ss_box(){ # name ckey created exp
 $link
 ===================================
 EOF
+  _qr "$link"
 }
 
 cmd="$1"; shift 2>/dev/null
@@ -280,5 +294,36 @@ case "$cmd" in
     echo "OK $name"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "-" "$exp"; else xray_box "$proto" "$name" "$id" "-" "$exp"; fi ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo"; exit 1 ;;
+  purge)
+    # purge <proto> <expired|all>   → supprime en masse, renvoie « OK <nombre> »
+    proto=$(printf '%s' "$1" | tr -d '\r\n\t '); mode=$(printf '%s' "$2" | tr -d '\r\n\t ')
+    today=$(date +%F); n=0
+    case "$proto" in
+      ssh)
+        list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($3!="" && $3<d)) print $2 }' "$DB" 2>/dev/null)
+        for u in $list; do
+          [ -z "$u" ] && continue
+          pkill -KILL -u "$u" 2>/dev/null
+          userdel -f "$u" >/dev/null 2>&1
+          sed -i "/^### $u /d" "$DB" 2>/dev/null
+          sed -i "/^$u|/d" "$META" 2>/dev/null
+          sed -i "/^$u /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
+          n=$((n+1))
+        done
+        echo "OK $n" ;;
+      vmess|vless|trojan|ss)
+        xmeta "$proto" || { echo "ERR proto"; exit 1; }
+        list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$XDB" 2>/dev/null)
+        for nm in $list; do
+          [ -z "$nm" ] && continue
+          jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"
+          sed -i "/^### $nm /d" "$XDB" 2>/dev/null
+          n=$((n+1))
+        done
+        [ "$n" -gt 0 ] && systemctl restart xray >/dev/null 2>&1
+        echo "OK $n" ;;
+      *) echo "ERR proto"; exit 1 ;;
+    esac ;;
+
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo|purge"; exit 1 ;;
 esac

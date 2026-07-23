@@ -57,6 +57,7 @@ for pair in \
 done
 
 fill 78 "Mise en place…"
+command -v qrencode >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1
 ln -sf /usr/local/bin/menu /usr/local/bin/acc 2>/dev/null
 ln -sf /usr/local/bin/menu /usr/local/bin/dgh 2>/dev/null
 ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null

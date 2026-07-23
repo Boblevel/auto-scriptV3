@@ -159,6 +159,50 @@ view_peer() {
   pause
 }
 
+cleanup_menu() {
+  while true; do
+    header; center " 🧹  NETTOYAGE WIREGUARD " "${BOLD}${WHT}"; line
+    local tot exp today c r nm pub n
+    today=$(date +%F)
+    tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
+    exp=$(awk -v d="$today" '/^### /{ if ($5!="" && $5<d) c++ } END{print c+0}' "$DB" 2>/dev/null)
+    printf "   ${GRY}Clients au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
+    entry "1" "🧽" "Supprimer les clients expirés"
+    entry "2" "💥" "Supprimer TOUS les clients"
+    entry "0" "⬅️" "Retour"
+    line
+    read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" c
+    case "$c" in
+      1|2)
+        if [ "$c" = 1 ]; then
+          [ "$exp" -eq 0 ] && { warn "Aucun client expiré."; pause; continue; }
+          printf "   ${YLW}Supprimer les %s client(s) expiré(s) ? (o/n) : ${NC}" "$exp"; read -r r
+          confirm "$r" || continue
+          list=$(awk -v d="$today" '/^### /{ if ($5!="" && $5<d) print $2 }' "$DB")
+        else
+          [ "$tot" -eq 0 ] && { warn "Aucun client."; pause; continue; }
+          warn "Cela supprimera les $tot clients WireGuard. Action irréversible."
+          printf "   ${RED}Tape SUPPRIMER (en majuscules) pour confirmer : ${NC}"; read -r r
+          [ "$r" = "SUPPRIMER" ] || { warn "Annulé."; pause; continue; }
+          list=$(awk '/^### /{print $2}' "$DB")
+        fi
+        n=0
+        for nm in $list; do
+          [ -z "$nm" ] && continue
+          pub=$(awk -v x="$nm" '$2==x{print $3}' "$DB")
+          [ -n "$pub" ] && wg set wg0 peer "$pub" remove 2>/dev/null
+          sed -i "/^# $nm$/,/^AllowedIPs/d" "$WGCONF" 2>/dev/null
+          sed -i "/^### $nm /d" "$DB" 2>/dev/null
+          rm -f "$NDIR/$nm.conf"
+          n=$((n+1))
+        done
+        ok "$n client(s) supprimé(s)."; pause ;;
+      0) break ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
 while true; do
   header
   entry "1" "➕" "Ajouter un client"
@@ -166,11 +210,13 @@ while true; do
   entry "3" "🔍" "Revoir un client (config + QR)"
   entry "4" "♻️" "Prolonger un client"
   entry "5" "🗑️" "Supprimer un client"
+  entry "6" "🧹" "Nettoyage (expirés / tout supprimer)"
   entry "0" "⬅️" "Retour"
   line
   read -rp "$(printf " ${WHT}➤ Choix :${NC} ")" o
   case "$o" in
     1) add_peer ;; 2) list_peers ;; 3) view_peer ;;
-    4) renew_peer ;; 5) del_peer ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+    4) renew_peer ;; 5) del_peer ;; 6) cleanup_menu ;;
+    0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

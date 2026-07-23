@@ -51,8 +51,8 @@ if [ "$1" = "build" ]; then
   printf "${CYN}➜${NC} Compilation statique (2 à 4 minutes)…\n"
   mkdir -p "$SRC/out"; cd "$SRC/out" || exit 1
   cmake "$BD" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="-fcommon -w" \
     -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 \
-    -DBUILDNOTHINGBYDEFAULT=1 -DBUILDUDPGW=1 \
     -DCMAKE_EXE_LINKER_FLAGS="-static" >/dev/null 2>&1
   make -j"$(nproc 2>/dev/null || echo 1)" >/dev/null 2>&1
   OUT=$(find "$SRC/out" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
@@ -61,8 +61,8 @@ if [ "$1" = "build" ]; then
     printf "${YLW}!${NC} Statique impossible, compilation classique…\n"
     rm -rf "$SRC/out"; mkdir -p "$SRC/out"; cd "$SRC/out" || exit 1
     cmake "$BD" -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 \
-      -DBUILDNOTHINGBYDEFAULT=1 -DBUILDUDPGW=1 >/dev/null 2>&1
+      -DCMAKE_C_FLAGS="-fcommon -w" \
+      -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 >/dev/null 2>&1
     make -j"$(nproc 2>/dev/null || echo 1)" >/dev/null 2>&1
     OUT=$(find "$SRC/out" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
   fi
@@ -157,6 +157,7 @@ if [ -z "$BADVPN" ]; then
       mkdir -p "$SRC/build"
       ( cd "$SRC/build" && \
         cmake "$BSRCDIR" -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="-fcommon -w" \
           -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 >>"$LOG" 2>&1 && \
         make -j1 >>"$LOG" 2>&1 )
       COMPILED=$(find "$SRC/build" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
@@ -165,6 +166,7 @@ if [ -z "$BADVPN" ]; then
         rm -rf "$SRC/build"; mkdir -p "$SRC/build"
         ( cd "$SRC/build" && \
           cmake "$BSRCDIR" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-fcommon -w" \
             -DBUILDNOTHINGBYDEFAULT=1 -DBUILDUDPGW=1 >>"$LOG" 2>&1 && \
           make -j1 >>"$LOG" 2>&1 )
         COMPILED=$(find "$SRC/build" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
@@ -275,7 +277,7 @@ else
   center " ✘  UDP NON ACTIVÉ " "${BOLD}${RED}"; line
   err "Le module UDP n'a pas pu être activé sur ce serveur."
   printf "   ${GRY}Vérifie que le serveur a accès à Internet, puis réessaie.${NC}\n"
-  printf "   ${GRY}Si le problème persiste, contacte le support :${NC} ${CYN}%s${NC}\n" "$CONTACT"
+  printf "   ${GRY}Relance ensuite : menu → 01 → UDP → 1${NC}\n"
 fi
 echo
 if [ "$UDPC_OK" = 1 ]; then
