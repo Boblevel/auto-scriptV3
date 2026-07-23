@@ -2,10 +2,11 @@
 # ============================================================
 #  RHAFF SERVICE · installation UDP   (commande : install-udp)
 #
-#  badvpn-udpgw (UDPGW 7100/7200/7300) : installé depuis les
-#  dépôts officiels de la distribution → fonctionne sur TOUS
-#  les VPS (Debian/Ubuntu, x86_64 et ARM), sans binaire à héberger.
-#  Si le paquet n'existe pas, on retombe sur le binaire du dépôt.
+#  badvpn-udpgw (UDPGW 7100/7200/7300) installé en 3 essais successifs :
+#    a) paquet de la distribution (rapide, mais absent sur beaucoup de VPS)
+#    b) binaire hébergé dans ton dépôt GitHub (si tu en fournis un)
+#    c) compilation depuis la source officielle  ← méthode qui marche partout
+#  Puis VÉRIFICATION réelle que le port 7300 écoute.
 #
 #  udp-custom : optionnel, nécessite un binaire hébergé.
 # ============================================================
@@ -16,6 +17,7 @@ REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 DIR=/etc/nvpanel/udp
 mkdir -p "$DIR"
 AUTO=0; [ "$1" = "auto" ] && AUTO=1
+
 
 case "$(uname -m)" in
   aarch64|arm64) UDPC_SRC="udp-custom-arm64" ;;
@@ -29,6 +31,66 @@ is_bin(){
   [ "$sig" = "7f454c46" ]
 }
 
+# ---------- mode « build » : fabriquer le binaire à héberger ----------
+# Usage : install-udp build
+# Compile un badvpn-udpgw STATIQUE (indépendant de la version de la
+# distribution) et le dépose dans /root/ pour que tu l'uploades sur GitHub.
+if [ "$1" = "build" ]; then
+  banner; center " FABRICATION DU BINAIRE UDP " "${BOLD}${WHT}"; line
+  printf "${CYN}➜${NC} Installation des outils de compilation…\n"
+  apt-get update -y >/dev/null 2>&1
+  apt-get install -y cmake make gcc build-essential curl >/dev/null 2>&1
+  SRC=/tmp/badvpn-build; rm -rf "$SRC"; mkdir -p "$SRC"
+  printf "${CYN}➜${NC} Téléchargement de la source officielle…\n"
+  if ! curl -fsSL "https://github.com/ambrop72/badvpn/archive/refs/tags/1.999.130.tar.gz" -o "$SRC/b.tar.gz" 2>/dev/null; then
+    err "Téléchargement impossible."; pause; exit 1
+  fi
+  tar xzf "$SRC/b.tar.gz" -C "$SRC" 2>/dev/null
+  BD=$(find "$SRC" -maxdepth 1 -type d -name 'badvpn-*' | head -1)
+  [ -z "$BD" ] && { err "Archive illisible."; pause; exit 1; }
+  printf "${CYN}➜${NC} Compilation statique (2 à 4 minutes)…\n"
+  mkdir -p "$SRC/out"; cd "$SRC/out" || exit 1
+  cmake "$BD" -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 \
+    -DBUILDNOTHINGBYDEFAULT=1 -DBUILDUDPGW=1 \
+    -DCMAKE_EXE_LINKER_FLAGS="-static" >/dev/null 2>&1
+  make -j"$(nproc 2>/dev/null || echo 1)" >/dev/null 2>&1
+  OUT=$(find "$SRC/out" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
+  # si le statique échoue, on retente en dynamique
+  if [ -z "$OUT" ]; then
+    printf "${YLW}!${NC} Statique impossible, compilation classique…\n"
+    rm -rf "$SRC/out"; mkdir -p "$SRC/out"; cd "$SRC/out" || exit 1
+    cmake "$BD" -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 \
+      -DBUILDNOTHINGBYDEFAULT=1 -DBUILDUDPGW=1 >/dev/null 2>&1
+    make -j"$(nproc 2>/dev/null || echo 1)" >/dev/null 2>&1
+    OUT=$(find "$SRC/out" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
+  fi
+  cd / || true
+  if [ -n "$OUT" ] && is_bin "$OUT"; then
+    case "$(uname -m)" in
+      aarch64|arm64) DEST=/root/badvpn-udpgw-arm64 ;;
+      *)             DEST=/root/badvpn-udpgw ;;
+    esac
+    install -m755 "$OUT" "$DEST"
+    rm -rf "$SRC"
+    clear; banner; center " ✔  BINAIRE PRÊT " "${BOLD}${GRN}"; line
+    ok "Fichier créé : ${WHT}$DEST${NC}"
+    printf "   ${GRY}Taille : %s${NC}\n\n" "$(du -h "$DEST" | cut -f1)"
+    printf "   ${WHT}À faire maintenant :${NC}\n"
+    printf "   ${GRY}1. Récupère ce fichier (Termius → SFTP → /root/)${NC}\n"
+    printf "   ${GRY}2. Uploade-le à la racine de ton dépôt GitHub${NC}\n"
+    printf "   ${GRY}   sous le nom :${NC} ${WHT}%s${NC}\n" "$(basename "$DEST")"
+    printf "   ${GRY}3. Ensuite l'UDP s'installera tout seul chez tous tes clients,${NC}\n"
+    printf "   ${GRY}   exactement comme SlowDNS.${NC}\n"
+  else
+    rm -rf "$SRC"
+    err "La compilation a échoué (RAM insuffisante ?)."
+    printf "   ${GRY}Essaie sur un VPS avec au moins 1 Go de RAM.${NC}\n"
+  fi
+  pause; exit 0
+fi
+
 [ "$AUTO" = 1 ] || { banner; center " INSTALLATION UDP " "${BOLD}${WHT}"; line; }
 
 # ---------- 1) badvpn-udpgw ---------------------------------
@@ -36,25 +98,57 @@ is_bin(){
 BADVPN=""
 export DEBIAN_FRONTEND=noninteractive
 
-# a) paquet officiel de la distribution (méthode universelle)
-if ! command -v badvpn-udpgw >/dev/null 2>&1; then
-  apt-get update -y >/dev/null 2>&1
-  apt-get install -y badvpn >/dev/null 2>&1
-fi
-command -v badvpn-udpgw >/dev/null 2>&1 && BADVPN=$(command -v badvpn-udpgw)
-
-# b) secours : binaire hébergé dans le dépôt
-if [ -z "$BADVPN" ]; then
-  case "$(uname -m)" in
-    aarch64|arm64) BSRC="badvpn-udpgw-arm64" ;;
-    *)             BSRC="badvpn-udpgw" ;;
-  esac
-  curl -fsSL "$REPO_RAW/$BSRC" -o "$DIR/badvpn-udpgw" 2>/dev/null
-  if is_bin "$DIR/badvpn-udpgw"; then
-    chmod +x "$DIR/badvpn-udpgw"; BADVPN="$DIR/badvpn-udpgw"
-  else
-    rm -f "$DIR/badvpn-udpgw"
+# a) BINAIRE HÉBERGÉ DANS TON DÉPÔT — méthode principale, comme SlowDNS.
+#    Même fichier pour tous tes clients : instantané et prévisible.
+case "$(uname -m)" in
+  aarch64|arm64) BSRC="badvpn-udpgw-arm64" ;;
+  *)             BSRC="badvpn-udpgw" ;;
+esac
+curl -fsSL "$REPO_RAW/$BSRC" -o "$DIR/badvpn-udpgw" 2>/dev/null
+if is_bin "$DIR/badvpn-udpgw"; then
+  chmod +x "$DIR/badvpn-udpgw"
+  # le binaire tourne-t-il vraiment ici ? (126/127 = incompatible ou lib manquante)
+  "$DIR/badvpn-udpgw" --help >/dev/null 2>&1
+  _rc=$?
+  if [ "$_rc" -ne 126 ] && [ "$_rc" -ne 127 ]; then
+    BADVPN="$DIR/badvpn-udpgw"
   fi
+fi
+[ -n "$BADVPN" ] || rm -f "$DIR/badvpn-udpgw"
+
+# b) secours : paquet de la distribution (n'existe pas partout)
+if [ -z "$BADVPN" ]; then
+  command -v badvpn-udpgw >/dev/null 2>&1 || { apt-get update -y >/dev/null 2>&1; apt-get install -y badvpn >/dev/null 2>&1; }
+  command -v badvpn-udpgw >/dev/null 2>&1 && BADVPN=$(command -v badvpn-udpgw)
+fi
+
+# c) DERNIER RECOURS : compilation depuis la source officielle.
+#    C'est la méthode la plus fiable : elle fonctionne sur n'importe quel
+#    VPS Debian/Ubuntu, en x86_64 comme en ARM, sans dépendre d'un dépôt.
+if [ -z "$BADVPN" ]; then
+  [ "$AUTO" = 1 ] || printf "${CYN}➜${NC} Compilation de badvpn-udpgw (2 à 4 minutes)…\n"
+  apt-get install -y cmake make gcc build-essential >/dev/null 2>&1
+  SRC=/tmp/badvpn-src
+  rm -rf "$SRC"; mkdir -p "$SRC"
+  if curl -fsSL "https://github.com/ambrop72/badvpn/archive/refs/tags/1.999.130.tar.gz" \
+       -o "$SRC/badvpn.tar.gz" 2>/dev/null && tar xzf "$SRC/badvpn.tar.gz" -C "$SRC" 2>/dev/null; then
+    BSRCDIR=$(find "$SRC" -maxdepth 1 -type d -name 'badvpn-*' | head -1)
+    if [ -n "$BSRCDIR" ]; then
+      mkdir -p "$SRC/build" && cd "$SRC/build" || true
+      # les deux orthographes d'options selon les versions de badvpn
+      cmake "$BSRCDIR" -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 \
+        -DBUILDNOTHINGBYDEFAULT=1 -DBUILDUDPGW=1 >/dev/null 2>&1
+      make -j"$(nproc 2>/dev/null || echo 1)" >/dev/null 2>&1
+      COMPILED=$(find "$SRC/build" -type f -name 'badvpn-udpgw' 2>/dev/null | head -1)
+      if [ -n "$COMPILED" ] && is_bin "$COMPILED"; then
+        install -m755 "$COMPILED" /usr/local/bin/badvpn-udpgw 2>/dev/null
+        BADVPN=/usr/local/bin/badvpn-udpgw
+      fi
+      cd / || true
+    fi
+  fi
+  rm -rf "$SRC"
 fi
 
 UDPGW_OK=0
@@ -65,7 +159,7 @@ if [ -n "$BADVPN" ]; then
 Description=RHAFF SERVICE badvpn-udpgw $p
 After=network.target
 [Service]
-ExecStart=$BADVPN --listen-addr 127.0.0.1:$p --max-clients 500 --max-connections-for-client 10 --udp-mtu 8192
+ExecStart=$BADVPN --listen-addr 127.0.0.1:$p --max-clients 500 --max-connections-for-client 10
 Restart=always
 RestartSec=3
 [Install]
@@ -80,6 +174,14 @@ EOF
   for p in 7100 7200 7300; do
     systemctl is-active --quiet nvpanel-badvpn-$p && UDPGW_OK=$((UDPGW_OK+1))
   done
+fi
+
+# preuve réelle : le port 7300 écoute-t-il vraiment ?
+LISTEN_OK=0
+if command -v ss >/dev/null 2>&1; then
+  ss -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && LISTEN_OK=1
+elif command -v netstat >/dev/null 2>&1; then
+  netstat -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && LISTEN_OK=1
 fi
 
 # ---------- 2) udp-custom (optionnel) -----------------------
@@ -129,16 +231,25 @@ if [ "$AUTO" = 1 ]; then
 fi
 
 clear; banner
-if [ "$UDPGW_OK" -gt 0 ]; then
-  center " ✔  UDP PRÊT " "${BOLD}${GRN}"; line
-  ok "UDPGW actif sur les ports 7100 / 7200 / 7300 ($UDPGW_OK/3)"
-  printf "   ${GRY}Dans l'appli client, mets « UDPGW » ou « Payload UDP » sur${NC} ${WHT}7300${NC}${GRY}.${NC}\n"
+if [ "$LISTEN_OK" = 1 ]; then
+  center " ✔  UDP OPÉRATIONNEL " "${BOLD}${GRN}"; line
+  ok "UDPGW écoute bien sur 127.0.0.1:7300 (services actifs : $UDPGW_OK/3)"
+  printf "   ${GRY}Vérifié en direct : le port répond, la connexion UDP passera.${NC}\n\n"
+  printf "   ${WHT}Côté application cliente :${NC}\n"
+  printf "   ${GRY}• Active « UDPGW » (ou « Payload UDP »)${NC}\n"
+  printf "   ${GRY}• Adresse à saisir :${NC} ${WHT}127.0.0.1:7300${NC}\n"
+  printf "   ${GRY}• L'UDP passe DANS le tunnel SSH : il faut être connecté en SSH.${NC}\n"
+elif [ "$UDPGW_OK" -gt 0 ]; then
+  center " ⚠  UDP PARTIEL " "${BOLD}${YLW}"; line
+  warn "Les services sont lancés mais le port 7300 ne répond pas encore."
+  printf "   ${GRY}Attends quelques secondes puis relance ce menu pour revérifier.${NC}\n"
 else
   center " ✘  UDP NON ACTIVÉ " "${BOLD}${RED}"; line
-  err "badvpn-udpgw n'a pas pu être installé."
-  printf "   ${GRY}Le paquet « badvpn » est introuvable dans les dépôts de ce VPS.${NC}\n"
+  err "badvpn-udpgw n'a pas pu être installé ni compilé."
+  printf "   ${GRY}Causes possibles : pas assez de RAM pour compiler, ou pas d'accès${NC}\n"
+  printf "   ${GRY}à GitHub depuis ce VPS.${NC}\n"
   printf "   ${GRY}Solution : dépose un binaire « badvpn-udpgw » (et « badvpn-udpgw-arm64 »${NC}\n"
-  printf "   ${GRY}pour les VPS ARM) à la racine de ton dépôt GitHub, puis relance.${NC}\n"
+  printf "   ${GRY}pour l'ARM) à la racine de ton dépôt GitHub, puis relance.${NC}\n"
 fi
 echo
 if [ "$UDPC_OK" = 1 ]; then

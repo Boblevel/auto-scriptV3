@@ -54,27 +54,47 @@ ssh_box(){ # user pass created exp
 EOF
 }
 
+# ---- description affichée dans l'appli cliente ---------------
+# Le champ « remarks » (#... des liens, "ps" pour vmess) est le texte que
+# l'application montre à côté de la connexion. On y met la bannière définie
+# dans Paramètres → 13, pour que le message apparaisse sur TOUS les protocoles.
+_label(){
+  local b
+  b=$(head -1 /etc/banner 2>/dev/null | tr -d '\r\n' | tr -d '"\\')
+  printf '%s' "$b"
+}
+# nom complet : « BANNIÈRE - client »  (ou format par défaut si pas de bannière)
+_remark(){ # $1 = PROTO (VMESS/VLESS/TROJAN/SS)  $2 = nom du compte
+  local b; b=$(_label)
+  if [ -n "$b" ]; then printf '%s - %s' "$b" "$2"; else printf 'XRAY_%s_%s' "$1" "$2"; fi
+}
+# version encodée pour la partie « # » d'une URL
+_remark_url(){ _remark "$1" "$2" | sed 's/%/%25/g; s/ /%20/g; s/#/%23/g; s/&/%26/g; s/?/%3F/g'; }
+
 # ---- liens Xray --------------------------------------------
 _vmess_link(){ # id host port path tls(0/1) name
-  local id="$1" host="$2" port="$3" path="$4" tls="$5" name="$6" sec add
+  local id="$1" host="$2" port="$3" path="$4" tls="$5" name="$6" rk
+  rk=$(_remark VMESS "$name")
   if [ "$tls" = 1 ]; then
-    printf 'vmess://%s' "$(printf '{"v":"2","ps":"XRAY_VMESS_%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"tls","sni":"%s"}' "$name" "$host" "$port" "$id" "$host" "$path" "$host" | base64 -w0)"
+    printf 'vmess://%s' "$(printf '{"v":"2","ps":"%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"tls","sni":"%s"}' "$rk" "$host" "$port" "$id" "$host" "$path" "$host" | base64 -w0)"
   else
-    printf 'vmess://%s' "$(printf '{"v":"2","ps":"XRAY_VMESS_%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"none"}' "$name" "$host" "$port" "$id" "$host" "$path" | base64 -w0)"
+    printf 'vmess://%s' "$(printf '{"v":"2","ps":"%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"none"}' "$rk" "$host" "$port" "$id" "$host" "$path" | base64 -w0)"
   fi
 }
 _vless_link(){ # id host port path tls name
+  local rk; rk=$(_remark_url VLESS "$6")
   if [ "$5" = 1 ]; then
-    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#XRAY_VLESS_%s' "$1" "$2" "$3" "$2" "$4" "$2" "$6"
+    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#%s' "$1" "$2" "$3" "$2" "$4" "$2" "$rk"
   else
-    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=none&host=%s&path=%s#XRAY_VLESS_%s' "$1" "$2" "$3" "$2" "$4" "$6"
+    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=none&host=%s&path=%s#%s' "$1" "$2" "$3" "$2" "$4" "$rk"
   fi
 }
 _trojan_link(){ # id host port path tls name
+  local rk; rk=$(_remark_url TROJAN "$6")
   if [ "$5" = 1 ]; then
-    printf 'trojan://%s@%s:%s?type=ws&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#XRAY_TROJAN_%s' "$1" "$2" "$3" "$2" "$4" "$2" "$6"
+    printf 'trojan://%s@%s:%s?type=ws&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#%s' "$1" "$2" "$3" "$2" "$4" "$2" "$rk"
   else
-    printf 'trojan://%s@%s:%s?type=ws&security=none&host=%s&path=%s#XRAY_TROJAN_%s' "$1" "$2" "$3" "$2" "$4" "$6"
+    printf 'trojan://%s@%s:%s?type=ws&security=none&host=%s&path=%s#%s' "$1" "$2" "$3" "$2" "$4" "$rk"
   fi
 }
 
@@ -115,7 +135,7 @@ ss_box(){ # name ckey created exp
   local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link
   host=$(_host); skey=$(cat "$NDIR/ss_key" 2>/dev/null)
   ui=$(printf '%s' "2022-blake3-aes-256-gcm:$skey:$ck" | base64 -w0)
-  link="ss://$ui@$host:8388#SS_$name"
+  link="ss://$ui@$host:8388#$(_remark_url SS "$name")"
   cat <<EOF
 ========== 🟩 SHADOWSOCKS ==========
 📝 Remarks : $name

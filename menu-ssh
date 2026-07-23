@@ -144,8 +144,17 @@ udp_status() {
     printf "   ${GRY}– absent ${NC} ${GRY}udp-custom (facultatif)${NC}\n"
   fi
   echo
-  if [ "$on" -gt 0 ]; then
-    printf "   ${GRY}Dans l'appli client, mets « UDPGW » / « Payload UDP » sur${NC} ${WHT}7300${NC}${GRY}.${NC}\n"
+  local listen=0
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && listen=1
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && listen=1
+  fi
+  if [ "$listen" = 1 ]; then
+    printf "   ${GRN}✔ Port 7300 vérifié : l'UDP passe.${NC}\n\n"
+    printf "   ${GRY}Dans l'appli client : UDPGW / Payload UDP =${NC} ${WHT}127.0.0.1:7300${NC}\n"
+  elif [ "$on" -gt 0 ]; then
+    warn "Services lancés mais le port 7300 ne répond pas — réinstalle (option 1)."
   else
     warn "UDP non installé — choisis 1 pour l'installer."
   fi

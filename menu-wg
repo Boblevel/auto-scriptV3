@@ -75,7 +75,9 @@ EOF
   echo "### $name $ppub $ip $exp" >> "$DB"
 
   local conf="$NDIR/$name.conf"
+  local _bn; _bn=$(head -1 /etc/banner 2>/dev/null | tr -d '\r\n')
   cat > "$conf" <<EOF
+# ${_bn:-RHAFF SERVICE} - $name
 [Interface]
 PrivateKey = $ppriv
 Address = $ip/32
