@@ -95,7 +95,6 @@ EOF
   printf "${GRY}--- Config client (copie-la dans un fichier .conf) ---${NC}\n"
   cat "$conf"
   echo
-  command -v qrencode >/dev/null 2>&1 && { printf "${GRY}--- QR code ---${NC}\n"; qrencode -t ANSIUTF8 < "$conf"; }
   pause
 }
 
@@ -152,7 +151,6 @@ view_peer() {
     ok "Configuration de $name"
     echo; printf "${GRY}--- Config client (.conf) ---${NC}\n"
     printf "${WHT}"; cat "$conf"; printf "${NC}\n"
-    command -v qrencode >/dev/null 2>&1 && { printf "\n${GRY}--- QR code ---${NC}\n"; qrencode -t ANSIUTF8 < "$conf"; }
   else
     err "Fichier de configuration introuvable pour $name."
   fi

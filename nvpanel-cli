@@ -74,8 +74,6 @@ _remark(){ # $1 = PROTO (VMESS/VLESS/TROJAN/SS)  $2 = nom du compte
 }
 # rien à encoder : _remark ne produit que des caractères sûrs
 _remark_url(){ _remark "$1" "$2"; }
-# chemin encodé pour une URL : /vless => %2Fvless (exigé par la plupart des applis)
-_encpath(){ printf '%s' "$1" | sed 's#/#%2F#g'; }
 
 # ---- liens Xray --------------------------------------------
 _vmess_link(){ # id host port path tls(0/1) name
@@ -88,19 +86,19 @@ _vmess_link(){ # id host port path tls(0/1) name
   fi
 }
 _vless_link(){ # id host port path tls name
-  local rk p; rk=$(_remark_url VLESS "$6"); p=$(_encpath "$4")
+  local rk; rk=$(_remark_url VLESS "$6")
   if [ "$5" = 1 ]; then
-    printf 'vless://%s@%s:%s?path=%s&security=tls&encryption=none&host=%s&type=ws&sni=%s&allowInsecure=1#%s' "$1" "$2" "$3" "$p" "$2" "$2" "$rk"
+    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#%s' "$1" "$2" "$3" "$2" "$4" "$2" "$rk"
   else
-    printf 'vless://%s@%s:%s?path=%s&security=none&encryption=none&host=%s&type=ws#%s' "$1" "$2" "$3" "$p" "$2" "$rk"
+    printf 'vless://%s@%s:%s?type=ws&encryption=none&security=none&host=%s&path=%s#%s' "$1" "$2" "$3" "$2" "$4" "$rk"
   fi
 }
 _trojan_link(){ # id host port path tls name
-  local rk p; rk=$(_remark_url TROJAN "$6"); p=$(_encpath "$4")
+  local rk; rk=$(_remark_url TROJAN "$6")
   if [ "$5" = 1 ]; then
-    printf 'trojan://%s@%s:%s?path=%s&security=tls&host=%s&type=ws&sni=%s&allowInsecure=1#%s' "$1" "$2" "$3" "$p" "$2" "$2" "$rk"
+    printf 'trojan://%s@%s:%s?type=ws&security=tls&host=%s&path=%s&allowInsecure=1&sni=%s#%s' "$1" "$2" "$3" "$2" "$4" "$2" "$rk"
   else
-    printf 'trojan://%s@%s:%s?path=%s&security=none&host=%s&type=ws#%s' "$1" "$2" "$3" "$p" "$2" "$rk"
+    printf 'trojan://%s@%s:%s?type=ws&security=none&host=%s&path=%s#%s' "$1" "$2" "$3" "$2" "$4" "$rk"
   fi
 }
 

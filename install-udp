@@ -46,7 +46,7 @@ if [ "$1" = "build" ]; then
     err "Téléchargement impossible."; pause; exit 1
   fi
   tar xzf "$SRC/b.tar.gz" -C "$SRC" 2>/dev/null
-  BD=$(find "$SRC" -maxdepth 1 -type d -name 'badvpn-*' | head -1)
+  BD=$(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name 'badvpn-*' | head -1)
   [ -z "$BD" ] && { err "Archive illisible."; pause; exit 1; }
   printf "${CYN}➜${NC} Compilation statique (2 à 4 minutes)…\n"
   mkdir -p "$SRC/out"; cd "$SRC/out" || exit 1
@@ -152,7 +152,7 @@ if [ -z "$BADVPN" ]; then
   done
 
   if [ "$GOT" = 1 ]; then
-    BSRCDIR=$(find "$SRC" -maxdepth 1 -type d -name 'badvpn-*' | head -1)
+    BSRCDIR=$(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name 'badvpn-*' | head -1)
     if [ -n "$BSRCDIR" ]; then
       mkdir -p "$SRC/build"
       ( cd "$SRC/build" && \
