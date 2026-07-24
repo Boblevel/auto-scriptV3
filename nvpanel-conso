@@ -13,9 +13,22 @@
 # ============================================================
 DBDIR=/etc/nvpanel/db
 DB="$DBDIR/conso"
+# Version des règles de comptage. À incrémenter dès qu'on change ce qui est
+# compté : l'historique accumulé par l'ancienne méthode est alors effacé,
+# sinon des valeurs erronées (dizaines de Go fantômes) resteraient affichées.
+RULES_VER=3
+VERF="$DBDIR/conso.ver"
 CIN=NVCONSO_IN
 COUT=NVCONSO_OUT
 mkdir -p "$DBDIR"; touch "$DB"
+
+# Changement de méthode de comptage → on repart d'un historique propre.
+# Sans cela, les valeurs erronées accumulées par l'ancienne méthode
+# (dizaines de Go jamais consommés) resteraient affichées indéfiniment.
+if [ "$(cat "$VERF" 2>/dev/null)" != "$RULES_VER" ]; then
+  : > "$DB" 2>/dev/null
+  printf '%s' "$RULES_VER" > "$VERF" 2>/dev/null
+fi
 
 setup_chains(){
   command -v iptables >/dev/null 2>&1 || return 1
@@ -98,6 +111,7 @@ read_vals(){ # affiche "hier|aujourdhui|mois" en octets
 }
 
 reset_all(){
+  printf '%s' "$RULES_VER" > "$VERF" 2>/dev/null
   # 1) on vide l'historique
   : > "$DB" 2>/dev/null
   rm -f "$DB.tmp" 2>/dev/null

@@ -248,7 +248,16 @@ case "$cmd" in
   lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
   unlock) u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -u "$u" &>/dev/null; echo "OK unlocked"; } || echo "ERR nouser" ;;
   list)
-    awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while read -r u; do
+    # On liste les comptes DU PANEL (base interne), pas tous les utilisateurs
+    # Linux : sinon les comptes système et les comptes supprimés continuaient
+    # d'apparaître. Les lignes devenues orphelines sont nettoyées au passage.
+    if [ -s "$DB" ]; then
+      while read -r _ u _; do
+        [ -z "$u" ] && continue
+        id "$u" &>/dev/null || sed -i "/^### $u /d" "$DB" 2>/dev/null
+      done < "$DB"
+    fi
+    awk '/^### /{print $2}' "$DB" 2>/dev/null | while read -r u; do
       e=$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | xargs)
       l=$(awk -v u="$u" '$1==u{print $2}' "$LIMDB"); l=${l:-0}
       q=$(awk -v u="$u" '$1==u{printf "%d",$2/1073741824}' "$QDB"); q=${q:-0}

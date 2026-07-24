@@ -119,4 +119,10 @@ printf "   ${GRY}Ouverture du menu…${NC}\n"
 sleep 1
 # vide les touches tapées pendant la mise à jour (sinon elles ressortent en ^[[A)
 while IFS= read -r -s -t 0.01 -n 512 _ 2>/dev/null; do :; done
+
+# Lancé DEPUIS le panel (menu 14) : on rend simplement la main, le menu
+# appelant se redessine tout seul. Sans cela, « exec menu » empilait un
+# second menu par-dessus le premier — d'où les cadres qui se multipliaient
+# à chaque mise à jour.
+[ -n "${NVPANEL_UI:-}" ] && exit 0
 exec menu
