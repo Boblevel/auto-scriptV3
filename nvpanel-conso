@@ -17,47 +17,50 @@ CIN=NVCONSO_IN
 COUT=NVCONSO_OUT
 mkdir -p "$DBDIR"; touch "$DB"
 
-_ports_tcp(){
-  local p="80,8388,1723" x d s
-  x=$(cat /etc/nvpanel/xport 2>/dev/null); [ -n "$x" ] && p="$p,$x" || p="$p,443"
-  s=$(cat /etc/nvpanel/sstp_port 2>/dev/null); [ -n "$s" ] && p="$p,$s"
-  # dédoublonnage (multiport refuse les doublons et est limité à 15 ports)
-  printf '%s' "$p" | tr ',' '\n' | awk 'NF && !seen[$0]++' | head -15 | paste -sd, -
-}
-
-_ports_udp(){
-  local p="53,5300,7100,7200,7300,51820,500,4500,1701" u
-  u=$(grep -oP '"listen"\s*:\s*":?\K[0-9]+' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
-  [ -n "$u" ] && p="$p,$u"
-  printf '%s' "$p" | tr ',' '\n' | awk 'NF && !seen[$0]++' | head -15 | paste -sd, -
-}
-
 setup_chains(){
   command -v iptables >/dev/null 2>&1 || return 1
-  local TCP UDP
-  TCP=$(_ports_tcp); UDP=$(_ports_udp)
+  local UDP x
+  x=$(cat /etc/nvpanel/xport 2>/dev/null); x=${x:-443}
+
   iptables -N "$CIN"  2>/dev/null; iptables -F "$CIN"  2>/dev/null
   iptables -N "$COUT" 2>/dev/null; iptables -F "$COUT" 2>/dev/null
   iptables -C INPUT  -j "$CIN"  2>/dev/null || iptables -I INPUT  -j "$CIN"  2>/dev/null
   iptables -C OUTPUT -j "$COUT" 2>/dev/null || iptables -I OUTPUT -j "$COUT" 2>/dev/null
-  # entrant : destination = un de nos ports de service
-  iptables -A "$CIN"  -p tcp -m multiport --dports "$TCP" -j RETURN 2>/dev/null
-  iptables -A "$CIN"  -p udp -m multiport --dports "$UDP" -j RETURN 2>/dev/null
-  # sortant : source = un de nos ports de service (réponses aux clients)
-  iptables -A "$COUT" -p tcp -m multiport --sports "$TCP" -j RETURN 2>/dev/null
-  iptables -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
-  # Trafic SSH des COMPTES DU PANEL uniquement (UID >= 1000).
-  # On ne compte surtout pas le port 22 par son numéro : cela inclurait
-  # la session d'administration (root), d'où une consommation fantôme.
+
+  # ------------------------------------------------------------------
+  # On ne compte QUE des flux qui ne peuvent appartenir qu'à un client VPN.
+  # Les ports 22, 80, 443 et 1723 sont volontairement exclus : ils portent
+  # aussi l'administration du serveur, les certificats, les mises à jour…
+  # ce qui faisait apparaître des dizaines de Go jamais consommés.
+  # ------------------------------------------------------------------
+
+  # 1) Tunnels SSH : trafic APPARTENANT aux comptes du panel (UID >= 1000).
+  #    La session d'administration (root, UID 0) est donc exclue.
   if ! iptables -A "$COUT" -m owner --uid-owner 1000-59999 -j RETURN 2>/dev/null; then
-    # Certaines versions d'iptables n'acceptent pas les plages d'UID :
-    # on ajoute alors une règle par compte existant.
     local u uid
     for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
       uid=$(id -u "$u" 2>/dev/null) || continue
       iptables -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
     done
   fi
+
+  # 2) Xray / Shadowsocks : le trafic client transite par la boucle locale
+  #    entre nginx et Xray. Rien d'autre n'emprunte ces ports.
+  iptables -A "$COUT" -o lo -p tcp -m multiport --dports 8080,8081,8082,8388 -j RETURN 2>/dev/null
+  iptables -A "$COUT" -o lo -p tcp -m multiport --sports 8080,8081,8082,8388 -j RETURN 2>/dev/null
+
+  # 3) WireGuard et PPP (L2TP / PPTP / SSTP) : interfaces dédiées aux clients.
+  for i in wg0 "ppp+"; do
+    iptables -A "$CIN"  -i "$i" -j RETURN 2>/dev/null
+    iptables -A "$COUT" -o "$i" -j RETURN 2>/dev/null
+  done
+
+  # 4) SlowDNS et UDP : ports exclusivement réservés aux tunnels.
+  UDP="5300,7100,7200,7300"
+  local uc; uc=$(grep -oP '"listen"\s*:\s*":?\K[0-9]+' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
+  [ -n "$uc" ] && UDP="$UDP,$uc"
+  iptables -A "$CIN"  -p udp -m multiport --dports "$UDP" -j RETURN 2>/dev/null
+  iptables -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
   return 0
 }
 

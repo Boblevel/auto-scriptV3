@@ -173,8 +173,12 @@ def send(chat, text, kb=None):
     mk = kb if kb is not None else main_kb()
     api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
 
+MENU_TXT = ("<b>\U0001F6F0 RHAFF SERVICE</b>\n"
+            "<i>Panel gestion &amp; contr\u00f4le</i>\n\n"
+            "Choisissez une commande \U0001F447 :")
+
 def show_menu(chat):
-    send(chat, "<b>\U0001F6F0 RHAFF SERVICE</b>\n<i>Gestion premium des acc\u00e8s &amp; tunnels</i>\n\nChoisis une action :")
+    send(chat, MENU_TXT)
 
 def do_monitor(chat):
     up, ram, load = sys_info()
@@ -361,7 +365,7 @@ def authorized(uid):
 def main():
     offset = None
     if ADMIN:
-        api("sendMessage", chat_id=ADMIN, text="\U0001F916 nvpanel bot en ligne", reply_markup=main_kb())
+        api("sendMessage", chat_id=ADMIN, text=MENU_TXT, parse_mode="HTML", reply_markup=main_kb())
     while True:
         upd = api("getUpdates", offset=offset, timeout=50)
         if not upd.get("ok"):

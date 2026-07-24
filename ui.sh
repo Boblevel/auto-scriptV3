@@ -63,28 +63,22 @@ banner() {
   bot
 }
 
-# ---- Aides consommation (vnstat) ---------------------------
+# ---- Aides consommation (compteur clients) -----------------
 _iface(){ ip route 2>/dev/null | awk '/default/{print $5; exit}'; }
 _hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go To Po",u," "); i=1; while(b>=1024 && i<6){b/=1024;i++} printf "%.1f %s", b, u[i] }'; }
 
 # renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
 _conso_raw(){
-  local ifc j jm t y m r
-  # Compteur CLIENTS : ne compte que le trafic des tunnels (comptes vendus).
-  # Le trafic propre du serveur (apt, mise à jour du script, test de vitesse,
-  # certificats...) est volontairement exclu.
+  # Consommation des CLIENTS uniquement. Aucun repli sur vnstat :
+  # vnstat mesure tout le trafic de la machine (mises à jour, sauvegardes,
+  # trafic de l'hébergeur…) et affichait des dizaines de Go jamais consommés
+  # par un client VPN.
+  local r
   if [ -x /usr/local/bin/nvpanel-conso ]; then
     r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
     case "$r" in *'|'*'|'*) echo "$r"; return ;; esac
   fi
-  ifc=$(_iface)
-  command -v vnstat >/dev/null 2>&1 || { echo "0|0|0"; return; }
-  j=$(vnstat -i "$ifc" --json d 2>/dev/null)
-  jm=$(vnstat -i "$ifc" --json m 2>/dev/null)
-  t=$(echo "$j"  | jq -r '((.interfaces[0].traffic.day[-1].rx // 0)+(.interfaces[0].traffic.day[-1].tx // 0))' 2>/dev/null)
-  y=$(echo "$j"  | jq -r '((.interfaces[0].traffic.day[-2].rx // 0)+(.interfaces[0].traffic.day[-2].tx // 0))' 2>/dev/null)
-  m=$(echo "$jm" | jq -r '((.interfaces[0].traffic.month[-1].rx // 0)+(.interfaces[0].traffic.month[-1].tx // 0))' 2>/dev/null)
-  echo "${y:-0}|${t:-0}|${m:-0}"
+  echo "0|0|0"
 }
 
 # ---- En-tête système ---------------------------------------
@@ -236,8 +230,19 @@ _wg_time(){
   else printf '%dmin' $((d/60)); fi
 }
 
-ui_enter(){ printf '\033[?1049h\033[?1007l\033[?1000l\033[H'; }
-ui_leave(){ printf '\033[?1007h\033[?1049l'; }
+# L'écran alterné n'est PAS empilable : si un sous-menu le quitte, le menu
+# parent se remet à écrire dans l'écran normal, dont l'historique accumule
+# les cadres. Seul le processus qui l'a ouvert a donc le droit de le fermer.
+ui_enter(){
+  if [ -z "${NVPANEL_UI:-}" ]; then
+    export NVPANEL_UI=$$
+    printf '\033[?1049h\033[?1007l\033[?1000l\033[H'
+  fi
+}
+ui_leave(){
+  [ "${NVPANEL_UI:-}" = "$$" ] || return 0
+  printf '\033[?1007h\033[?1049l'
+}
 
 # animation de chargement stylée avec pourcentage (comme l'installation)
 loading(){
