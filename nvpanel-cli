@@ -171,6 +171,9 @@ case "$cmd" in
     pass=$(printf '%s' "$2" | tr -d '\r\n')
     days="${3:-30}"; lim="${4:-2}"; gb="${5:-0}"
     { [ -z "$user" ] || [ -z "$pass" ]; } && { echo "ERR args"; exit 1; }
+    # Beaucoup d'applications VPN refusent les mots de passe très courts :
+    # on impose 4 caractères minimum pour éviter de livrer un compte inutilisable.
+    [ "${#pass}" -lt 4 ] && { echo "ERR shortpass"; exit 1; }
     id "$user" &>/dev/null && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)

@@ -55,7 +55,11 @@ create_account() {
     printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
     printf "\n   ${GRY}Appareils : %s · Quota : %s${NC}\n" "$lim" "$([ "$gb" -gt 0 ] && echo "${gb} Go" || echo illimité)"
   else
-    err "Échec : $(echo "$out" | head -1)"
+    case "$out" in
+      *shortpass*) err "Mot de passe trop court : 4 caractères minimum." ;;
+      *exists*)    err "Ce nom d'utilisateur existe déjà." ;;
+      *)           err "Échec : $(echo "$out" | head -1)" ;;
+    esac
   fi
   pause
 

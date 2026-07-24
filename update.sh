@@ -67,6 +67,20 @@ ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 
 fill 88 "Mise à jour des services…"
 systemctl daemon-reload >/dev/null 2>&1
+# Dropbear : Ubuntu livre NO_START=1, le service ne démarre jamais sans ceci
+if dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
+  touch /etc/default/dropbear
+  if grep -q '^NO_START=1' /etc/default/dropbear || ! systemctl is-active --quiet dropbear 2>/dev/null; then
+    sed -i '/^NO_START=/d' /etc/default/dropbear
+    echo 'NO_START=0' >> /etc/default/dropbear
+    grep -q '^DROPBEAR_PORT=' /etc/default/dropbear || echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
+    grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
+    systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket' && systemctl disable --now dropbear.socket >/dev/null 2>&1
+    systemctl unmask dropbear >/dev/null 2>&1
+    systemctl enable dropbear >/dev/null 2>&1
+    systemctl restart dropbear >/dev/null 2>&1
+  fi
+fi
 # Le bot Telegram n'est PAS redémarré ici : c'est à toi de le faire
 # depuis le menu (Bot Telegram → « Redémarrer le bot »).
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
