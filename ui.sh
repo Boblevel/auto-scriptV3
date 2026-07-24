@@ -98,7 +98,10 @@ sysinfo() {
 }
 
 # ---- Statistiques comptes ----------------------------------
-_count_db(){ grep -c '^### ' "/etc/nvpanel/db/$1" 2>/dev/null || echo 0; }
+# ATTENTION : « grep -c » renvoie un code d'erreur quand le compte est 0,
+# tout en affichant « 0 ». Un « || echo 0 » ajouterait donc un SECOND zéro
+# (résultat « 0 0 ») qui casse ensuite les calculs. On teste la variable.
+_count_db(){ local n; n=$(grep -c '^### ' "/etc/nvpanel/db/$1" 2>/dev/null); printf '%s' "${n:-0}"; }
 
 stats() {
   local ssh online blocked total hier auj mois
