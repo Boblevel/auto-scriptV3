@@ -33,15 +33,25 @@ xmeta() {
 
 # ---- encadré SSH -------------------------------------------
 ssh_box(){ # user pass created exp
-  local user="$1" pass="$2" cr="$3" ex="$4" ip dom ns key
+  local user="$1" pass="$2" cr="$3" ex="$4" ip dom ns key lim q bw
   ip=$(_ip); dom=$(_dom); [ -z "$dom" ] && dom="$ip"
   if [ -n "$(_dom)" ]; then ns="ns-$(_dom)"; else ns="-"; fi
   key=$(_sldnskey)
+  # nombre d'appareils et volume autorisés, lus dans les bases du panel
+  lim=$(awk -v u="$user" '$1==u{print $2}' "$LIMDB" 2>/dev/null); lim=${lim:-2}
+  q=$(awk -v u="$user" '$1==u{print $2}' "$QDB" 2>/dev/null); q=${q:-0}
+  if [ "$q" -gt 0 ] 2>/dev/null; then
+    bw=$(awk -v b="$q" 'BEGIN{printf "%.0f Go", b/1073741824}')
+  else
+    bw="illimitée"
+  fi
   cat <<EOF
 👨🏼‍💻 COMPTE PREMIUM SSH WEBSOCKET 👨🏼‍💻
 ==================================
 👤 Username : $user
 🔑 Password : $pass
+📱 Appareils : $lim
+⚡ Bande passante : $bw
 📅 Created  : $cr
 ⏳ Expired  : $ex
 ========== 🌐 HOST-SSH ===========

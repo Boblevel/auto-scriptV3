@@ -31,9 +31,9 @@ center() {
 # Menu : entry "01" "🔒" "Label"  (avec emoji)  ou  entry "1" "Label"
 entry() {
   if [ "$#" -ge 3 ]; then
-    printf "  ${GRN}[%s]${NC} %s %-.30s\n" "$1" "$2" "$3"
+    printf "  ${GRN}[%s]${NC} %s %s\n" "$1" "$2" "$3"
   else
-    printf "  ${GRN}[%s]${NC} %-.32s\n" "$1" "$2"
+    printf "  ${GRN}[%s]${NC} %s\n" "$1" "$2"
   fi
 }
 

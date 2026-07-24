@@ -53,7 +53,6 @@ create_account() {
     ok "Compte SSH créé"
     echo
     printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
-    printf "\n   ${GRY}Appareils : %s · Quota : %s${NC}\n" "$lim" "$([ "$gb" -gt 0 ] && echo "${gb} Go" || echo illimité)"
   else
     case "$out" in
       *shortpass*) err "Mot de passe trop court : 4 caractères minimum." ;;
@@ -127,8 +126,8 @@ slowdns_menu() {
   else
     warn "SlowDNS non installé."
   fi
-  echo; entry "1" "⬇️" "Installer / réinstaller SlowDNS"
-  entry "2" "🗑️" "Désinstaller SlowDNS"
+  echo; entry "1" "⬇️" "Installer / réinstaller"
+  entry "2" "🗑️" "Désinstaller"
   entry "0" "⬅️" "Retour"; line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
   case "$s" in
@@ -180,8 +179,8 @@ udp_status() {
   else
     warn "UDP non installé — choisis 1 pour l'installer."
   fi
-  echo; entry "1" "⬇️" "Installer / réinstaller UDP"
-  entry "2" "🗑️" "Désinstaller UDP"
+  echo; entry "1" "⬇️" "Installer / réinstaller"
+  entry "2" "🗑️" "Désinstaller"
   entry "0" "⬅️" "Retour"; line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
   case "$s" in
@@ -243,13 +242,13 @@ while true; do
   header
   entry "1" "➕" "Créer un compte"
   entry "2" "📋" "Lister les comptes"
-  entry "3" "🔍" "Revoir un compte (infos + clé)"
+  entry "3" "🔍" "Revoir un compte"
   entry "4" "♻️" "Prolonger / réactiver"
   entry "5" "🔒" "Verrouiller / déverrouiller"
   entry "6" "🗑️" "Supprimer un compte"
   entry "7" "🌐" "SlowDNS"
   entry "8" "📡" "UDP (badvpn / udp-custom)"
-  entry "9" "🧹" "Nettoyage (expirés / tout supprimer)"
+  entry "9" "🧹" "Nettoyage des comptes"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}Choix :${NC} ")" o

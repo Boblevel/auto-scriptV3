@@ -10,8 +10,42 @@ BKDIR=/root
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
 
 set_domain(){
-  header; ask " Domaine (ex. vpn.mondomaine.com) : " d
-  [ -n "$d" ] && { echo "$d" > /etc/nvpanel/domain; ok "Domaine : $d"; } || warn "Inchangé"; pause
+  header; center " 🌐  DOMAINE DU SERVEUR " "${BOLD}${WHT}"; line
+  printf "   ${GRY}Actuel :${NC} %s\n\n" "$(cat /etc/nvpanel/domain 2>/dev/null || echo 'non configuré')"
+  ask " Domaine complet (ex. vpn.mondomaine.com) : " d
+  d=$(printf '%s' "$d" | tr -d '\r\n\t ' | tr 'A-Z' 'a-z')
+  [ -z "$d" ] && { warn "Inchangé"; pause; return; }
+  # Un domaine doit contenir au moins un point : « alfredtech » seul est invalide
+  case "$d" in
+    *.*) ;;
+    *) err "Domaine incomplet : il manque l'extension (ex. $d.mondomaine.com)."; pause; return ;;
+  esac
+  echo "$d" > /etc/nvpanel/domain
+  ok "Domaine enregistré : $d"
+  echo
+
+  # --- Propagation vers les modules qui dépendent du domaine ---
+  # Sans ceci, SlowDNS garde l'ancien nom (il est inscrit dans son service).
+  if systemctl is-active --quiet nvpanel-slowdns 2>/dev/null || [ -s /etc/nvpanel/slowdns/dns-server ]; then
+    printf "${CYN}➜${NC} Reconfiguration de SlowDNS (ns-%s)…\n" "$d"
+    /usr/local/bin/install-slowdns auto "ns-$d" >/dev/null 2>&1
+    if systemctl is-active --quiet nvpanel-slowdns 2>/dev/null; then
+      ok "SlowDNS mis à jour."
+    else
+      warn "SlowDNS n'a pas redémarré — réinstalle-le depuis le menu SSH."
+    fi
+  fi
+  if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
+    printf "${CYN}➜${NC} Mise à jour de la façade web…\n"
+    /usr/local/bin/install-xray auto >/dev/null 2>&1
+    ok "Façade web mise à jour."
+  fi
+  echo
+  printf "   ${WHT}Pense à vérifier tes enregistrements DNS :${NC}\n"
+  printf "   ${GRY}• A  : %s  →  %s${NC}\n" "${d%%.*}" "$(cat /etc/nvpanel/ip 2>/dev/null)"
+  printf "   ${GRY}• NS : ns-%s  →  %s${NC}\n" "${d%%.*}" "$d"
+  printf "   ${YLW}Les comptes déjà créés doivent être ré-envoyés (option « Revoir un compte »).${NC}\n"
+  pause
 }
 change_port(){
   header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null || echo '?')"
@@ -271,7 +305,7 @@ while true; do
   entry "7"  "📊" "Utilisation RAM / trafic"
   entry "8"  "🧠" "Créer un SwapRAM"
   entry "9"  "⚡" "Activer BBR"
-  entry "10" "🚀" "Speedtest du serveur"
+  entry "10" "🚀" "Test de vitesse du serveur"
   entry "11" "♻️" "Redémarrer les services VPN"
   entry "12" "📜" "Renouveler les certificats"
   entry "13" "📝" "Ajouter une bannière SSH"

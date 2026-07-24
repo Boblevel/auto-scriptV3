@@ -211,8 +211,8 @@ while true; do
   entry "3" "🔍" "Revoir un compte"
   entry "4" "♻️" "Prolonger un compte"
   entry "5" "🗑️" "Supprimer un compte"
-  entry "6" "🧹" "Nettoyage (expirés / tout supprimer)"
-  entry "7" "⚙️" "Installer / désinstaller $LABEL"
+  entry "6" "🧹" "Nettoyage des comptes"
+  entry "7" "⚙️" "Installer / désinstaller"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
