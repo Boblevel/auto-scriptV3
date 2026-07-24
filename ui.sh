@@ -55,7 +55,8 @@ flush_in(){
 
 banner() {
   flush_in
-  printf '\033[H\033[2J\033[3J'
+  # efface l'écran ET l'historique de défilement : un seul cadre visible
+  printf '\033[3J\033[H\033[2J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
   center "panel de gestion & contrôle" "${GRY}"
@@ -180,7 +181,12 @@ confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }
 ask(){
   local __v="$2" buf="" ch e _tty
   [ -n "$1" ] && printf '%b' "$1"
-  if [ ! -t 0 ]; then IFS= read -r buf; printf -v "$__v" '%s' "$buf"; return 0; fi
+  # Entrée non interactive : on propage la fin de fichier, sinon une boucle
+  # de menu tournerait indéfiniment dans le vide.
+  if [ ! -t 0 ]; then
+    if IFS= read -r buf; then printf -v "$__v" '%s' "$buf"; return 0; fi
+    printf -v "$__v" '%s' "$buf"; return 1
+  fi
 
   # L'écho du terminal est coupé pendant TOUTE la saisie.
   # « read -rsn1 » ne le coupe que le temps d'un caractère : entre deux tours
@@ -193,7 +199,9 @@ ask(){
     [ -n "$_tty" ] && stty -echo 2>/dev/null
   fi
 
+  local _eof=1
   while IFS= read -rsn1 ch 2>/dev/null; do
+    _eof=0
     case "$ch" in
       '')       break ;;                                  # Entrée
       $'\e')    # séquence d'échappement : avalée jusqu'à son caractère final
@@ -215,6 +223,9 @@ ask(){
   [ -n "$_tty" ] && stty "$_tty" 2>/dev/null
   printf '\n'
   printf -v "$__v" '%s' "$buf"
+  # Entrée fermée (plus de terminal) : on le signale pour éviter
+  # qu'une boucle de menu tourne indéfiniment dans le vide.
+  [ "$_eof" = 1 ] && [ -z "$buf" ] && return 1
   return 0
 }
 
@@ -254,22 +265,22 @@ ask_echo(){ ask "$1" "$2"; }
 ui_enter(){
   if [ -z "${NVPANEL_UI:-}" ]; then
     export NVPANEL_UI=$$
-    # L'écho du terminal est coupé pendant TOUTE la session du panel.
-    # Sinon, les séquences envoyées par le défilement de l'écran (^[[A, ^[[B)
-    # s'affichent d'elles-mêmes pendant que le menu se dessine, avant même
-    # que la saisie ne commence. « ask » réaffiche les touches légitimes.
+    # PAS d'écran alterné (\033[?1049h) : il effaçait tout l'affichage en
+    # quittant, y compris les messages d'erreur — le panel semblait alors
+    # « ne rien faire ». Il activait aussi le mode qui transforme le
+    # défilement en flèches (^[[A). On reste sur l'écran normal, nettoyé.
     export NVPANEL_TTY="$(stty -g 2>/dev/null)"
     stty -echo 2>/dev/null
-    printf '\033[?1049h\033[?1007l\033[?1000l\033[H'
   fi
 }
+
 ui_leave(){
   [ "${NVPANEL_UI:-}" = "$$" ] || return 0
-  # On rétablit toujours un terminal utilisable, même après interruption.
+  # On rend toujours un terminal utilisable, même après une interruption.
   if [ -n "${NVPANEL_TTY:-}" ]; then stty "$NVPANEL_TTY" 2>/dev/null
   else stty echo icanon 2>/dev/null; fi
-  printf '\033[?1007h\033[?1049l'
 }
+
 
 # animation de chargement stylée avec pourcentage (comme l'installation)
 loading(){

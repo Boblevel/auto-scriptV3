@@ -279,7 +279,7 @@ while true; do
   entry "8" "⚙️" "Installer / désinstaller"
   entry "0" "⬅️" "Retour"
   line
-  ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" o || break
   case "$o" in
     1) add_peer ;; 2) list_peers ;; 3) view_peer ;;
     4) renew_peer ;; 5) del_peer ;; 6) cleanup_menu ;; 7) trial_peer ;; 8) setup_menu ;;

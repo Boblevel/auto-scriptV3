@@ -96,7 +96,7 @@ while true; do
   entry "16" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
   line
-  ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;
     02|2) run menu-xray vmess ;;

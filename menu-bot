@@ -36,7 +36,7 @@ entry "3" "⏹️" "Arrêter le bot"
 entry "4" "📄" "Voir le statut / logs"
 entry "0" "⬅️" "Retour"
 line
-ask "$(printf " ${WHT}Choix :${NC} ")" o
+ask "$(printf " ${WHT}Choix :${NC} ")" o || break
 
 case "$o" in
   1)

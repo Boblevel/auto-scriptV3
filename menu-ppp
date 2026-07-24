@@ -231,7 +231,7 @@ while true; do
   entry "8" "⚙️" "Installer / désinstaller"
   entry "0" "⬅️" "Retour"
   line
-  ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" o || break
   case "$o" in
     1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) del ;;
     6) cleanup_menu ;; 7) trial ;; 8) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
