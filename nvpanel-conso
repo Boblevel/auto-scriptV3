@@ -18,15 +18,9 @@ COUT=NVCONSO_OUT
 mkdir -p "$DBDIR"; touch "$DB"
 
 _ports_tcp(){
-  local p="22,80,8388,1723" x d s
+  local p="80,8388,1723" x d s
   x=$(cat /etc/nvpanel/xport 2>/dev/null); [ -n "$x" ] && p="$p,$x" || p="$p,443"
-  d=$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null)
-  [ -n "$d" ] && p="$p,$d"
   s=$(cat /etc/nvpanel/sstp_port 2>/dev/null); [ -n "$s" ] && p="$p,$s"
-  # ports Dropbear additionnels éventuels
-  for extra in 109 143; do
-    grep -q "\b$extra\b" /etc/default/dropbear 2>/dev/null && p="$p,$extra"
-  done
   # dédoublonnage (multiport refuse les doublons et est limité à 15 ports)
   printf '%s' "$p" | tr ',' '\n' | awk 'NF && !seen[$0]++' | head -15 | paste -sd, -
 }
@@ -52,6 +46,18 @@ setup_chains(){
   # sortant : source = un de nos ports de service (réponses aux clients)
   iptables -A "$COUT" -p tcp -m multiport --sports "$TCP" -j RETURN 2>/dev/null
   iptables -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
+  # Trafic SSH des COMPTES DU PANEL uniquement (UID >= 1000).
+  # On ne compte surtout pas le port 22 par son numéro : cela inclurait
+  # la session d'administration (root), d'où une consommation fantôme.
+  if ! iptables -A "$COUT" -m owner --uid-owner 1000-59999 -j RETURN 2>/dev/null; then
+    # Certaines versions d'iptables n'acceptent pas les plages d'UID :
+    # on ajoute alors une règle par compte existant.
+    local u uid
+    for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
+      uid=$(id -u "$u" 2>/dev/null) || continue
+      iptables -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+    done
+  fi
   return 0
 }
 
@@ -89,9 +95,17 @@ read_vals(){ # affiche "hier|aujourdhui|mois" en octets
 }
 
 reset_all(){
-  : > "$DB"
+  # 1) on vide l'historique
+  : > "$DB" 2>/dev/null
+  rm -f "$DB.tmp" 2>/dev/null
+  # 2) on remet les compteurs iptables à zéro
   iptables -Z "$CIN"  2>/dev/null
   iptables -Z "$COUT" 2>/dev/null
+  # 3) on recrée les chaînes : garantit qu'aucun compteur résiduel ne subsiste
+  setup_chains >/dev/null 2>&1
+  iptables -Z "$CIN"  2>/dev/null
+  iptables -Z "$COUT" 2>/dev/null
+  : > "$DB" 2>/dev/null
   return 0
 }
 

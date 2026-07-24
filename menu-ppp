@@ -36,6 +36,16 @@ ensure(){
   return 1
 }
 
+
+_rand_name(){ printf 'test%s' "$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c4)"; }
+_rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
+
+trial(){
+  banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
+  printf "   ${GRY}Génération d'un compte $LABEL valable 24 heures…${NC}\n"
+  create "$(_rand_name)" "$(_rand_pass)" 1
+}
+
 pick(){
   PICK=""
   mapfile -t _l < <(awk '/^### /{print $2"|"$4}' "$DB" 2>/dev/null)
@@ -53,11 +63,16 @@ pick(){
 }
 
 create(){
+  local u p d out
+  if [ -n "$1" ]; then
+    u="$1"; p="$2"; d="${3:-1}"
+  else
   header; ask " Nom d'utilisateur : " u
   [ -z "$u" ] && { err "Nom vide"; pause; return; }
   ask " Mot de passe : " p
   [ -z "$p" ] && { err "Mot de passe vide"; pause; return; }
   ask " Durée (jours) : " d; [[ "$d" =~ ^[0-9]+$ ]] || d=30
+  fi
   out=$(nvpanel-ppp add "$PROTO" "$u" "$p" "$d")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
@@ -103,7 +118,7 @@ del(){
 
 cleanup_menu(){
   while true; do
-    header; center " 🧹  NETTOYAGE $LABEL " "${BOLD}${WHT}"; line
+    banner; center " 🧹  NETTOYAGE $LABEL " "${BOLD}${WHT}"; line
     local tot exp today c r out
     today=$(date +%F)
     tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
@@ -133,7 +148,7 @@ cleanup_menu(){
 }
 
 uninstall_proto(){
-  header; center " 🗑️  DÉSINSTALLER $LABEL " "${BOLD}${RED}"; line
+  banner; center " 🗑️  DÉSINSTALLER $LABEL " "${BOLD}${RED}"; line
   warn "Cela supprime le service $LABEL et TOUS ses comptes."
   printf "   ${GRY}Les autres protocoles ne sont pas touchés.${NC}\n\n"
   printf "   ${RED}➤ Confirmer la désinstallation ? (o/n) : ${NC}"; ask "" r
@@ -183,7 +198,7 @@ uninstall_proto(){
 
 setup_menu(){
   while true; do
-    header; center " ⚙️  INSTALLER / DÉSINSTALLER $LABEL " "${BOLD}${WHT}"; line
+    banner; center " ⚙️  INSTALLER / DÉSINSTALLER $LABEL " "${BOLD}${WHT}"; line
     if systemctl is-active --quiet "$SVC" 2>/dev/null; then
       printf "   ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}\n\n"
     else
@@ -212,12 +227,13 @@ while true; do
   entry "4" "♻️" "Prolonger un compte"
   entry "5" "🗑️" "Supprimer un compte"
   entry "6" "🧹" "Nettoyage des comptes"
-  entry "7" "⚙️" "Installer / désinstaller"
+  entry "7" "🎁" "Compte test 24 h"
+  entry "8" "⚙️" "Installer / désinstaller"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" o
   case "$o" in
     1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) del ;;
-    6) cleanup_menu ;; 7) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+    6) cleanup_menu ;; 7) trial ;; 8) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

@@ -18,9 +18,14 @@ ensure_xray() {
 }
 
 add_client() {
+  local name days out
+  if [ -n "$1" ]; then
+    name="$1"; days="${2:-1}"
+  else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
+  fi
   out=$(nvpanel-cli xadd ss "$name" "$days")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
@@ -34,6 +39,16 @@ list_clients() {
   nvpanel-cli xlist ss | while IFS='|' ask "" n e; do printf " %-20s %s\n" "$n" "$e"; done
   pause
 }
+
+_rand_name(){ printf 'test%s' "$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c4)"; }
+_rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
+
+trial_client() {
+  banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
+  printf "   ${GRY}Génération d'un client Shadowsocks valable 24 heures…${NC}\n"
+  add_client "$(_rand_name)" 1
+}
+
 pick_client() {
   PICK=""
   mapfile -t _cl < <(nvpanel-cli xlist ss | awk -F'|' 'NF{print $1"|"$2}')
@@ -69,7 +84,7 @@ view_client() {
 
 cleanup_menu() {
   while true; do
-    header; center " 🧹  NETTOYAGE SHADOWSOCKS " "${BOLD}${WHT}"; line
+    banner; center " 🧹  NETTOYAGE SHADOWSOCKS " "${BOLD}${WHT}"; line
     local tot exp today c r out
     today=$(date +%F)
     tot=$(nvpanel-cli xlist ss 2>/dev/null | grep -c '|')
@@ -99,7 +114,7 @@ cleanup_menu() {
 }
 
 uninstall_xray(){
-  header; center " 🗑️  DÉSINSTALLER XRAY " "${BOLD}${RED}"; line
+  banner; center " 🗑️  DÉSINSTALLER XRAY " "${BOLD}${RED}"; line
   warn "ATTENTION : le cœur Xray gère 4 protocoles à la fois."
   printf "   ${YLW}Vmess · Vless · Trojan · Shadowsocks seront TOUS supprimés,${NC}\n"
   printf "   ${YLW}avec l'ensemble de leurs clients.${NC}\n"
@@ -125,7 +140,7 @@ uninstall_xray(){
 
 setup_menu(){
   while true; do
-    header; center " ⚙️  INSTALLER / DÉSINSTALLER XRAY " "${BOLD}${WHT}"; line
+    banner; center " ⚙️  INSTALLER / DÉSINSTALLER XRAY " "${BOLD}${WHT}"; line
     if systemctl is-active --quiet xray 2>/dev/null; then
       printf "   ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}\n"
     else
@@ -152,9 +167,10 @@ while true; do
   entry "1" "➕" "Ajouter un client"; entry "2" "📋" "Lister les clients"
   entry "3" "🔍" "Revoir un client"; entry "4" "♻️" "Prolonger un client"
   entry "5" "🗑️" "Supprimer un client"; entry "6" "🧹" "Nettoyage des comptes"
-  entry "7" "⚙️" "Installer / désinstaller"
+  entry "7" "🎁" "Compte test 24 h"
+  entry "8" "⚙️" "Installer / désinstaller"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}Choix :${NC} ")" o
-  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
+  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) trial_client ;; 8) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
 done

@@ -27,7 +27,8 @@ pick_user() {
   for u in "${_users[@]}"; do
     exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
     if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="${RED}verrou${NC}"; else st="${GRN}actif${NC}"; fi
-    printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b\n" "$i" "$u" "${exp:-?}" "$st"
+    local _ct; _ct=$(_conn_time "$u")
+    printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b  ${CYN}%s${NC}\n" "$i" "$u" "${exp:-?}" "$st" "${_ct:+⏱ $_ct}"
     i=$((i+1))
   done
   echo; ask "   ➤ Numéro (0 = annuler) : " n
@@ -38,15 +39,21 @@ pick_user() {
 }
 
 create_account() {
-  header
-  ask " Utilisateur : " user
-  [ -z "$user" ] && { err "Nom vide"; pause; return; }
-  id "$user" &>/dev/null && { err "Existe déjà"; pause; return; }
-  ask " Mot de passe : " pass
-  ask " Durée (jours) : " days;   [[ "$days" =~ ^[0-9]+$ ]] || days=30
-  ask " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
-  ask " Quota (Go, 0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
-
+  # Sans argument : saisie interactive. Avec arguments : création automatique
+  # (utilisée par le compte test 24 h).
+  local user pass days lim gb out
+  if [ -n "$1" ]; then
+    user="$1"; pass="$2"; days="${3:-1}"; lim="${4:-1}"; gb="${5:-0}"
+  else
+    header
+    ask " Utilisateur : " user
+    [ -z "$user" ] && { err "Nom vide"; pause; return; }
+    id "$user" &>/dev/null && { err "Existe déjà"; pause; return; }
+    ask " Mot de passe : " pass
+    ask " Durée (jours) : " days;   [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    ask " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
+    ask " Quota (Go, 0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
+  fi
   out=$(nvpanel-cli create "$user" "$pass" "$days" "$lim" "$gb")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
@@ -66,15 +73,15 @@ create_account() {
 
 list_accounts() {
   header
-  printf " ${GRY}%-14s %-11s %-4s %-9s %s${NC}\n" "User" "Expire" "Dev" "Quota" "Statut"
+  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while ask "" u; do
-    e=$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | xargs)
-    l=$(awk -v u="$u" '$1==u{print $2}' "$LIMDB"); l=${l:-–}
-    q=$(awk -v u="$u" '$1==u{printf "%dGo",$2/1073741824}' "$QDB"); q=${q:-illim}
-    if passwd -S "$u" 2>/dev/null | grep -q ' L '; then st="${RED}verrou${NC}"; else st="${GRN}actif${NC}"; fi
-    printf " %-14s %-11s %-4s %-9s %b\n" "$u" "${e:-jamais}" "$l" "$q" "$st"
-  done
+  local u exp st ct
+  while read -r _ u exp; do
+    [ -z "$u" ] && continue
+    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="verrou"; else st="actif"; fi
+    ct=$(_conn_time "$u")
+    printf " %-16s %-12s %-8s %s\n" "$u" "${exp:-?}" "$st" "${ct:-—}"
+  done < "$DB"
   pause
 }
 
@@ -93,6 +100,19 @@ delete_account() {
   out=$(nvpanel-cli delete "$user")
   echo "$out" | grep -q '^OK' && ok "$user supprimé (connexion coupée)" || err "Échec : $out"
   pause
+}
+
+
+# Génère un compte de démonstration valable 24 h (identifiants aléatoires).
+_rand_name(){ printf 'test%s' "$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c4)"; }
+_rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
+
+trial_account() {
+  banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
+  local n p
+  n=$(_rand_name); p=$(_rand_pass)
+  printf "   ${GRY}Génération d'un compte valable 24 heures…${NC}\n"
+  create_account "$n" "$p" 1 1 0
 }
 
 lock_toggle() {
@@ -137,7 +157,7 @@ slowdns_menu() {
 }
 
 uninstall_slowdns() {
-  header; center " 🗑️  DÉSINSTALLER SLOWDNS " "${BOLD}${RED}"; line
+  banner; center " 🗑️  DÉSINSTALLER SLOWDNS " "${BOLD}${RED}"; line
   warn "SlowDNS sera retiré. Les comptes SSH ne sont pas touchés."
   printf "   ${RED}➤ Confirmer ? (o/n) : ${NC}"; ask "" r
   confirm "$r" || { warn "Annulé."; pause; return; }
@@ -190,7 +210,7 @@ udp_status() {
 }
 
 uninstall_udp() {
-  header; center " 🗑️  DÉSINSTALLER UDP " "${BOLD}${RED}"; line
+  banner; center " 🗑️  DÉSINSTALLER UDP " "${BOLD}${RED}"; line
   warn "Le module UDP sera retiré. Les comptes SSH ne sont pas touchés."
   printf "   ${RED}➤ Confirmer ? (o/n) : ${NC}"; ask "" r
   confirm "$r" || { warn "Annulé."; pause; return; }
@@ -209,7 +229,7 @@ uninstall_udp() {
 
 cleanup_menu() {
   while true; do
-    header; center " 🧹  NETTOYAGE DES COMPTES SSH " "${BOLD}${WHT}"; line
+    banner; center " 🧹  NETTOYAGE DES COMPTES SSH " "${BOLD}${WHT}"; line
     local tot exp today c r out
     today=$(date +%F)
     tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
@@ -249,6 +269,7 @@ while true; do
   entry "7" "🌐" "SlowDNS"
   entry "8" "📡" "UDP (badvpn / udp-custom)"
   entry "9" "🧹" "Nettoyage des comptes"
+  entry "10" "🎁" "Compte test 24 h"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}Choix :${NC} ")" o
@@ -256,6 +277,7 @@ while true; do
     1) create_account ;; 2) list_accounts ;; 3) view_account ;;
     4) renew_account ;;  5) lock_toggle ;;   6) delete_account ;;
     7) slowdns_menu ;;   8) udp_status ;;    9) cleanup_menu ;;
+    10) trial_account ;;
     0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

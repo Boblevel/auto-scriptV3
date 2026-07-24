@@ -46,20 +46,22 @@ ssh_box(){ # user pass created exp
     bw="illimitée"
   fi
   cat <<EOF
-👨🏼‍💻 COMPTE PREMIUM SSH WEBSOCKET 👨🏼‍💻
+█║▌║▌║ 𝗔𝗖𝗖𝗢𝗨𝗡𝗧 𝗦𝗦𝗛 𝗣𝗥𝗢║▌║▌║█
 ==================================
-👤 Username : $user
-🔑 Password : $pass
-📱 Appareils : $lim
-⚡ Bande passante : $bw
-📅 Created  : $cr
-⏳ Expired  : $ex
-========== 🌐 HOST-SSH ===========
-🖥️ IP/Host  : $ip
-🌐 Domain SSH : $dom
-🧭 DNS       : 8.8.8.8
-🛰️ Name Server(NS) : $ns
-🔐 DNS PUBLIC KEY : $key
+👤 𝐔𝐬𝐞𝐫𝐧𝐚𝐦𝐞 : $user
+🔑 𝐏𝐚𝐬𝐬𝐰𝐨𝐫𝐝 : $pass
+📱 𝐀𝐩𝐩𝐚𝐫𝐞𝐢𝐥𝐬 : $lim
+⚡ 𝐁𝐚𝐧𝐝𝐰𝐢𝐝𝐭𝐡 : $bw
+📅 𝐂𝐫𝐞𝐚𝐭𝐞𝐝  : $cr
+⏳ 𝐄𝐱𝐩𝐢𝐫𝐞𝐝  : $ex
+
+========== 𝗛𝗢𝗦𝗧-𝗦𝗦𝗛 ☠️ ===========
+
+🖥️ 𝐈𝐏/𝐇𝐨𝐬𝐭  : $ip
+🌐 𝐃𝐨𝐦𝐚𝐢𝐧 𝐒𝐒𝐇 : $dom
+🧭 𝐃𝐍𝐒       : 8.8.8.8
+🛰️ 𝐍𝐚𝐦𝐞 𝐒𝐞𝐫𝐯𝐞𝐫(𝐍𝐒) : $ns
+🔐 𝐃𝐍𝐒 𝐏𝐔𝐁𝐋𝐈𝐂 𝐊𝐄𝐘 : $key
 ==================================
 EOF
 }
@@ -122,8 +124,14 @@ xray_box(){ # proto name id created exp
     vless)  path="/vless";  label="VLESS";  ltls=$(_vless_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vless_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
     trojan) path="/trojan"; label="TROJAN"; ltls=$(_trojan_link "$id" "$host" "$tlsp" "$path" 1 "$name"); lnotls=$(_trojan_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
   esac
+  local blabel
+  case "$proto" in
+    vmess)  blabel="𝐕𝐌𝐄𝐒𝐒" ;;
+    vless)  blabel="𝐕𝐋𝐄𝐒𝐒" ;;
+    trojan) blabel="𝐓𝐑𝐎𝐉𝐀𝐍" ;;
+  esac
   cat <<EOF
-========== 🟦 XRAY / $label ==========
+==========  𝐗𝐑𝐀𝐘 / $blabel ☠️ ==========
 📝 Remarks     : $name
 🖥️ IP/Host     : $ip
 🌐 Address     : $host
@@ -135,16 +143,14 @@ xray_box(){ # proto name id created exp
 📁 Path        : $path
 📅 Created     : $cr
 ⏳ Expired     : $ex
-===================================
-🔗 Link TLS    :
-$ltls
-🔗 Link No TLS :
-$lnotls
-===================================
-⚠️ IMPORTE le lien dans l'application (bouton Import / Coller).
-   Si tu saisis les champs à la main, le nom du compte
-   « $(_remark "${proto^^}" "$name") » ne s'affichera pas.
-===================================
+=========================================================
+🔗 Link TLS ($tlsp) :
+    $ltls
+
+🔗 Link No TLS ($plainp) :
+    $lnotls
+
+=========================================================
 EOF
 }
 
@@ -156,17 +162,19 @@ ss_box(){ # name ckey created exp
   ui=$(printf '%s' "2022-blake3-aes-256-gcm:$skey:$ck" | base64 -w0)
   link="ss://$ui@$host:8388#$(_remark_url SS "$name")"
   cat <<EOF
-========== 🟩 SHADOWSOCKS ==========
+==========  𝐒𝐇𝐀𝐃𝐎𝐖𝐒𝐎𝐂𝐊𝐒 ☠️ ==========
 📝 Remarks : $name
+🖥️ IP/Host : $(_ip)
 🌐 Address : $host
 🔒 Port    : 8388
 🧪 Method  : 2022-blake3-aes-256-gcm
 📅 Created : $cr
 ⏳ Expired : $ex
-===================================
-🔗 Link :
-$link
-===================================
+=========================================================
+🔗 Link (8388) :
+    $link
+
+=========================================================
 EOF
 }
 
@@ -199,6 +207,8 @@ case "$cmd" in
       bytes=$(( gb * 1073741824 ))
       grep -q "^$user " "$QDB" && sed -i "s/^$user .*/$user $bytes/" "$QDB" || echo "$user $bytes" >> "$QDB"
       nvpanel-quota add "$user" 2>/dev/null
+      # le compteur de trafic doit connaître le nouveau compte
+      [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
     fi
     echo "OK $user $exp"
     # mémorise les infos pour pouvoir reconsulter le compte plus tard

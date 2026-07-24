@@ -32,6 +32,10 @@ def api(method, **params):
     except Exception:
         return {}
 
+def esc(t):
+    """Échappe les caractères réservés par le HTML de Telegram."""
+    return (str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
 def cli(*args):
     try:
         return subprocess.run(["nvpanel-cli", *args], capture_output=True, text=True, timeout=40).stdout.strip()
@@ -110,6 +114,10 @@ def main_kb():
         [{"text": "\U0001F512 Verrouiller", "callback_data": "lock"}, {"text": "\U0001F513 D\u00e9verrouiller", "callback_data": "unlock"}],
         [{"text": "\U0001F7E3 Vmess", "callback_data": "p:vmess"}, {"text": "\U0001F535 Vless", "callback_data": "p:vless"}],
         [{"text": "\U0001F7E0 Trojan", "callback_data": "p:trojan"}, {"text": "\U0001F7E2 Shadowsocks", "callback_data": "p:ss"}],
+        [{"text": "\U0001F7E4 L2TP", "callback_data": "pp:l2tp"}, {"text": "\U0001F4E1 PPTP", "callback_data": "pp:pptp"}],
+        [{"text": "\U0001F510 SSTP", "callback_data": "pp:sstp"}, {"text": "\U0001F6E1 WireGuard", "callback_data": "wg:list"}],
+        [{"text": "\U0001F381 Compte test 24h", "callback_data": "trial"}],
+        [{"text": "\U0001F9F9 Purger les expir\u00e9s", "callback_data": "purge"}],
         [{"text": "\U0001F504 Rafra\u00eechir le menu", "callback_data": "menu"}],
     ]}
 
@@ -118,6 +126,45 @@ def proto_kb(p):
         [{"text": "\u2795 Ajouter", "callback_data": "pa:%s" % p}, {"text": "\U0001F4CB Liste", "callback_data": "pl:%s" % p}],
         [{"text": "\U0001F5D1 Supprimer", "callback_data": "pd:%s" % p}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
     ]}
+
+
+def trial_kb():
+    return {"inline_keyboard": [
+        [{"text": "SSH", "callback_data": "t:ssh"}, {"text": "Vmess", "callback_data": "t:vmess"}],
+        [{"text": "Vless", "callback_data": "t:vless"}, {"text": "Trojan", "callback_data": "t:trojan"}],
+        [{"text": "Shadowsocks", "callback_data": "t:ss"}, {"text": "L2TP", "callback_data": "t:l2tp"}],
+        [{"text": "PPTP", "callback_data": "t:pptp"}, {"text": "SSTP", "callback_data": "t:sstp"}],
+        [{"text": "\u274C Annuler", "callback_data": "cancel"}],
+    ]}
+
+def purge_kb():
+    return {"inline_keyboard": [
+        [{"text": "SSH", "callback_data": "g:ssh"}, {"text": "Vmess", "callback_data": "g:vmess"}],
+        [{"text": "Vless", "callback_data": "g:vless"}, {"text": "Trojan", "callback_data": "g:trojan"}],
+        [{"text": "Shadowsocks", "callback_data": "g:ss"}, {"text": "L2TP", "callback_data": "g:l2tp"}],
+        [{"text": "PPTP", "callback_data": "g:pptp"}, {"text": "SSTP", "callback_data": "g:sstp"}],
+        [{"text": "\u274C Annuler", "callback_data": "cancel"}],
+    ]}
+
+def ppp_kb(p):
+    return {"inline_keyboard": [
+        [{"text": "\u2795 Ajouter", "callback_data": "pa2:%s" % p}, {"text": "\U0001F4CB Liste", "callback_data": "pl2:%s" % p}],
+        [{"text": "\U0001F5D1 Supprimer", "callback_data": "pd2:%s" % p}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
+    ]}
+
+def rand_name():
+    import random, string
+    return "test" + "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(4))
+
+def rand_pass():
+    import random, string
+    return "".join(random.choice(string.ascii_letters + string.digits) for _ in range(8))
+
+def ppp(*args):
+    try:
+        return subprocess.run(["nvpanel-ppp", *args], capture_output=True, text=True, timeout=40).stdout.strip()
+    except Exception as e:
+        return "ERR %s" % e
 
 def cancel_kb():
     return {"inline_keyboard": [[{"text": "\u274C Annuler / Retour", "callback_data": "cancel"}]]}
@@ -190,6 +237,52 @@ def handle_callback(chat, data):
         return
     if data == "monitor":
         do_monitor(chat); return
+    if data == "trial":
+        send(chat, "<b>\U0001F381 Compte test 24 h</b>\nChoisis le protocole :", kb=trial_kb()); return
+    if data == "purge":
+        send(chat, "<b>\U0001F9F9 Purger les comptes expir\u00e9s</b>\nChoisis le protocole :", kb=purge_kb()); return
+    if data.startswith("t:"):
+        p = data[2:]
+        if p == "ssh":
+            n, pw = rand_name(), rand_pass()
+            out = cli("create", n, pw, "1", "1", "0")
+        elif p in ("l2tp", "pptp", "sstp"):
+            n, pw = rand_name(), rand_pass()
+            out = ppp("add", p, n, pw, "1")
+        else:
+            out = cli("xadd", p, rand_name(), "1")
+        if out.startswith("OK"):
+            send(chat, "<b>\u2705 Compte test 24 h cr\u00e9\u00e9</b>\n<pre>%s</pre>" % esc("\n".join(out.split("\n")[1:])))
+        else:
+            send(chat, "\u274C \u00c9chec : <code>%s</code>" % esc(out))
+        return
+    if data.startswith("g:"):
+        p = data[2:]
+        out = ppp("purge", p, "expired") if p in ("l2tp", "pptp", "sstp") else cli("purge", p, "expired")
+        n = out.split()[1] if out.startswith("OK") and len(out.split()) > 1 else "0"
+        send(chat, "\U0001F9F9 <b>%s</b> : %s compte(s) expir\u00e9(s) supprim\u00e9(s)." % (p.upper(), n)); return
+    if data.startswith("pp:"):
+        p = data[3:]
+        send(chat, "<b>%s</b> \u2014 choisis :" % p.upper(), kb=ppp_kb(p)); return
+    if data.startswith("pl2:"):
+        p = data[4:]
+        rows = ppp("list", p)
+        txt = "\n".join("%-16s %s" % tuple(r.split("|")[:2]) for r in rows.split("\n") if "|" in r)
+        send(chat, "<b>\U0001F4CB %s</b>\n<pre>%s</pre>" % (p.upper(), esc(txt or "aucun compte"))); return
+    if data.startswith("pa2:"):
+        STATE[chat] = {"action": "pppadd", "proto": data[4:]}
+        send(chat, "Envoie : <code>utilisateur motdepasse jours</code>", kb=cancel_kb()); return
+    if data.startswith("pd2:"):
+        STATE[chat] = {"action": "pppdel", "proto": data[4:]}
+        send(chat, "Envoie le <b>nom</b> du compte \u00e0 supprimer :", kb=cancel_kb()); return
+    if data.startswith("wg:"):
+        try:
+            with open("/etc/nvpanel/db/wireguard") as f:
+                rows = [l.split() for l in f if l.startswith("### ")]
+            txt = "\n".join("%-16s %-14s %s" % (r[1], r[3], r[4]) for r in rows if len(r) > 4)
+        except Exception:
+            txt = ""
+        send(chat, "<b>\U0001F6E1 WireGuard</b>\n<pre>%s</pre>" % esc(txt or "aucun client")); return
     if data == "list":
         do_list(chat); return
     if data == "status":
@@ -234,6 +327,19 @@ def handle_text(chat, text):
         send(chat, ("\u2705 %s" % r) if r.startswith("OK") else ("\u274C %s" % r))
     elif a in ("delete", "lock", "unlock"):
         r = cli(a, parts[0]); send(chat, ("\u2705 %s" % r) if r.startswith("OK") else ("\u274C %s" % r))
+    elif a == "pppadd":
+        p = st["proto"]
+        if len(parts) < 2:
+            send(chat, "Format : utilisateur motdepasse jours"); return
+        days = parts[2] if len(parts) > 2 else "30"
+        r = ppp("add", p, parts[0], parts[1], days)
+        if r.startswith("OK"):
+            send(chat, "\u2705 Compte %s cr\u00e9\u00e9\n<pre>%s</pre>" % (p.upper(), esc("\n".join(r.splitlines()[1:]))))
+        else:
+            send(chat, "\u274C %s" % esc(r))
+    elif a == "pppdel":
+        r = ppp("del", st["proto"], parts[0])
+        send(chat, ("\u2705 %s supprim\u00e9" % parts[0]) if r.startswith("OK") else ("\u274C %s" % esc(r)))
     elif a == "xadd":
         proto = st["proto"]
         if len(parts) < 1: send(chat, "Format : nom jours"); return

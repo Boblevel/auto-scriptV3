@@ -5,6 +5,12 @@
 # ============================================================
 
 # ---- Identité / marque -------------------------------------
+# Une locale UTF-8 est nécessaire pour que les accents et les emojis comptent
+# pour un seul caractère : sans elle, les cadres se décalent d'un cran.
+if [ -z "${LC_ALL:-}" ] && locale -a 2>/dev/null | grep -qiE '^C\.(UTF-8|utf8)$'; then
+  export LC_ALL=C.UTF-8
+fi
+
 BRAND="RHAFF SERVICE"
 CONTACT="t.me/bigrhaff226"
 
@@ -52,8 +58,8 @@ banner() {
   printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  center "gestion premium des accès & tunnels" "${GRY}"
-  center "$CONTACT" "${CYN}"
+  center "panel de gestion & contrôle" "${GRY}"
+  center "Telegram : $CONTACT" "${CYN}"
   bot
 }
 
@@ -202,6 +208,32 @@ ask(){
   printf '\n'
   printf -v "$__v" '%s' "$buf"
   return 0
+}
+
+
+# Durée de connexion d'un compte SSH : on prend le processus le plus ancien
+# appartenant au compte (sa session). Renvoie une chaîne vide s'il est hors ligne.
+_conn_time(){
+  local u="$1" et
+  [ -z "$u" ] && return 0
+  et=$(ps -o etimes= -u "$u" 2>/dev/null | tr -d ' ' | sort -rn | head -1)
+  [ -z "$et" ] && return 0
+  [ "$et" -lt 5 ] 2>/dev/null && return 0
+  if   [ "$et" -ge 86400 ] 2>/dev/null; then printf '%dj %dh' $((et/86400)) $(((et%86400)/3600))
+  elif [ "$et" -ge 3600 ]  2>/dev/null; then printf '%dh %02dmin' $((et/3600)) $(((et%3600)/60))
+  else printf '%dmin' $((et/60)); fi
+}
+
+# Durée depuis la dernière poignée de main WireGuard (= client actif).
+_wg_time(){
+  local pub="$1" hs now d
+  [ -z "$pub" ] && return 0
+  hs=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v p="$pub" '$1==p{print $2}')
+  [ -z "$hs" ] || [ "$hs" = 0 ] && return 0
+  now=$(date +%s); d=$(( now - hs ))
+  [ "$d" -gt 180 ] 2>/dev/null && return 0
+  if   [ "$d" -ge 3600 ] 2>/dev/null; then printf '%dh %02dmin' $((d/3600)) $(((d%3600)/60))
+  else printf '%dmin' $((d/60)); fi
 }
 
 ui_enter(){ printf '\033[?1049h\033[?1007l\033[?1000l\033[H'; }

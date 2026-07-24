@@ -280,17 +280,36 @@ script_info(){
   pause
 }
 reset_traffic(){
-  header; warn "Cela remet à zéro les compteurs de consommation (hier/aujourd'hui/mois)."
-  ask " Confirmer ? (o/n) : " r; confirm "$r" || { pause; return; }
-  # compteur de trafic CLIENTS
+  header; center " 🧹  RÉINITIALISER LA CONSOMMATION " "${BOLD}${WHT}"; line
+  warn "Remet à zéro les compteurs (hier / aujourd'hui / mois)."
+  printf "   ${RED}➤ Confirmer ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { warn "Annulé."; pause; return; }
+  echo
+  # 1) compteur de trafic CLIENT du panel
+  printf "${CYN}➜${NC} Compteurs du panel…\n"
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso reset >/dev/null 2>&1
+  rm -f /etc/nvpanel/db/conso /etc/nvpanel/db/conso.tmp 2>/dev/null
+  touch /etc/nvpanel/db/conso
+  # 2) compteurs de quota par compte
+  printf "${CYN}➜${NC} Quotas par compte…\n"
+  : > /etc/nvpanel/db/quota_used 2>/dev/null
+  iptables -Z NVPANEL_QUOTA >/dev/null 2>&1
+  # 3) vnstat (utilisé en secours par l'affichage)
+  printf "${CYN}➜${NC} Statistiques réseau…\n"
   local ifc; ifc=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
   if [ -n "$ifc" ] && command -v vnstat >/dev/null 2>&1; then
+    systemctl stop vnstat >/dev/null 2>&1
     vnstat --remove -i "$ifc" --force >/dev/null 2>&1
+    rm -f /var/lib/vnstat/"$ifc" /var/lib/vnstat/vnstat.db 2>/dev/null
     vnstat --add -i "$ifc" >/dev/null 2>&1
-    systemctl restart vnstat >/dev/null 2>&1
-    ok "Compteurs remis à zéro."
-  else err "vnstat introuvable."; fi
+    systemctl start vnstat >/dev/null 2>&1
+  fi
+  # 4) on relance les chaînes pour repartir de zéro
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+  echo
+  ok "Tous les compteurs sont à zéro."
+  printf "   ${GRY}Vérifié : historique vidé, compteurs réseau remis à zéro,${NC}\n"
+  printf "   ${GRY}quotas des comptes réinitialisés.${NC}\n"
   pause
 }
 
