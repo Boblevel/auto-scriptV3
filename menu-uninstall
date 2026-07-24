@@ -78,6 +78,9 @@ rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-xray,menu-ss,menu-wg,menu-bot,m
       /usr/local/bin/{install-slowdns,install-udp,install-xray,install-tls}
 rm -rf /etc/nvpanel
 
+# On quitte l'écran séparé AVANT le message final, sinon il serait effacé
+# en même temps que l'affichage du panel.
+type ui_screen_off >/dev/null 2>&1 && ui_screen_off
 clear
 printf "${GRN}✔ RHAFF SERVICE a été entièrement supprimé et réinitialisé.${NC}\n"
 echo "  (les paquets système de base comme nginx/dropbear ne sont pas touchés)"
