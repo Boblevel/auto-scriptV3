@@ -55,8 +55,10 @@ flush_in(){
 
 banner() {
   flush_in
-  # efface l'écran ET l'historique de défilement : un seul cadre visible
-  printf '\033[3J\033[H\033[2J'
+  # Ordre IMPÉRATIF : H (curseur en haut) → 2J (efface l'écran, son contenu
+  # part dans l'historique) → 3J (efface l'historique). Inverser 2J et 3J
+  # fait réapparaître les cadres empilés quand on fait défiler l'écran.
+  printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
   center "panel de gestion & contrôle" "${GRY}"
@@ -288,7 +290,7 @@ ui_leave(){
 # animation de chargement stylée avec pourcentage (comme l'installation)
 loading(){
   local msg="${1:-Chargement}" w=28 i p
-  printf '\033[3J\033[H\033[2J'; echo; echo
+  printf '\033[H\033[2J\033[3J'; echo; echo
   for ((p=0;p<=100;p+=4)); do
     i=$(( p*w/100 ))
     printf "\r   ${MAG}%s${NC}  ${CYN}[" "$msg"
