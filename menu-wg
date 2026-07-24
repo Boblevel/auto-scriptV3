@@ -3,7 +3,7 @@
 #  RHAFF SERVICE · WireGuard   (commande : menu-wg)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
-ui_enter; trap ui_leave EXIT
+ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 WGCONF=/etc/wireguard/wg0.conf

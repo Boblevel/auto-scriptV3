@@ -4,7 +4,7 @@
 #  Usage : menu-ppp l2tp|pptp|sstp
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
-ui_enter; trap ui_leave EXIT
+ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
 PROTO="$1"

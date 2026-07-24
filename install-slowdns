@@ -41,7 +41,7 @@ else
   banner; center " 🌐  INSTALLATION SLOWDNS " "${BOLD}${WHT}"; line
   DOM=$(cat /etc/nvpanel/domain 2>/dev/null)
   [ -n "$DOM" ] && printf " ${GRY}Suggestion pour ton domaine :${NC} ${WHT}ns-%s${NC}\n\n" "$DOM"
-  read -rp " Nameserver (NS, ex. ns-mondomaine.com) : " NS
+  ask " Nameserver (NS, ex. ns-mondomaine.com) : " NS
 fi
 [ -z "$NS" ] && { [ "$AUTO" = 0 ] && { err "NS requis"; pause; }; exit 1; }
 echo "$NS" > "$DIR/ns"

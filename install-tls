@@ -16,7 +16,7 @@ banner; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; line
 printf " Domaine : ${WHT}%s${NC}\n" "$DOMAIN"
 printf " ${GRY}%s doit pointer (enregistrement A) vers %s, sans proxy Cloudflare.${NC}\n" "$DOMAIN" "$IP"
 printf " ${GRY}Si le certificat échoue, tes comptes continueront de fonctionner.${NC}\n\n"
-read -rp " Continuer ? (o/n) : " r; confirm "$r" || exit 0
+ask " Continuer ? (o/n) : " r; confirm "$r" || exit 0
 
 export DEBIAN_FRONTEND=noninteractive
 printf "${CYN}➜${NC} Préparation…\n"

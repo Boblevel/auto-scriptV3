@@ -178,14 +178,26 @@ confirm(){ case "${1,,}" in o|oui|y|yes) return 0;; *) return 1;; esac; }
 # séquences d'échappement (^[[A, ^[[B...). On les avale au lieu de les écrire
 # dans la réponse.  Usage : ask "invite" nom_de_variable
 ask(){
-  local __v="$2" buf="" ch
+  local __v="$2" buf="" ch e _tty
   [ -n "$1" ] && printf '%b' "$1"
   if [ ! -t 0 ]; then IFS= read -r buf; printf -v "$__v" '%s' "$buf"; return 0; fi
+
+  # L'écho du terminal est coupé pendant TOUTE la saisie.
+  # « read -rsn1 » ne le coupe que le temps d'un caractère : entre deux tours
+  # de boucle il redevient actif, et une rafale de séquences (le défilement
+  # de l'écran en envoie beaucoup) s'affiche alors toute seule sous forme
+  # de ^[[A / ^[[B avant même que bash ne la lise.
+  # Si le panel n'a pas déjà coupé l'écho (script lancé seul), on le fait ici.
+  if [ -z "${NVPANEL_TTY:-}" ]; then
+    _tty=$(stty -g 2>/dev/null)
+    [ -n "$_tty" ] && stty -echo 2>/dev/null
+  fi
+
   while IFS= read -rsn1 ch 2>/dev/null; do
     case "$ch" in
       '')       break ;;                                  # Entrée
-      $'\e')    # séquence d'échappement : on l'avale jusqu'à son caractère final
-                local e=''
+      $'\e')    # séquence d'échappement : avalée jusqu'à son caractère final
+                e=''
                 read -rsn1 -t 0.05 e 2>/dev/null || continue
                 if [ "$e" = '[' ] || [ "$e" = 'O' ]; then
                   while read -rsn1 -t 0.05 e 2>/dev/null; do
@@ -199,10 +211,13 @@ ask(){
       *)        buf="$buf$ch"; printf '%s' "$ch" ;;
     esac
   done
+
+  [ -n "$_tty" ] && stty "$_tty" 2>/dev/null
   printf '\n'
   printf -v "$__v" '%s' "$buf"
   return 0
 }
+
 
 
 # Durée de connexion d'un compte SSH : on prend le processus le plus ancien
@@ -233,14 +248,26 @@ _wg_time(){
 # L'écran alterné n'est PAS empilable : si un sous-menu le quitte, le menu
 # parent se remet à écrire dans l'écran normal, dont l'historique accumule
 # les cadres. Seul le processus qui l'a ouvert a donc le droit de le fermer.
+# Lecture avec écho garanti (utilisée par les écrans qui ne passent pas par ask).
+ask_echo(){ ask "$1" "$2"; }
+
 ui_enter(){
   if [ -z "${NVPANEL_UI:-}" ]; then
     export NVPANEL_UI=$$
+    # L'écho du terminal est coupé pendant TOUTE la session du panel.
+    # Sinon, les séquences envoyées par le défilement de l'écran (^[[A, ^[[B)
+    # s'affichent d'elles-mêmes pendant que le menu se dessine, avant même
+    # que la saisie ne commence. « ask » réaffiche les touches légitimes.
+    export NVPANEL_TTY="$(stty -g 2>/dev/null)"
+    stty -echo 2>/dev/null
     printf '\033[?1049h\033[?1007l\033[?1000l\033[H'
   fi
 }
 ui_leave(){
   [ "${NVPANEL_UI:-}" = "$$" ] || return 0
+  # On rétablit toujours un terminal utilisable, même après interruption.
+  if [ -n "${NVPANEL_TTY:-}" ]; then stty "$NVPANEL_TTY" 2>/dev/null
+  else stty echo icanon 2>/dev/null; fi
   printf '\033[?1007h\033[?1049l'
 }
 

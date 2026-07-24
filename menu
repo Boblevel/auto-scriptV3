@@ -3,7 +3,7 @@
 #  RHAFF SERVICE · menu principal   (commandes : menu / acc / dgh)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
-ui_enter; trap ui_leave EXIT
+ui_enter; trap ui_leave EXIT INT TERM HUP
 
 run() {
   if command -v "$1" >/dev/null 2>&1; then "$@"

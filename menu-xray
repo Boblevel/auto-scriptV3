@@ -4,7 +4,7 @@
 #  Interface — la logique est dans nvpanel-cli (partagée avec le bot)
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
-ui_enter; trap ui_leave EXIT
+ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 PROTO="$1"
 case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac

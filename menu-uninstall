@@ -23,7 +23,7 @@ echo " Cette action supprime et réinitialise TOUT :"
 echo " panel, bot, services, comptes SSH, Xray, WireGuard,"
 echo " règles réseau, configs nginx et toutes les données."
 echo
-read -rp " Confirmer la désinstallation complète ? (tape OUI) : " c
+ask " Confirmer la désinstallation complète ? (tape OUI) : " c
 _yes "$c" || { echo "Annulé."; exit 0; }
 
 echo; printf "${RED}➜ Suppression complète en cours…${NC}\n"
