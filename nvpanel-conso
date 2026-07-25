@@ -134,7 +134,7 @@ reset_all(){
   # 1) on vide l'historique
   : > "$DB" 2>/dev/null
   rm -f "$DB.tmp" "$LASTF" 2>/dev/null
-  # 2) on remet les compteurs iptables -w 3 à zéro
+  # 2) on remet les compteurs iptables à zéro
   iptables -w 3 -Z "$CIN"  2>/dev/null
   iptables -w 3 -Z "$COUT" 2>/dev/null
   # 3) on recrée les chaînes : garantit qu'aucun compteur résiduel ne subsiste
