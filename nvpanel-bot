@@ -387,8 +387,11 @@ def handle_text(chat, text):
         if len(parts) < 3: send(chat, "Format : <code>nom motdepasse jours [appareils] [bandwidthGo]</code>"); return
         r = cli("create", *parts[:5])
         if r.startswith("OK"):
+            # La fiche est reprise telle quelle du panel : même présentation
+            # dans le bot et dans le terminal. esc() protège les caractères
+            # spéciaux d'un mot de passe (<, >, &) qui casseraient l'affichage.
             box = "\n".join(r.splitlines()[1:])
-            send(chat, "\u2705 Compte SSH cree\n<code>%s</code>" % box)
+            send(chat, "\u2705 <b>Compte SSH cr\u00e9\u00e9</b>\n<pre>%s</pre>" % esc(box))
         else:
             send(chat, "\u274C %s" % r)
     elif a == "renewdo":
@@ -448,7 +451,7 @@ def handle_text(chat, text):
         first = out.splitlines()[0] if out else "ERR"
         if first.startswith("OK"):
             box = "\n".join(out.splitlines()[1:])
-            send(chat, "\u2705 %s cree\n<code>%s</code>" % (proto, box))
+            send(chat, "\u2705 <b>Client %s cr\u00e9\u00e9</b>\n<pre>%s</pre>" % (proto.upper(), esc(box)))
         else:
             send(chat, "\u274C %s" % first)
     elif a == "xdel":
