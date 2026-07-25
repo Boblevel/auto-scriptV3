@@ -16,7 +16,7 @@ DB="$DBDIR/conso"
 # Version des règles de comptage. À incrémenter dès qu'on change ce qui est
 # compté : l'historique accumulé par l'ancienne méthode est alors effacé,
 # sinon des valeurs erronées (dizaines de Go fantômes) resteraient affichées.
-RULES_VER=4
+RULES_VER=5
 VERF="$DBDIR/conso.ver"
 LASTF="$DBDIR/conso.last"   # derniers compteurs bruts lus
 CIN=NVCONSO_IN
@@ -49,15 +49,16 @@ setup_chains(){
   # ce qui faisait apparaître des dizaines de Go jamais consommés.
   # ------------------------------------------------------------------
 
-  # 1) Tunnels SSH : trafic APPARTENANT aux comptes du panel (UID >= 1000).
-  #    La session d'administration (root, UID 0) est donc exclue.
-  if ! iptables -w 3 -A "$COUT" -m owner --uid-owner 1000-59999 -j RETURN 2>/dev/null; then
-    local u uid
-    for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
-      uid=$(id -u "$u" 2>/dev/null) || continue
-      iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
-    done
-  fi
+  # 1) Tunnels SSH : UNE RÈGLE PAR COMPTE DU PANEL, jamais une plage d'UID.
+  #    Une plage (1000-59999) englobait l'utilisateur système « ubuntu »
+  #    (uid 1000 sur les images cloud) et tout autre compte non-client :
+  #    leur trafic était compté comme de la consommation client.
+  local u uid
+  for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
+    uid=$(id -u "$u" 2>/dev/null) || continue
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+  done
 
   # 2) Xray / Shadowsocks : le trafic client transite par la boucle locale
   #    entre nginx et Xray. Rien d'autre n'emprunte ces ports.
@@ -152,12 +153,33 @@ remove_all(){
   return 0
 }
 
+# Affiche le détail de chaque règle : permet de voir d'un coup d'œil
+# quel flux fait monter le compteur.
+debug_rules(){
+  command -v iptables >/dev/null 2>&1 || { echo "iptables absent"; return 1; }
+  local c
+  for c in "$CIN" "$COUT"; do
+    printf '\n=== %s ===\n' "$c"
+    iptables -w 3 -nvxL "$c" 2>/dev/null | awk 'NR>2 {
+      b=$2; u="o";
+      if (b>=1073741824) { b=b/1073741824; u="Go" }
+      else if (b>=1048576) { b=b/1048576; u="Mo" }
+      else if (b>=1024) { b=b/1024; u="Ko" }
+      desc=""; for (i=9;i<=NF;i++) desc=desc" "$i
+      printf "  %10.1f %-2s |%s\n", b, u, desc
+    }'
+  done
+  printf '\nDernier relevé brut : %s octets\n' "$(cat "$LASTF" 2>/dev/null || echo 0)"
+  printf 'Historique :\n'; tail -5 "$DB" 2>/dev/null
+}
+
 case "$1" in
+  debug)  debug_rules ;;
   setup)  setup_chains ;;
   poll)   poll ;;
   read)   read_vals ;;
   reset)  reset_all ;;
   remove) remove_all ;;
-  *)      echo "usage: nvpanel-conso setup|poll|read|reset|remove" ;;
+  *)      echo "usage: nvpanel-conso setup|poll|read|reset|remove|debug" ;;
 esac
 exit 0

@@ -50,4 +50,6 @@ for p in l2tp pptp sstp; do
 done
 
 [ "$changed" = "1" ] && systemctl restart xray >/dev/null 2>&1
+# les règles de comptage sont établies par compte : on les reconstruit
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
 exit 0

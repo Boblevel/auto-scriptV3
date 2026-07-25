@@ -255,6 +255,7 @@ case "$cmd" in
     sed -i "/^### $user /d" "$DB"
     sed -i "/^$user|/d" "$META" 2>/dev/null
     sed -i "/^$user /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
+    [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
     echo "OK deleted" ;;
   lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
   unlock) u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -u "$u" &>/dev/null; echo "OK unlocked"; } || echo "ERR nouser" ;;
@@ -366,7 +367,9 @@ case "$cmd" in
           sed -i "/^$u|/d" "$META" 2>/dev/null
           sed -i "/^$u /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
           n=$((n+1))
+          _conso_dirty=1
         done
+        [ -n "${_conso_dirty:-}" ] && [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
         echo "OK $n" ;;
       vmess|vless|trojan|ss)
         xmeta "$proto" || { echo "ERR proto"; exit 1; }
