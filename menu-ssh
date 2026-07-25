@@ -52,7 +52,7 @@ create_account() {
     ask " Mot de passe : " pass
     ask " Durée (jours) : " days;   [[ "$days" =~ ^[0-9]+$ ]] || days=30
     ask " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
-    ask " Quota (Go, 0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
+    ask " Bandwidth en Go (0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
   fi
   out=$(nvpanel-cli create "$user" "$pass" "$days" "$lim" "$gb")
   clear; header
@@ -89,7 +89,7 @@ renew_account() {
   header; pick_user || return; user="$PICK"
   ask " Ajouter (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
   out=$(nvpanel-cli renew "$user" "$days")
-  echo "$out" | grep -q '^OK' && ok "$user prolongé (compteur quota remis à zéro)" || err "Échec : $out"
+  echo "$out" | grep -q '^OK' && ok "$user prolongé (compteur Bandwidth remis à zéro)" || err "Échec : $out"
   pause
 }
 
@@ -272,7 +272,7 @@ while true; do
   entry "10" "🎁" "Compte test 24 h"
   entry "0" "⬅️" "Retour"
   line
-  ask "$(printf " ${WHT}Choix :${NC} ")" o
+  ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in
     1) create_account ;; 2) list_accounts ;; 3) view_account ;;
     4) renew_account ;;  5) lock_toggle ;;   6) delete_account ;;

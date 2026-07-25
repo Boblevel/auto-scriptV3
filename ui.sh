@@ -35,6 +35,18 @@ center() {
 }
 
 # Menu : entry "01" "🔒" "Label"  (avec emoji)  ou  entry "1" "Label"
+# Regroupe plusieurs entrées courtes sur une seule ligne, pour que le menu
+# tienne entièrement sur un écran de téléphone (sinon le cadre du haut sort
+# de l'écran et devient invisible).
+entry_row() {
+  local out="" n e t
+  while [ "$#" -ge 3 ]; do
+    n="$1"; e="$2"; t="$3"; shift 3
+    out+=$(printf "  ${GRN}[%s]${NC} %s %s" "$n" "$e" "$t")
+  done
+  printf "%b\n" "$out"
+}
+
 entry() {
   if [ "$#" -ge 3 ]; then
     printf "  ${GRN}[%s]${NC} %s %s\n" "$1" "$2" "$3"

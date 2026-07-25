@@ -36,10 +36,15 @@ fi
 # 2) Services systemd
 for s in nvpanel-slowdns nvpanel-udp-custom nvpanel-limit nvpanel-bot \
          nvpanel-badvpn-7100 nvpanel-badvpn-7200 nvpanel-badvpn-7300 wg-quick@wg0; do
-  systemctl disable --now "$s" >/dev/null 2>&1
+  systemctl stop "$s" >/dev/null 2>&1
+  systemctl disable "$s" >/dev/null 2>&1
   rm -f "/etc/systemd/system/$s.service"
 done
 systemctl daemon-reload >/dev/null 2>&1
+# Le bot Telegram doit cesser de répondre : on s'assure qu'aucun processus
+# ne survit au retrait du service, et on efface son jeton.
+pkill -f 'nvpanel-bot' 2>/dev/null
+rm -f /etc/nvpanel/bot.conf 2>/dev/null
 
 # 3) Tâches cron
 ( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|nvpanel-conso|rhaff-backup' ) | crontab - 2>/dev/null

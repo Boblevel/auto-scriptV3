@@ -115,6 +115,17 @@ _trojan_link(){ # id host port path tls name
 }
 
 # ---- encadré Xray ------------------------------------------
+
+# Construit la description JSON d'un client Xray/Shadowsocks.
+_client_json(){ # proto id name
+  case "$1" in
+    ss)     printf '{"password":"%s","email":"%s"}' "$2" "$3" ;;
+    vmess)  printf '{"id":"%s","alterId":0,"email":"%s"}' "$2" "$3" ;;
+    vless)  printf '{"id":"%s","email":"%s"}' "$2" "$3" ;;
+    trojan) printf '{"password":"%s","email":"%s"}' "$2" "$3" ;;
+  esac
+}
+
 xray_box(){ # proto name id created exp
   local proto="$1" name="$2" id="$3" cr="$4" ex="$5"
   local host path label ltls lnotls ip tlsp plainp
@@ -298,8 +309,8 @@ case "$cmd" in
     echo "OK $name $exp"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
   xlist)
-    xmeta "$1" || { echo "ERR proto"; exit 1; }
-    touch "$XDB"; awk '/^### /{print $2"|"$4}' "$XDB" ;;
+    proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    awk '/^### /{ st=($5=="L")?"verrou":"actif"; print $2"|"$4"|"st }' "$XDB" 2>/dev/null ;;
   xdel)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
@@ -313,6 +324,25 @@ case "$cmd" in
     exp=$(date -d "+$days days" +"%Y-%m-%d")
     sed -i "s/^### $name \([^ ]*\) .*/### $name \1 $exp/" "$XDB"
     echo "OK $name $exp" ;;
+  xlock)
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
+    # On retire le client de la configuration : il ne peut plus se connecter.
+    # Son identifiant reste dans la base, ce qui permet de le réactiver.
+    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
+    sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2 L|" "$XDB"
+    systemctl restart xray >/dev/null 2>&1
+    echo "OK locked" ;;
+  xunlock)
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    row=$(grep "^### $name " "$XDB" 2>/dev/null | head -1)
+    [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
+    id=$(echo "$row" | awk '{print $3}')
+    cj=$(_client_json "$proto" "$id" "$name")
+    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) += [$cj]" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
+    sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2|" "$XDB"
+    systemctl restart xray >/dev/null 2>&1
+    echo "OK unlocked" ;;
   xinfo)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     row=$(grep "^### $name " "$XDB" 2>/dev/null | head -1)
@@ -352,5 +382,5 @@ case "$cmd" in
       *) echo "ERR proto"; exit 1 ;;
     esac ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo|purge"; exit 1 ;;
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo|xlock|xunlock|purge"; exit 1 ;;
 esac

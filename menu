@@ -74,18 +74,13 @@ optimize_server() {
 while true; do
   banner
   sysinfo
-  line
   stats
   line
   entry "01" "🔒" "SSH · SlowDNS · UDP"
-  entry "02" "🟣" "Vmess  (Xray)"
-  entry "03" "🔵" "Vless  (Xray)"
-  entry "04" "🟠" "Trojan (Xray)"
+  entry_row "02" "🟣" "Vmess " "03" "🔵" "Vless " "04" "🟠" "Trojan"
   entry "05" "🟢" "Shadowsocks"
   entry "06" "🛡️" "WireGuard"
-  entry "07" "🌐" "L2TP"
-  entry "08" "📡" "PPTP"
-  entry "09" "🔐" "SSTP"
+  entry_row "07" "🌐" "L2TP  " "08" "📡" "PPTP  " "09" "🔐" "SSTP"
   line
   entry "10" "🤖" "Bot Telegram"
   entry "11" "📈" "Statut des services"

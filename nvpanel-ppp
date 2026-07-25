@@ -55,7 +55,24 @@ case "$cmd" in
     _box "$proto" "$user" "$pass" "$cr" "$exp" ;;
   list)
     proto=$(_clean "$1"); db=$(_db "$proto")
-    awk '/^### /{print $2"|"$4}' "$db" 2>/dev/null ;;
+    awk '/^### /{ st=($5=="L")?"verrou":"actif"; print $2"|"$4"|"st }' "$db" 2>/dev/null ;;
+  lock)
+    proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    db=$(_db "$proto")
+    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    # La ligne d'authentification est mise en commentaire : le compte ne peut
+    # plus se connecter, mais ses identifiants sont conservés.
+    sed -i "s|^$user[[:space:]]\+$srv[[:space:]]|#RHAFFLOCK $user $srv |" "$SECRETS"
+    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$db"
+    pkill -f "pppd.*$user" 2>/dev/null
+    echo "OK locked" ;;
+  unlock)
+    proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    db=$(_db "$proto")
+    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "s|^#RHAFFLOCK $user $srv |$user $srv |" "$SECRETS"
+    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2|" "$db"
+    echo "OK unlocked" ;;
   info)
     proto=$(_clean "$1"); user=$(_clean "$2"); db=$(_db "$proto")
     row=$(grep "^### $user " "$db" 2>/dev/null | head -1)
@@ -101,6 +118,6 @@ case "$cmd" in
       *)    n=0 ;;
     esac
     printf '%s\n' "${n:-0}" ;;
-  *) echo "usage: nvpanel-ppp add|list|info|del|renew|purge|online <proto> ..."; exit 1 ;;
+  *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|online <proto> ..."; exit 1 ;;
 esac
 exit 0

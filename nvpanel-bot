@@ -128,6 +128,23 @@ def proto_kb(p):
     ]}
 
 
+def proto_choice_kb(prefix):
+    """Clavier de choix du protocole. prefix identifie l'action demandee."""
+    return {"inline_keyboard": [
+        [{"text": "\U0001F510 SSH", "callback_data": "%s:ssh" % prefix},
+         {"text": "\U0001F7E3 Vmess", "callback_data": "%s:vmess" % prefix}],
+        [{"text": "\U0001F535 Vless", "callback_data": "%s:vless" % prefix},
+         {"text": "\U0001F7E0 Trojan", "callback_data": "%s:trojan" % prefix}],
+        [{"text": "\U0001F7E2 Shadowsocks", "callback_data": "%s:ss" % prefix},
+         {"text": "\U0001F7E4 L2TP", "callback_data": "%s:l2tp" % prefix}],
+        [{"text": "\U0001F4E1 PPTP", "callback_data": "%s:pptp" % prefix},
+         {"text": "\U0001F511 SSTP", "callback_data": "%s:sstp" % prefix}],
+        [{"text": "\u274C Annuler", "callback_data": "cancel"}],
+    ]}
+
+PROTO_NAME = {"ssh": "SSH", "vmess": "Vmess", "vless": "Vless", "trojan": "Trojan",
+              "ss": "Shadowsocks", "l2tp": "L2TP", "pptp": "PPTP", "sstp": "SSTP"}
+
 def trial_kb():
     return {"inline_keyboard": [
         [{"text": "SSH", "callback_data": "t:ssh"}, {"text": "Vmess", "callback_data": "t:vmess"}],
@@ -186,51 +203,79 @@ def do_monitor(chat):
     dom = read_file("/etc/nvpanel/domain") or "non configur\u00e9"
     ssh = count_db("ssh"); vm = count_db("vmess"); vl = count_db("vless")
     tr = count_db("trojan"); ss = count_db("shadowsocks"); wg = count_db("wireguard")
-    total = ssh + vm + vl + tr + ss + wg
+    l2 = count_db("l2tp"); pp = count_db("pptp"); st = count_db("sstp")
+    total = ssh + vm + vl + tr + ss + wg + l2 + pp + st
     on_ssh = ssh_online(); bl_ssh = ssh_blocked()
     on_vm = port_online(8080); on_vl = port_online(8081)
     on_tr = port_online(8082); on_ss = port_online(8388); on_wg = wg_online()
-    total_on = on_ssh + on_vm + on_vl + on_tr + on_ss + on_wg
+    on_l2 = _int(ppp("online", "l2tp")); on_pp = _int(ppp("online", "pptp"))
+    on_st = _int(ppp("online", "sstp"))
+    total_on = on_ssh + on_vm + on_vl + on_tr + on_ss + on_wg + on_l2 + on_pp + on_st
+
+    rows = [("SSH", ssh, on_ssh), ("Vmess", vm, on_vm), ("Vless", vl, on_vl),
+            ("Trojan", tr, on_tr), ("Shadowsocks", ss, on_ss), ("WireGuard", wg, on_wg),
+            ("L2TP", l2, on_l2), ("PPTP", pp, on_pp), ("SSTP", st, on_st)]
+    tbl = "\n".join("%-13s %3d  %3d" % (n, c, o) for n, c, o in rows)
+
     txt = (
-        "<b>\U0001F4CA SURVEILLANCE \u2014 RHAFF SERVICE</b>\n\n"
+        "\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n"
+        "  \U0001F4CA <b>SURVEILLANCE</b>\n"
+        "\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D\n\n"
         "\U0001F5A5 <b>Serveur</b>\n"
-        "<code>IP      : %s\n"
-        "Domaine : %s\n"
-        "Uptime  : %s\n"
-        "RAM     : %s\n"
-        "Charge  : %s</code>\n\n"
-        "\U0001F465 <b>Total : %d comptes \u00b7 %d en ligne \u00b7 %d bloqu\u00e9</b>\n\n"
-        "<code>Protocole    Comptes  Ligne\n"
-        "SSH          %-7d  %d  (bloq: %d)\n"
-        "Vmess        %-7d  %d\n"
-        "Vless        %-7d  %d\n"
-        "Trojan       %-7d  %d\n"
-        "Shadowsocks  %-7d  %d\n"
-        "WireGuard    %-7d  %d</code>"
+        "<code>"
+        "\u251C IP       %s\n"
+        "\u251C Domaine  %s\n"
+        "\u251C Uptime   %s\n"
+        "\u251C RAM      %s\n"
+        "\u2570 Charge   %s"
+        "</code>\n\n"
+        "\U0001F465 <b>Comptes</b>\n"
+        "<code>"
+        "\u251C Total     %d\n"
+        "\u251C En ligne  %d\n"
+        "\u2570 Bloqu\u00e9s   %d"
+        "</code>\n\n"
+        "\U0001F4E1 <b>Par protocole</b>\n"
+        "<code>%-13s %3s  %3s\n"
+        "%s\n%s</code>"
     ) % (ip, dom, up, ram, load, total, total_on, bl_ssh,
-         ssh, on_ssh, bl_ssh, vm, on_vm, vl, on_vl, tr, on_tr, ss, on_ss, wg, on_wg)
+         "Protocole", "Cpt", "Lgn", "\u2500" * 23, tbl)
     send(chat, txt)
 
 def do_list(chat):
     out = cli("list")
-    if not out:
-        send(chat, "Aucun compte SSH."); return
-    lines = ["<b>Comptes SSH</b>", "<code>user        expire     dev quota etat</code>"]
-    for l in out.splitlines():
-        p = l.split("|")
-        if len(p) == 5:
-            lines.append("<code>%-11s %-10s %-3s %-5s %s</code>" % (p[0][:11], p[1], p[2], p[3]+"G", p[4]))
-    send(chat, "\n".join(lines))
+    rows = [l.split("|") for l in out.splitlines() if l.count("|") == 4] if out else []
+    if not rows:
+        send(chat, "\U0001F4CB <b>Comptes SSH</b>\n\n<i>Aucun compte pour le moment.</i>"); return
+    blocks = []
+    for p in rows:
+        user, exp, dev, quota, etat = p[0], p[1], p[2], p[3], p[4]
+        badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
+        q = "illimit\u00e9" if quota in ("0", "") else quota + " Go"
+        blocks.append(
+            "\U0001F464 <b>%s</b>\n<code>"
+            "\u251C Expire     %s\n"
+            "\u251C Appareils  %s\n"
+            "\u251C Bandwidth  %s\n"
+            "\u2570 \u00c9tat       %s %s</code>"
+            % (esc(user), esc(exp), dev, q, badge, etat))
+    send(chat, "\U0001F4CB <b>COMPTES SSH</b>  \u00b7  %d\n\n%s" % (len(rows), "\n\n".join(blocks)))
 
 def do_xlist(chat, proto):
     out = cli("xlist", proto)
-    if not out or out.startswith("ERR"):
-        send(chat, "Aucun client %s." % proto, kb=proto_kb(proto)); return
-    lines = ["<b>Clients %s</b>" % proto]
-    for l in out.splitlines():
-        n, _, e = l.partition("|")
-        lines.append("<code>%-16s %s</code>" % (n, e))
-    send(chat, "\n".join(lines), kb=proto_kb(proto))
+    rows = [l.split("|") for l in out.splitlines() if "|" in l] if (out and not out.startswith("ERR")) else []
+    if not rows:
+        send(chat, "\U0001F4CB <b>%s</b>\n\n<i>Aucun client pour le moment.</i>" % proto.upper(),
+             kb=proto_kb(proto)); return
+    blocks = []
+    for p in rows:
+        name = p[0]; exp = p[1] if len(p) > 1 else "?"
+        etat = p[2] if len(p) > 2 else "actif"
+        badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
+        blocks.append("\U0001F464 <b>%s</b>\n<code>\u251C Expire  %s\n\u2570 \u00c9tat    %s %s</code>"
+                      % (esc(name), esc(exp), badge, etat))
+    send(chat, "\U0001F4CB <b>%s</b>  \u00b7  %d\n\n%s" % (proto.upper(), len(rows), "\n\n".join(blocks)),
+         kb=proto_kb(proto))
 
 def handle_callback(chat, data):
     if data == "menu":
@@ -301,12 +346,33 @@ def handle_callback(chat, data):
     if data.startswith("pd:"):
         STATE[chat] = {"action": "xdel", "proto": data[3:]}
         send(chat, "Envoie le <b>nom</b> du client \u00e0 supprimer :", kb=cancel_kb()); return
+    # Ces actions demandent d'abord SUR QUEL PROTOCOLE elles s'appliquent.
+    if data in ("lock", "unlock", "renew"):
+        titre = {"lock": "\U0001F512 Verrouiller un compte",
+                 "unlock": "\U0001F513 D\u00e9verrouiller un compte",
+                 "renew": "\u267B\uFE0F Prolonger un compte"}[data]
+        pref = {"lock": "lk", "unlock": "ul", "renew": "rn"}[data]
+        send(chat, "<b>%s</b>\n\nChoisis le protocole \U0001F447" % titre,
+             kb=proto_choice_kb(pref)); return
+    if data.startswith(("lk:", "ul:", "rn:")):
+        act, _, proto = data.partition(":")
+        nom = PROTO_NAME.get(proto, proto.upper())
+        if act == "rn":
+            STATE[chat] = {"action": "renewdo", "proto": proto}
+            send(chat, "<b>\u267B\uFE0F Prolonger \u2014 %s</b>\n\n"
+                       "Envoie : <code>nom jours</code>\nex : <code>client1 30</code>" % nom,
+                 kb=cancel_kb())
+        else:
+            STATE[chat] = {"action": "lockdo" if act == "lk" else "unlockdo", "proto": proto}
+            verbe = "verrouiller" if act == "lk" else "d\u00e9verrouiller"
+            send(chat, "<b>%s \u2014 %s</b>\n\nEnvoie le <b>nom</b> du compte \u00e0 %s :"
+                 % ("\U0001F512 Verrouiller" if act == "lk" else "\U0001F513 D\u00e9verrouiller", nom, verbe),
+                 kb=cancel_kb())
+        return
+
     prompts = {
-        "create": "Nouveau compte SSH.\n<code>user motdepasse jours [limite] [quotaGo]</code>\nex : <code>client1 pass123 30 2 50</code>",
+        "create": "<b>Nouveau compte SSH</b>\n\n<code>nom motdepasse jours [appareils] [bandwidthGo]</code>\n\nex : <code>client1 pass123 30 2 50</code>\n<i>bandwidth en Go, 0 = illimit\u00e9</i>",
         "delete": "Nom du compte SSH \u00e0 supprimer :",
-        "lock":   "Nom du compte \u00e0 verrouiller :",
-        "unlock": "Nom du compte \u00e0 d\u00e9verrouiller :",
-        "renew":  "Envoie : <code>user jours</code>",
     }
     if data in prompts:
         STATE[chat] = {"action": data}
@@ -318,19 +384,49 @@ def handle_text(chat, text):
         show_menu(chat); return
     a = st["action"]; parts = text.split()
     if a == "create":
-        if len(parts) < 3: send(chat, "Format : user motdepasse jours [limite] [quotaGo]"); return
+        if len(parts) < 3: send(chat, "Format : <code>nom motdepasse jours [appareils] [bandwidthGo]</code>"); return
         r = cli("create", *parts[:5])
         if r.startswith("OK"):
             box = "\n".join(r.splitlines()[1:])
             send(chat, "\u2705 Compte SSH cree\n<code>%s</code>" % box)
         else:
             send(chat, "\u274C %s" % r)
-    elif a == "renew":
-        if len(parts) < 2: send(chat, "Format : user jours"); return
-        r = cli("renew", parts[0], parts[1])
-        send(chat, ("\u2705 %s" % r) if r.startswith("OK") else ("\u274C %s" % r))
-    elif a in ("delete", "lock", "unlock"):
-        r = cli(a, parts[0]); send(chat, ("\u2705 %s" % r) if r.startswith("OK") else ("\u274C %s" % r))
+    elif a == "renewdo":
+        # Prolongation, quel que soit le protocole choisi juste avant.
+        p = st.get("proto", "ssh")
+        if len(parts) < 2:
+            send(chat, "Format : <code>nom jours</code>"); return
+        if p == "ssh":
+            r = cli("renew", parts[0], parts[1])
+        elif p in ("l2tp", "pptp", "sstp"):
+            r = ppp("renew", p, parts[0], parts[1])
+        else:
+            r = cli("xrenew", p, parts[0], parts[1])
+        nom = PROTO_NAME.get(p, p.upper())
+        if r.startswith("OK"):
+            send(chat, "\u2705 <b>%s</b> \u2014 %s prolong\u00e9 jusqu'au %s"
+                 % (nom, esc(parts[0]), esc(r.split()[-1])))
+        else:
+            send(chat, "\u274C <b>%s</b> \u2014 %s" % (nom, esc(r)))
+    elif a in ("lockdo", "unlockdo"):
+        p = st.get("proto", "ssh")
+        verrou = (a == "lockdo")
+        if p == "ssh":
+            r = cli("lock" if verrou else "unlock", parts[0])
+        elif p in ("l2tp", "pptp", "sstp"):
+            r = ppp("lock" if verrou else "unlock", p, parts[0])
+        else:
+            r = cli("xlock" if verrou else "xunlock", p, parts[0])
+        nom = PROTO_NAME.get(p, p.upper())
+        if r.startswith("OK"):
+            send(chat, "%s <b>%s</b> \u2014 %s %s"
+                 % ("\U0001F512" if verrou else "\U0001F513", nom, esc(parts[0]),
+                    "verrouill\u00e9" if verrou else "d\u00e9verrouill\u00e9"))
+        else:
+            send(chat, "\u274C <b>%s</b> \u2014 %s" % (nom, esc(r)))
+    elif a == "delete":
+        r = cli("delete", parts[0])
+        send(chat, ("\u2705 %s supprim\u00e9" % esc(parts[0])) if r.startswith("OK") else ("\u274C %s" % esc(r)))
     elif a == "pppadd":
         p = st["proto"]
         if len(parts) < 2:
