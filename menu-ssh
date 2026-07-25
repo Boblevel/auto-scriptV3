@@ -142,7 +142,9 @@ slowdns_menu() {
   if systemctl is-active --quiet nvpanel-slowdns; then
     ok "SlowDNS actif"
     printf "   NS  : ${WHT}%s${NC}\n" "$(cat /etc/nvpanel/slowdns/ns 2>/dev/null)"
-    printf "   Pub : ${WHT}%s${NC}\n" "$(cat /etc/nvpanel/slowdns/server.pub 2>/dev/null)"
+    # La clé fait 64 caractères : on la place seule sur sa ligne, sinon le
+    # terminal la coupe en plein milieu et la copie devient inutilisable.
+    printf "   Pub :\n${WHT}%s${NC}\n" "$(cat /etc/nvpanel/slowdns/server.pub 2>/dev/null)"
   else
     warn "SlowDNS non installé."
   fi
