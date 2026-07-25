@@ -5,7 +5,7 @@
 #  Le trafic propre du serveur (apt, mises à jour du script,
 #  test de vitesse, certbot...) n'est PAS compté.
 #
-#  Principe : deux chaînes iptables qui ne comptent que
+#  Principe : deux chaînes iptables -w 3 qui ne comptent que
 #    - INPUT  : paquets ARRIVANT sur un port de service
 #    - OUTPUT : paquets PARTANT d'un port de service
 #  Un téléchargement fait par le serveur est OUTPUT vers le
@@ -16,8 +16,9 @@ DB="$DBDIR/conso"
 # Version des règles de comptage. À incrémenter dès qu'on change ce qui est
 # compté : l'historique accumulé par l'ancienne méthode est alors effacé,
 # sinon des valeurs erronées (dizaines de Go fantômes) resteraient affichées.
-RULES_VER=3
+RULES_VER=4
 VERF="$DBDIR/conso.ver"
+LASTF="$DBDIR/conso.last"   # derniers compteurs bruts lus
 CIN=NVCONSO_IN
 COUT=NVCONSO_OUT
 mkdir -p "$DBDIR"; touch "$DB"
@@ -27,6 +28,7 @@ mkdir -p "$DBDIR"; touch "$DB"
 # (dizaines de Go jamais consommés) resteraient affichées indéfiniment.
 if [ "$(cat "$VERF" 2>/dev/null)" != "$RULES_VER" ]; then
   : > "$DB" 2>/dev/null
+  rm -f "$LASTF" 2>/dev/null
   printf '%s' "$RULES_VER" > "$VERF" 2>/dev/null
 fi
 
@@ -35,10 +37,10 @@ setup_chains(){
   local UDP x
   x=$(cat /etc/nvpanel/xport 2>/dev/null); x=${x:-443}
 
-  iptables -N "$CIN"  2>/dev/null; iptables -F "$CIN"  2>/dev/null
-  iptables -N "$COUT" 2>/dev/null; iptables -F "$COUT" 2>/dev/null
-  iptables -C INPUT  -j "$CIN"  2>/dev/null || iptables -I INPUT  -j "$CIN"  2>/dev/null
-  iptables -C OUTPUT -j "$COUT" 2>/dev/null || iptables -I OUTPUT -j "$COUT" 2>/dev/null
+  iptables -w 3 -N "$CIN"  2>/dev/null; iptables -w 3 -F "$CIN"  2>/dev/null
+  iptables -w 3 -N "$COUT" 2>/dev/null; iptables -w 3 -F "$COUT" 2>/dev/null
+  iptables -w 3 -C INPUT  -j "$CIN"  2>/dev/null || iptables -w 3 -I INPUT  -j "$CIN"  2>/dev/null
+  iptables -w 3 -C OUTPUT -j "$COUT" 2>/dev/null || iptables -w 3 -I OUTPUT -j "$COUT" 2>/dev/null
 
   # ------------------------------------------------------------------
   # On ne compte QUE des flux qui ne peuvent appartenir qu'à un client VPN.
@@ -49,56 +51,72 @@ setup_chains(){
 
   # 1) Tunnels SSH : trafic APPARTENANT aux comptes du panel (UID >= 1000).
   #    La session d'administration (root, UID 0) est donc exclue.
-  if ! iptables -A "$COUT" -m owner --uid-owner 1000-59999 -j RETURN 2>/dev/null; then
+  if ! iptables -w 3 -A "$COUT" -m owner --uid-owner 1000-59999 -j RETURN 2>/dev/null; then
     local u uid
     for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
       uid=$(id -u "$u" 2>/dev/null) || continue
-      iptables -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+      iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
     done
   fi
 
   # 2) Xray / Shadowsocks : le trafic client transite par la boucle locale
   #    entre nginx et Xray. Rien d'autre n'emprunte ces ports.
-  iptables -A "$COUT" -o lo -p tcp -m multiport --dports 8080,8081,8082,8388 -j RETURN 2>/dev/null
-  iptables -A "$COUT" -o lo -p tcp -m multiport --sports 8080,8081,8082,8388 -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -o lo -p tcp -m multiport --dports 8080,8081,8082,8388 -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -o lo -p tcp -m multiport --sports 8080,8081,8082,8388 -j RETURN 2>/dev/null
 
   # 3) WireGuard et PPP (L2TP / PPTP / SSTP) : interfaces dédiées aux clients.
   for i in wg0 "ppp+"; do
-    iptables -A "$CIN"  -i "$i" -j RETURN 2>/dev/null
-    iptables -A "$COUT" -o "$i" -j RETURN 2>/dev/null
+    iptables -w 3 -A "$CIN"  -i "$i" -j RETURN 2>/dev/null
+    iptables -w 3 -A "$COUT" -o "$i" -j RETURN 2>/dev/null
   done
 
   # 4) SlowDNS et UDP : ports exclusivement réservés aux tunnels.
   UDP="5300,7100,7200,7300"
   local uc; uc=$(grep -oP '"listen"\s*:\s*":?\K[0-9]+' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
   [ -n "$uc" ] && UDP="$UDP,$uc"
-  iptables -A "$CIN"  -p udp -m multiport --dports "$UDP" -j RETURN 2>/dev/null
-  iptables -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$CIN"  -p udp -m multiport --dports "$UDP" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
   return 0
 }
 
 _chain_bytes(){ # somme des octets d'une chaîne
-  iptables -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
+  iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
 }
 
 poll(){
   command -v iptables >/dev/null 2>&1 || return 0
-  iptables -nL "$CIN" >/dev/null 2>&1 || setup_chains
-  local b=0 i o today cur
+  iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || setup_chains
+  local raw last delta today cur i o
   i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT")
-  b=$(( i + o ))
-  iptables -Z "$CIN"  2>/dev/null
-  iptables -Z "$COUT" 2>/dev/null
-  [ "$b" -le 0 ] && return 0
+  raw=$(( i + o ))
+
+  # On NE remet PLUS les compteurs à zéro. On mémorise leur dernière valeur
+  # brute et on n'ajoute que la DIFFÉRENCE.
+  # Avant, on lisait puis on remettait à zéro : si cette remise à zéro
+  # échouait (deux commandes iptables simultanées se bloquent l'une l'autre),
+  # la même valeur était recomptée à chaque affichage du menu — d'où des
+  # dizaines de Go apparus sans aucun trafic réel.
+  last=$(cat "$LASTF" 2>/dev/null); last=${last:-0}
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$raw" -ge "$last" ] 2>/dev/null; then
+    delta=$(( raw - last ))
+  else
+    # les compteurs ont été remis à zéro par ailleurs (redémarrage, règles
+    # recréées) : on repart de la valeur courante
+    delta="$raw"
+  fi
+  printf '%s' "$raw" > "$LASTF" 2>/dev/null
+
+  [ "$delta" -le 0 ] 2>/dev/null && return 0
   today=$(date +%F)
   cur=$(awk -F'|' -v d="$today" '$1==d{print $2}' "$DB" 2>/dev/null | tail -1)
   cur=${cur:-0}
   sed -i "/^$today|/d" "$DB" 2>/dev/null
-  printf '%s|%s\n' "$today" "$(( cur + b ))" >> "$DB"
-  # on ne garde que 90 jours d'historique
+  printf '%s|%s\n' "$today" "$(( cur + delta ))" >> "$DB"
   tail -n 120 "$DB" > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
   return 0
 }
+
 
 read_vals(){ # affiche "hier|aujourdhui|mois" en octets
   poll >/dev/null 2>&1
@@ -114,23 +132,23 @@ reset_all(){
   printf '%s' "$RULES_VER" > "$VERF" 2>/dev/null
   # 1) on vide l'historique
   : > "$DB" 2>/dev/null
-  rm -f "$DB.tmp" 2>/dev/null
-  # 2) on remet les compteurs iptables à zéro
-  iptables -Z "$CIN"  2>/dev/null
-  iptables -Z "$COUT" 2>/dev/null
+  rm -f "$DB.tmp" "$LASTF" 2>/dev/null
+  # 2) on remet les compteurs iptables -w 3 à zéro
+  iptables -w 3 -Z "$CIN"  2>/dev/null
+  iptables -w 3 -Z "$COUT" 2>/dev/null
   # 3) on recrée les chaînes : garantit qu'aucun compteur résiduel ne subsiste
   setup_chains >/dev/null 2>&1
-  iptables -Z "$CIN"  2>/dev/null
-  iptables -Z "$COUT" 2>/dev/null
+  iptables -w 3 -Z "$CIN"  2>/dev/null
+  iptables -w 3 -Z "$COUT" 2>/dev/null
   : > "$DB" 2>/dev/null
   return 0
 }
 
 remove_all(){
-  iptables -D INPUT  -j "$CIN"  2>/dev/null
-  iptables -D OUTPUT -j "$COUT" 2>/dev/null
-  iptables -F "$CIN"  2>/dev/null; iptables -X "$CIN"  2>/dev/null
-  iptables -F "$COUT" 2>/dev/null; iptables -X "$COUT" 2>/dev/null
+  iptables -w 3 -D INPUT  -j "$CIN"  2>/dev/null
+  iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null
+  iptables -w 3 -F "$CIN"  2>/dev/null; iptables -w 3 -X "$CIN"  2>/dev/null
+  iptables -w 3 -F "$COUT" 2>/dev/null; iptables -w 3 -X "$COUT" 2>/dev/null
   return 0
 }
 

@@ -74,14 +74,19 @@ optimize_server() {
 while true; do
   banner
   sysinfo
+  sep
   stats
-  line
+  sep
   entry "01" "🔒" "SSH · SlowDNS · UDP"
-  entry_row "02" "🟣" "Vmess " "03" "🔵" "Vless " "04" "🟠" "Trojan"
+  entry "02" "🟣" "Vmess  (Xray)"
+  entry "03" "🔵" "Vless  (Xray)"
+  entry "04" "🟠" "Trojan (Xray)"
   entry "05" "🟢" "Shadowsocks"
   entry "06" "🛡️" "WireGuard"
-  entry_row "07" "🌐" "L2TP  " "08" "📡" "PPTP  " "09" "🔐" "SSTP"
-  line
+  entry "07" "🌐" "L2TP"
+  entry "08" "📡" "PPTP"
+  entry "09" "🔐" "SSTP"
+  sep
   entry "10" "🤖" "Bot Telegram"
   entry "11" "📈" "Statut des services"
   entry "12" "⚙️" "Paramètres"
@@ -90,7 +95,7 @@ while true; do
   entry "15" "🚀" "Optimiser le serveur"
   entry "16" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
-  line
+  sep
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;

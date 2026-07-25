@@ -65,18 +65,29 @@ flush_in(){
   return 0
 }
 
+# Hauteur de l'écran : sur un téléphone (~27 lignes utiles) l'affichage doit
+# être resserré, sinon le cadre du haut sort de l'écran et devient invisible.
+_rows(){ tput lines 2>/dev/null || printf '%s' "${LINES:-24}"; }
+_small(){ [ "$(_rows)" -lt 30 ]; }
+# Séparateur affiché uniquement quand la place le permet.
+sep(){ _small || line; }
+
 banner() {
   flush_in
-  # Ordre IMPÉRATIF : H (curseur en haut) → 2J (efface l'écran, son contenu
-  # part dans l'historique) → 3J (efface l'historique). Inverser 2J et 3J
-  # fait réapparaître les cadres empilés quand on fait défiler l'écran.
+  # Ordre IMPÉRATIF : H (curseur en haut) → 2J (efface l'écran) → 3J (efface
+  # l'historique). Inverser 2J et 3J fait réapparaître les cadres empilés.
   printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  center "panel de gestion & contrôle" "${GRY}"
-  center "Telegram : $CONTACT" "${CYN}"
+  if _small; then
+    center "panel de gestion & contrôle · $CONTACT" "${GRY}"
+  else
+    center "panel de gestion & contrôle" "${GRY}"
+    center "Telegram : $CONTACT" "${CYN}"
+  fi
   bot
 }
+
 
 # ---- Aides consommation (compteur clients) -----------------
 _iface(){ ip route 2>/dev/null | awk '/default/{print $5; exit}'; }
