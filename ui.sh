@@ -67,10 +67,25 @@ flush_in(){
 
 # Hauteur de l'écran : sur un téléphone (~27 lignes utiles) l'affichage doit
 # être resserré, sinon le cadre du haut sort de l'écran et devient invisible.
-_rows(){ tput lines 2>/dev/null || printf '%s' "${LINES:-24}"; }
-_small(){ [ "$(_rows)" -lt 30 ]; }
+_rows(){
+  local r; r=$(tput lines 2>/dev/null) || r="${LINES:-24}"
+  case "$r" in ''|*[!0-9]*) r=24 ;; esac
+  printf '%s' "$r"
+}
+
+# Niveau d'affichage, calculé sur la hauteur réelle du terminal.
+# L'en-tête doit rester visible sur TOUS les téléphones : quand la place
+# manque, on retire d'abord les séparateurs, puis on regroupe les entrées.
+#   1 = complet (32 lignes)   2 = sans séparateurs (27)   3 = groupé (18)
+ui_level(){
+  local r; r=$(_rows)
+  if   [ "$r" -ge 33 ]; then printf '1'
+  elif [ "$r" -ge 28 ]; then printf '2'
+  else printf '3'; fi
+}
+_small(){ [ "$(ui_level)" != 1 ]; }
 # Séparateur affiché uniquement quand la place le permet.
-sep(){ line; }
+sep(){ [ "$(ui_level)" = 1 ] && line; return 0; }
 
 banner() {
   flush_in
@@ -79,10 +94,15 @@ banner() {
   printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  center "panel de gestion & contrôle" "${GRY}"
-  center "Telegram : $CONTACT" "${CYN}"
+  case "$(ui_level)" in
+    1) center "panel de gestion & contrôle" "${GRY}"
+       center "Telegram : $CONTACT" "${CYN}" ;;
+    2) center "panel de gestion & contrôle · $CONTACT" "${GRY}" ;;
+    *) : ;;   # écran très court : seul le nom tient
+  esac
   bot
 }
+
 
 
 

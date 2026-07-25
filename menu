@@ -77,24 +77,37 @@ while true; do
   sep
   stats
   sep
-  entry "01" "🔒" "SSH · SlowDNS · UDP"
-  entry "02" "🟣" "Vmess  (Xray)"
-  entry "03" "🔵" "Vless  (Xray)"
-  entry "04" "🟠" "Trojan (Xray)"
-  entry "05" "🟢" "Shadowsocks"
-  entry "06" "🛡️" "WireGuard"
-  entry "07" "🌐" "L2TP"
-  entry "08" "📡" "PPTP"
-  entry "09" "🔐" "SSTP"
-  sep
-  entry "10" "🤖" "Bot Telegram"
-  entry "11" "📈" "Statut des services"
-  entry "12" "⚙️" "Paramètres"
-  entry "13" "🔁" "Redémarrer le serveur"
-  entry "14" "🔄" "Mettre à jour le script"
-  entry "15" "🚀" "Optimiser le serveur"
-  entry "16" "🗑️" "Désinstaller le script"
-  entry "00" "🚪" "Quitter"
+  if [ "$(ui_level)" = 3 ]; then
+    # Écran très court : on regroupe pour que l'en-tête reste visible.
+    entry "01" "🔒" "SSH · SlowDNS · UDP"
+    entry_row "02" "🟣" "Vmess " "03" "🔵" "Vless " "04" "🟠" "Trojan"
+    entry_row "05" "🟢" "Shadowsocks" "06" "🛡️" "WireGuard"
+    entry_row "07" "🌐" "L2TP  " "08" "📡" "PPTP  " "09" "🔐" "SSTP"
+    sep
+    entry_row "10" "🤖" "Bot Telegram" "11" "📈" "Statut services"
+    entry_row "12" "⚙️" "Paramètres  " "13" "🔁" "Redémarrer"
+    entry_row "14" "🔄" "Mise à jour " "15" "🚀" "Optimiser"
+    entry_row "16" "🗑️" "Désinstaller" "00" "🚪" "Quitter"
+  else
+    entry "01" "🔒" "SSH · SlowDNS · UDP"
+    entry "02" "🟣" "Vmess  (Xray)"
+    entry "03" "🔵" "Vless  (Xray)"
+    entry "04" "🟠" "Trojan (Xray)"
+    entry "05" "🟢" "Shadowsocks"
+    entry "06" "🛡️" "WireGuard"
+    entry "07" "🌐" "L2TP"
+    entry "08" "📡" "PPTP"
+    entry "09" "🔐" "SSTP"
+    sep
+    entry "10" "🤖" "Bot Telegram"
+    entry "11" "📈" "Statut des services"
+    entry "12" "⚙️" "Paramètres"
+    entry "13" "🔁" "Redémarrer le serveur"
+    entry "14" "🔄" "Mettre à jour le script"
+    entry "15" "🚀" "Optimiser le serveur"
+    entry "16" "🗑️" "Désinstaller le script"
+    entry "00" "🚪" "Quitter"
+  fi
   sep
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
