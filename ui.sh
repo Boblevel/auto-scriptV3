@@ -77,15 +77,13 @@ _rows(){
 # L'en-tête doit rester visible sur TOUS les téléphones : quand la place
 # manque, on retire d'abord les séparateurs, puis on regroupe les entrées.
 #   1 = complet (32 lignes)   2 = sans séparateurs (27)   3 = groupé (18)
-ui_level(){
-  local r; r=$(_rows)
-  if   [ "$r" -ge 33 ]; then printf '1'
-  elif [ "$r" -ge 28 ]; then printf '2'
-  else printf '3'; fi
-}
+# L'affichage est VOLONTAIREMENT identique sur tous les téléphones :
+# même cadre, même disposition, une commande par ligne. Aucune variante
+# selon la hauteur de l'écran.
+ui_level(){ printf '1'; }
 _small(){ [ "$(ui_level)" != 1 ]; }
 # Séparateur affiché uniquement quand la place le permet.
-sep(){ [ "$(ui_level)" = 1 ] && line; return 0; }
+sep(){ line; }
 
 banner() {
   flush_in
@@ -94,14 +92,11 @@ banner() {
   printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  case "$(ui_level)" in
-    1) center "panel de gestion & contrôle" "${GRY}"
-       center "Telegram : $CONTACT" "${CYN}" ;;
-    2) center "panel de gestion & contrôle · $CONTACT" "${GRY}" ;;
-    *) : ;;   # écran très court : seul le nom tient
-  esac
+  center "panel de gestion & contrôle" "${GRY}"
+  center "Telegram : $CONTACT" "${CYN}"
   bot
 }
+
 
 
 
