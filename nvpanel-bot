@@ -169,6 +169,33 @@ def ppp_kb(p):
         [{"text": "\U0001F5D1 Supprimer", "callback_data": "pd2:%s" % p}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
     ]}
 
+def split_dns_key(box):
+    """Sépare la clé DNS du reste de la fiche.
+
+    Dans un bloc <pre>, Telegram renvoie la ligne à ~33 caractères sur
+    téléphone : une clé de 64 caractères y est donc coupée en deux, et la
+    copie donne une clé invalide. On la retire du bloc pour la présenter
+    seule en <code>, que Telegram copie intégralement d'un seul appui.
+    """
+    kept, key = [], ""
+    for line in box.splitlines():
+        st = line.strip()
+        if len(st) == 64 and all(c in "0123456789abcdefABCDEF" for c in st):
+            key = st
+            if kept and kept[-1].rstrip().endswith(":"):
+                kept.pop()          # on retire aussi son libellé devenu orphelin
+            continue
+        kept.append(line)
+    return "\n".join(kept), key
+
+def dns_key_line(key=""):
+    """Clé DNS dans un bloc <code> : Telegram la copie entièrement d'un appui,
+    sans le retour à la ligne que provoque l'affichage du terminal."""
+    k = key or read_file("/etc/nvpanel/slowdns/server.pub")
+    if not k:
+        return ""
+    return "\n\n\U0001F510 <b>Cl\u00e9 DNS</b> (appuie pour copier) :\n<code>%s</code>" % esc(k)
+
 def rand_name():
     import random, string
     return "test" + "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(4))
@@ -301,7 +328,9 @@ def handle_callback(chat, data):
         else:
             out = cli("xadd", p, rand_name(), "1")
         if out.startswith("OK"):
-            send(chat, "<b>\u2705 Compte test 24 h cr\u00e9\u00e9</b>\n<pre>%s</pre>" % esc("\n".join(out.split("\n")[1:])))
+            _box, _key = split_dns_key("\n".join(out.split("\n")[1:]))
+            send(chat, "<b>\u2705 Compte test 24 h cr\u00e9\u00e9</b>\n<pre>%s</pre>%s"
+                 % (esc(_box), dns_key_line(_key)))
         else:
             send(chat, "\u274C \u00c9chec : <code>%s</code>" % esc(out))
         return
@@ -390,8 +419,9 @@ def handle_text(chat, text):
             # La fiche est reprise telle quelle du panel : même présentation
             # dans le bot et dans le terminal. esc() protège les caractères
             # spéciaux d'un mot de passe (<, >, &) qui casseraient l'affichage.
-            box = "\n".join(r.splitlines()[1:])
-            send(chat, "\u2705 <b>Compte SSH cr\u00e9\u00e9</b>\n<pre>%s</pre>" % esc(box))
+            box, key = split_dns_key("\n".join(r.splitlines()[1:]))
+            send(chat, "\u2705 <b>Compte SSH cr\u00e9\u00e9</b>\n<pre>%s</pre>%s"
+                 % (esc(box), dns_key_line(key)))
         else:
             send(chat, "\u274C %s" % r)
     elif a == "renewdo":
