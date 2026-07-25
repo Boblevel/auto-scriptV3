@@ -96,6 +96,12 @@ while true; do
   entry "16" "🗑️" "Désinstaller le script"
   entry "00" "🚪" "Quitter"
   sep
+  # Le menu fait 31 lignes. Si le terminal en offre moins, son haut (le cadre)
+  # est poussé hors de l'écran. On le signale en bas, seul endroit qui reste
+  # visible, avec la marche à suivre. Aucun effet si tout rentre.
+  if [ "$(_rows)" -lt 31 ] 2>/dev/null; then
+    printf " ${YLW}⚠ Écran court : réduis la police de ton terminal${NC}\n"
+  fi
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;
