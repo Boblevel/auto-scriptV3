@@ -70,7 +70,7 @@ flush_in(){
 _rows(){ tput lines 2>/dev/null || printf '%s' "${LINES:-24}"; }
 _small(){ [ "$(_rows)" -lt 30 ]; }
 # Séparateur affiché uniquement quand la place le permet.
-sep(){ _small || line; }
+sep(){ line; }
 
 banner() {
   flush_in
@@ -79,16 +79,11 @@ banner() {
   printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  if _small; then
-    # Écran court (clavier du téléphone ouvert) : une seule ligne d'infos,
-    # sinon le cadre entier sortirait de l'écran par le haut.
-    center "panel de gestion & contrôle · $CONTACT" "${GRY}"
-  else
-    center "panel de gestion & contrôle" "${GRY}"
-    center "Telegram : $CONTACT" "${CYN}"
-  fi
+  center "panel de gestion & contrôle" "${GRY}"
+  center "Telegram : $CONTACT" "${CYN}"
   bot
 }
+
 
 
 

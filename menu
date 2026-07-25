@@ -94,13 +94,9 @@ while true; do
   entry "14" "🔄" "Mettre à jour le script"
   entry "15" "🚀" "Optimiser le serveur"
   entry "16" "🗑️" "Désinstaller le script"
-  _small || entry "00" "🚪" "Quitter"
+  entry "00" "🚪" "Quitter"
   sep
-  if _small; then
-    ask "$(printf " ${WHT}➤ Choix${NC} ${GRY}(00 = quitter)${NC}${WHT} :${NC} ")" opt || { clear; exit 0; }
-  else
-    ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
-  fi
+  ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;
     02|2) run menu-xray vmess ;;
