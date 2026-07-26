@@ -85,17 +85,43 @@ _small(){ [ "$(ui_level)" != 1 ]; }
 # Séparateur affiché uniquement quand la place le permet.
 sep(){ line; }
 
+
+# ---- Encadré d'accueil -------------------------------------------------
+# Les informations du serveur sont présentées dans un cadre, la marque
+# inscrite dans la bordure du haut et le contact dans celle du bas.
+# Remplace la bannière séparée du menu d'accueil : deux lignes gagnées et
+# un rendu plus net. Les bordures ne portent que du texte simple (pas
+# d'emoji), leur largeur est donc calculée de façon fiable.
+_edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
+  local t=" $3 " n fill
+  n=${#t}
+  fill=$(( W - n - 1 ))   # -1 pour le tiret qui précède le texte
+  [ "$fill" -lt 0 ] && { t=""; fill=$(( W - 1 )); }
+  printf "${CYN}%s─%s%s%s${NC}\n" "$1" "$t" "$(printf '─%.0s' $(seq 1 $fill 2>/dev/null))" "$2"
+}
+
+infobox(){
+  flush_in
+  printf '\033[H\033[2J'
+  _edge "╭" "╮" "R H A F F   S E R V I C E"
+  sysinfo
+  stats
+  _edge "╰" "╯" "$CONTACT"
+}
+
 banner() {
   flush_in
-  # Ordre IMPÉRATIF : H (curseur en haut) → 2J (efface l'écran) → 3J (efface
-  # l'historique). Inverser 2J et 3J fait réapparaître les cadres empilés.
-  printf '\033[H\033[2J\033[3J'
+  # Simple retour en haut + effacement de l'écran.
+  # SURTOUT PAS de réinitialisation (\033c) ici : elle ferait quitter
+  # l'écran séparé et tout l'intérêt serait perdu.
+  printf '\033[H\033[2J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
-  center "panel de gestion & contrôle" "${GRY}"
-  center "Telegram : $CONTACT" "${CYN}"
+  center "panel de gestion & contrôle · $CONTACT" "${GRY}"
   bot
 }
+
+
 
 
 
@@ -307,38 +333,39 @@ ask_echo(){ ask "$1" "$2"; }
 ui_enter(){
   if [ -z "${NVPANEL_UI:-}" ]; then
     export NVPANEL_UI=$$
-    # ---- Écran séparé + capture des erreurs -------------------------------
-    # L'écran séparé est le SEUL moyen d'empêcher les cadres de s'accumuler
-    # dans l'historique de défilement (Termius n'efface pas cet historique,
-    # quelles que soient les séquences envoyées).
-    # Son défaut connu : en le quittant, tout est effacé — y compris les
-    # messages d'erreur, ce qui rendait les pannes indiagnosticables.
-    # On corrige ce défaut en détournant les erreurs vers un fichier, réaffiché
-    # sur l'écran normal au moment de sortir.
+    # ÉCRAN SÉPARÉ. C'est le seul moyen fiable : Termius refuse de vider son
+    # historique (ni \033[3J ni \033c ne fonctionnent), donc tant qu'un
+    # historique existe il garde les affichages précédents (cadres en double)
+    # et le message d'accueil du serveur. Ici, il n'y a pas d'historique du
+    # tout : rien ne peut s'y accumuler. En sortant, l'écran d'origine est
+    # restauré intact.
+    # Contrepartie : il n'y a rien à faire défiler — le menu doit donc tenir
+    # à l'écran, ce dont s'occupe sa mise en page resserrée.
     export NVPANEL_ERR="/tmp/nvpanel-$$.err"
     : > "$NVPANEL_ERR" 2>/dev/null
     exec 3>&2 2>>"$NVPANEL_ERR"
     export NVPANEL_TTY="$(stty -g 2>/dev/null)"
     stty -echo 2>/dev/null
-    # ?1007l : le défilement n'est pas converti en flèches (^[[A)
     printf '\033[?1049h\033[?1007l\033[?1000l\033[H'
   fi
 }
 
 
+
+
 # Quitte l'écran séparé sans condition : à utiliser avant un message qui doit
 # rester lisible après la fermeture du panel (désinstallation par exemple).
-ui_screen_off(){ printf '\033[?1007h\033[?1049l'; stty echo icanon 2>/dev/null; }
+ui_screen_off(){ stty echo icanon 2>/dev/null; }
 
 ui_leave(){
   [ "${NVPANEL_UI:-}" = "$$" ] || return 0
-  # on quitte l'écran séparé AVANT d'afficher quoi que ce soit
   printf '\033[?1007h\033[?1049l'
   if [ -n "${NVPANEL_TTY:-}" ]; then stty "$NVPANEL_TTY" 2>/dev/null
   else stty echo icanon 2>/dev/null; fi
   exec 2>&3 3>&- 2>/dev/null
-  # Une erreur s'est produite ? On la montre sur l'écran normal, où elle reste
-  # lisible — c'est ce qui manquait et rendait les pannes incompréhensibles.
+  # L'écran séparé efface tout en sortant, y compris les messages d'erreur.
+  # On les a détournés vers un fichier : on les réaffiche ici, sur l'écran
+  # normal, où ils restent lisibles.
   if [ -s "${NVPANEL_ERR:-/dev/null}" ]; then
     printf '\n\033[0;31m⚠ Le panel a rencontré une erreur :\033[0m\n'
     tail -n 10 "$NVPANEL_ERR" 2>/dev/null
@@ -346,6 +373,8 @@ ui_leave(){
   fi
   rm -f "${NVPANEL_ERR:-/nonexistent}" 2>/dev/null
 }
+
+
 
 
 
