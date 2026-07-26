@@ -333,7 +333,6 @@ while true; do
   entry "16" "🔄" "Mettre à jour le script"
   entry "17" "🗑️" "Désinstaller le script"
   entry "0"  "⬅️" "Retour"
-  line
   ask "$(printf " ${WHT}➤ Choix [0-17] :${NC} ")" o || break
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;

@@ -45,6 +45,8 @@ systemctl daemon-reload >/dev/null 2>&1
 # ne survit au retrait du service, et on efface son jeton.
 pkill -f 'nvpanel-bot' 2>/dev/null
 rm -f /etc/nvpanel/bot.conf 2>/dev/null
+# on rétablit le message d'accueil du serveur
+rm -f /root/.hushlogin 2>/dev/null
 
 # 3) Tâches cron
 ( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|nvpanel-conso|rhaff-backup' ) | crontab - 2>/dev/null

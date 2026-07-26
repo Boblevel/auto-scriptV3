@@ -86,6 +86,17 @@ fi
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
 
 fill 96 "Application de la configuration…"
+
+# --- Message d'accueil du serveur (MOTD) ---------------------------------
+# Ubuntu et Debian affichent au login un long texte : bannière de la
+# distribution, publicités, message de l'hébergeur (Contabo, OVH…).
+# Il s'imprime AVANT le panel et reste visible quand on fait défiler.
+# Le fichier .hushlogin le désactive proprement, sans rien supprimer :
+# il suffit de l'effacer pour retrouver le message d'origine.
+touch /root/.hushlogin 2>/dev/null
+[ -n "${SUDO_USER:-}" ] && [ -d "/home/${SUDO_USER}" ] && \
+  touch "/home/${SUDO_USER}/.hushlogin" 2>/dev/null
+
 if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto >/dev/null 2>&1
 fi

@@ -73,7 +73,6 @@ optimize_server() {
 
 while true; do
   infobox
-  echo            # respiration entre l'encadré et la première commande
   sep             # trait rouge avant la première commande
   entry "01" "🔒" "SSH · SlowDNS · UDP"
   entry "02" "🌐" "L2TP"
@@ -91,7 +90,6 @@ while true; do
   entry "13" "🔁" "Redémarrer le serveur"
   entry "14" "🚀" "Optimiser le serveur"
   entry "00" "🚪" "Quitter"
-  sep
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;

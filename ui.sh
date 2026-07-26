@@ -83,7 +83,10 @@ _rows(){
 ui_level(){ printf '1'; }
 _small(){ [ "$(ui_level)" != 1 ]; }
 # Séparateur affiché uniquement quand la place le permet.
-sep(){ line; }
+# Séparateur du menu d'accueil, en rouge pour détacher nettement les
+# groupes de commandes. `line()` reste inchangée : les sous-menus et les
+# bordures de l'encadré gardent leur couleur d'origine.
+sep(){ printf "${RED}"; printf '─%.0s' $(seq 1 $W); printf "${NC}\n"; }
 
 
 # ---- Encadré d'accueil -------------------------------------------------
@@ -109,7 +112,7 @@ _edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
 
 infobox(){
   flush_in
-  printf '\033[H\033[2J'
+  printf '\033[H\033[2J\033[3J'
   _edge "╭" "╮" "R H A F F   S E R V I C E"
   sysinfo
   stats
@@ -340,22 +343,16 @@ ask_echo(){ ask "$1" "$2"; }
 ui_enter(){
   if [ -z "${NVPANEL_UI:-}" ]; then
     export NVPANEL_UI=$$
-    # ÉCRAN SÉPARÉ. C'est le seul moyen fiable : Termius refuse de vider son
-    # historique (ni \033[3J ni \033c ne fonctionnent), donc tant qu'un
-    # historique existe il garde les affichages précédents (cadres en double)
-    # et le message d'accueil du serveur. Ici, il n'y a pas d'historique du
-    # tout : rien ne peut s'y accumuler. En sortant, l'écran d'origine est
-    # restauré intact.
-    # Contrepartie : il n'y a rien à faire défiler — le menu doit donc tenir
-    # à l'écran, ce dont s'occupe sa mise en page resserrée.
-    export NVPANEL_ERR="/tmp/nvpanel-$$.err"
-    : > "$NVPANEL_ERR" 2>/dev/null
-    exec 3>&2 2>>"$NVPANEL_ERR"
+    # PAS d'écran séparé : il interdisait tout défilement.
+    # Les doublons ne venaient pas de l'effacement mais du DÉBORDEMENT :
+    # un affichage plus haut que l'écran pousse ses premières lignes dans
+    # l'historique. Le menu tenant désormais à l'écran, rien ne déborde,
+    # donc rien ne s'empile — et on peut défiler librement.
     export NVPANEL_TTY="$(stty -g 2>/dev/null)"
     stty -echo 2>/dev/null
-    printf '\033[?1049h\033[?1007l\033[?1000l\033[H'
   fi
 }
+
 
 
 
@@ -366,20 +363,12 @@ ui_screen_off(){ stty echo icanon 2>/dev/null; }
 
 ui_leave(){
   [ "${NVPANEL_UI:-}" = "$$" ] || return 0
-  printf '\033[?1007h\033[?1049l'
+  # Sans écran séparé, rien n'est effacé en sortant : les messages d'erreur
+  # restent naturellement visibles, plus besoin de les capturer.
   if [ -n "${NVPANEL_TTY:-}" ]; then stty "$NVPANEL_TTY" 2>/dev/null
   else stty echo icanon 2>/dev/null; fi
-  exec 2>&3 3>&- 2>/dev/null
-  # L'écran séparé efface tout en sortant, y compris les messages d'erreur.
-  # On les a détournés vers un fichier : on les réaffiche ici, sur l'écran
-  # normal, où ils restent lisibles.
-  if [ -s "${NVPANEL_ERR:-/dev/null}" ]; then
-    printf '\n\033[0;31m⚠ Le panel a rencontré une erreur :\033[0m\n'
-    tail -n 10 "$NVPANEL_ERR" 2>/dev/null
-    printf '\n'
-  fi
-  rm -f "${NVPANEL_ERR:-/nonexistent}" 2>/dev/null
 }
+
 
 
 

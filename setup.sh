@@ -134,6 +134,17 @@ systemctl enable --now nvpanel-limit >/dev/null 2>&1
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
 ( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
 
+# --- Message d'accueil du serveur (MOTD) ---------------------------------
+# Ubuntu et Debian affichent au login un long texte : bannière de la
+# distribution, publicités, message de l'hébergeur (Contabo, OVH…).
+# Il s'imprime AVANT le panel et reste visible quand on fait défiler.
+# Le fichier .hushlogin le désactive proprement, sans rien supprimer :
+# il suffit de l'effacer pour retrouver le message d'origine.
+touch /root/.hushlogin 2>/dev/null
+[ -n "${SUDO_USER:-}" ] && [ -d "/home/${SUDO_USER}" ] && \
+  touch "/home/${SUDO_USER}/.hushlogin" 2>/dev/null
+
+
 fill 80 "Préparation des protocoles…"
 [ -x /usr/local/bin/install-xray ] && /usr/local/bin/install-xray auto >/dev/null 2>&1
 # UDP (UDPGW) activé d'office : le paquet badvpn vient des dépôts officiels,
