@@ -73,6 +73,8 @@ optimize_server() {
 
 while true; do
   infobox
+  echo            # respiration entre l'encadré et la première commande
+  sep             # trait rouge avant la première commande
   entry "01" "🔒" "SSH · SlowDNS · UDP"
   entry "02" "🟣" "Vmess  (Xray)"
   entry "03" "🔵" "Vless  (Xray)"
