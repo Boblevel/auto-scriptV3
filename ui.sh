@@ -83,10 +83,10 @@ _rows(){
 ui_level(){ printf '1'; }
 _small(){ [ "$(ui_level)" != 1 ]; }
 # Séparateur affiché uniquement quand la place le permet.
-# Séparateur du menu d'accueil, en rouge pour détacher nettement les
-# groupes de commandes. `line()` reste inchangée : les sous-menus et les
-# bordures de l'encadré gardent leur couleur d'origine.
-sep(){ printf "${RED}"; printf '─%.0s' $(seq 1 $W); printf "${NC}\n"; }
+# Séparateur du menu d'accueil : même bleu que le cadre, pour un ensemble
+# cohérent. (Il a été rouge un temps, à la demande de l'auteur, puis remis
+# en bleu.) `line()` fait exactement le même trait.
+sep(){ line; }
 
 
 # ---- Encadré d'accueil -------------------------------------------------
