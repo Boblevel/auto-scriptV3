@@ -76,42 +76,38 @@ while true; do
   echo            # respiration entre l'encadré et la première commande
   sep             # trait rouge avant la première commande
   entry "01" "🔒" "SSH · SlowDNS · UDP"
-  entry "02" "🟣" "Vmess  (Xray)"
-  entry "03" "🔵" "Vless  (Xray)"
-  entry "04" "🟠" "Trojan (Xray)"
-  entry "05" "🟢" "Shadowsocks"
-  entry "06" "🛡️" "WireGuard"
-  entry "07" "🌐" "L2TP"
-  entry "08" "📡" "PPTP"
-  entry "09" "🔐" "SSTP"
+  entry "02" "🌐" "L2TP"
+  entry "03" "📡" "PPTP"
+  entry "04" "🔐" "SSTP"
+  entry "05" "🟣" "Vmess  (Xray)"
+  entry "06" "🔵" "Vless  (Xray)"
+  entry "07" "🟠" "Trojan (Xray)"
+  entry "08" "🟢" "Shadowsocks"
+  entry "09" "🛡️" "WireGuard"
   sep
   entry "10" "🤖" "Bot Telegram"
   entry "11" "📈" "Statut des services"
   entry "12" "⚙️" "Paramètres"
   entry "13" "🔁" "Redémarrer le serveur"
-  entry "14" "🔄" "Mettre à jour le script"
-  entry "15" "🚀" "Optimiser le serveur"
-  entry "16" "🗑️" "Désinstaller le script"
+  entry "14" "🚀" "Optimiser le serveur"
   entry "00" "🚪" "Quitter"
   sep
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;
-    02|2) run menu-xray vmess ;;
-    03|3) run menu-xray vless ;;
-    04|4) run menu-xray trojan ;;
-    05|5) run menu-ss ;;
-    06|6) run menu-wg ;;
-    07|7) run menu-ppp l2tp ;;
-    08|8) run menu-ppp pptp ;;
-    09|9) run menu-ppp sstp ;;
+    02|2) run menu-ppp l2tp ;;
+    03|3) run menu-ppp pptp ;;
+    04|4) run menu-ppp sstp ;;
+    05|5) run menu-xray vmess ;;
+    06|6) run menu-xray vless ;;
+    07|7) run menu-xray trojan ;;
+    08|8) run menu-ss ;;
+    09|9) run menu-wg ;;
     10)   run menu-bot ;;
     11)   loading "Analyse des services"; services_status ;;
     12)   loading "Ouverture des paramètres"; run menu-settings ;;
     13)   reboot_server ;;
-    14)   run update ;;
-    15)   optimize_server ;;
-    16)   run menu-uninstall ;;
+    14)   optimize_server ;;
     00|0) clear; exit 0 ;;
     *)    warn "Option invalide"; sleep 1 ;;
   esac

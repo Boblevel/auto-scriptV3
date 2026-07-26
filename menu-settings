@@ -330,15 +330,22 @@ while true; do
   entry "13" "📝" "Ajouter une bannière SSH"
   entry "14" "ℹ️" "Info du script"
   entry "15" "🧹" "Réinitialiser la consommation"
+  entry "16" "🔄" "Mettre à jour le script"
+  entry "17" "🗑️" "Désinstaller le script"
   entry "0"  "⬅️" "Retour"
   line
-  ask "$(printf " ${WHT}➤ Choix [0-15] :${NC} ")" o || break
+  ask "$(printf " ${WHT}➤ Choix [0-17] :${NC} ")" o || break
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
     3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;
     7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
     11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
-    14) script_info ;; 15) reset_traffic ;; 0) break ;;
+    14) script_info ;; 15) reset_traffic ;;
+    16) if command -v update >/dev/null 2>&1; then update
+        else err "Commande de mise à jour introuvable."; pause; fi ;;
+    17) if command -v menu-uninstall >/dev/null 2>&1; then menu-uninstall
+        else err "Commande de désinstallation introuvable."; pause; fi ;;
+    0) break ;;
     *) warn "Invalide"; sleep 1 ;;
   esac
 done
