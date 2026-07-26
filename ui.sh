@@ -93,12 +93,19 @@ sep(){ line; }
 # un rendu plus net. Les bordures ne portent que du texte simple (pas
 # d'emoji), leur largeur est donc calculée de façon fiable.
 _edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
-  local t=" $3 " n fill
+  local t=" $3 " n l r
   n=${#t}
-  fill=$(( W - n - 1 ))   # -1 pour le tiret qui précède le texte
-  [ "$fill" -lt 0 ] && { t=""; fill=$(( W - 1 )); }
-  printf "${CYN}%s─%s%s%s${NC}\n" "$1" "$t" "$(printf '─%.0s' $(seq 1 $fill 2>/dev/null))" "$2"
+  [ "$n" -ge "$W" ] && { t=""; n=0; }
+  l=$(( (W - n) / 2 ))          # tirets à gauche du texte
+  r=$(( W - n - l ))            # tirets à droite : le texte est centré
+  printf "${CYN}%s%s%s%s%s${NC}\n" \
+    "$1" \
+    "$(printf '─%.0s' $(seq 1 "$l" 2>/dev/null))" \
+    "$t" \
+    "$(printf '─%.0s' $(seq 1 "$r" 2>/dev/null))" \
+    "$2"
 }
+
 
 infobox(){
   flush_in
