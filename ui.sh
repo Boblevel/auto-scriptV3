@@ -87,24 +87,15 @@ sep(){ line; }
 
 banner() {
   flush_in
-  # RÉINITIALISATION COMPLÈTE du terminal (\033c), puis effacement écran +
-  # historique. Termius ignore le simple effacement d'historique (\033[3J) :
-  # les affichages précédents s'y accumulaient, d'où les cadres en double au
-  # retour d'un sous-menu, et le message d'accueil du serveur restait visible
-  # en remontant. La réinitialisation, elle, vide réellement l'historique :
-  # on peut toujours faire défiler, mais il n'y reste que l'affichage courant.
-  # \033%G : on re-sélectionne l'UTF-8 après la réinitialisation, sinon
-  # certains terminaux repassent en jeu de caractères simple et les emojis
-  # comme les bordures du cadre s'affichent en symboles illisibles.
-  printf '\033c\033%%G\033[H\033[2J\033[3J'
+  # Ordre IMPÉRATIF : H (curseur en haut) → 2J (efface l'écran) → 3J (efface
+  # l'historique). Inverser 2J et 3J fait réapparaître les cadres empilés.
+  printf '\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
   center "panel de gestion & contrôle" "${GRY}"
   center "Telegram : $CONTACT" "${CYN}"
   bot
 }
-
-
 
 
 
@@ -316,27 +307,45 @@ ask_echo(){ ask "$1" "$2"; }
 ui_enter(){
   if [ -z "${NVPANEL_UI:-}" ]; then
     export NVPANEL_UI=$$
-    # PAS d'écran séparé (\033[?1049h) : il n'a aucun historique, donc il
-    # empêchait tout défilement. On reste sur l'écran normal, nettoyé à
-    # chaque affichage — le défilement fonctionne et rien ne s'empile.
+    # ---- Écran séparé + capture des erreurs -------------------------------
+    # L'écran séparé est le SEUL moyen d'empêcher les cadres de s'accumuler
+    # dans l'historique de défilement (Termius n'efface pas cet historique,
+    # quelles que soient les séquences envoyées).
+    # Son défaut connu : en le quittant, tout est effacé — y compris les
+    # messages d'erreur, ce qui rendait les pannes indiagnosticables.
+    # On corrige ce défaut en détournant les erreurs vers un fichier, réaffiché
+    # sur l'écran normal au moment de sortir.
+    export NVPANEL_ERR="/tmp/nvpanel-$$.err"
+    : > "$NVPANEL_ERR" 2>/dev/null
+    exec 3>&2 2>>"$NVPANEL_ERR"
     export NVPANEL_TTY="$(stty -g 2>/dev/null)"
     stty -echo 2>/dev/null
+    # ?1007l : le défilement n'est pas converti en flèches (^[[A)
+    printf '\033[?1049h\033[?1007l\033[?1000l\033[H'
   fi
 }
 
 
-
 # Quitte l'écran séparé sans condition : à utiliser avant un message qui doit
 # rester lisible après la fermeture du panel (désinstallation par exemple).
-ui_screen_off(){ stty echo icanon 2>/dev/null; }
+ui_screen_off(){ printf '\033[?1007h\033[?1049l'; stty echo icanon 2>/dev/null; }
 
 ui_leave(){
   [ "${NVPANEL_UI:-}" = "$$" ] || return 0
-  # On rend toujours un terminal utilisable, même après une interruption.
+  # on quitte l'écran séparé AVANT d'afficher quoi que ce soit
+  printf '\033[?1007h\033[?1049l'
   if [ -n "${NVPANEL_TTY:-}" ]; then stty "$NVPANEL_TTY" 2>/dev/null
   else stty echo icanon 2>/dev/null; fi
+  exec 2>&3 3>&- 2>/dev/null
+  # Une erreur s'est produite ? On la montre sur l'écran normal, où elle reste
+  # lisible — c'est ce qui manquait et rendait les pannes incompréhensibles.
+  if [ -s "${NVPANEL_ERR:-/dev/null}" ]; then
+    printf '\n\033[0;31m⚠ Le panel a rencontré une erreur :\033[0m\n'
+    tail -n 10 "$NVPANEL_ERR" 2>/dev/null
+    printf '\n'
+  fi
+  rm -f "${NVPANEL_ERR:-/nonexistent}" 2>/dev/null
 }
-
 
 
 
