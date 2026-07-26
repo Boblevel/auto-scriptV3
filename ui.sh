@@ -87,10 +87,16 @@ sep(){ line; }
 
 banner() {
   flush_in
-  # Ordre IMPÉRATIF : H (curseur en haut) → 2J (efface l'écran) → 3J (efface
-  # l'historique de défilement). Inverser 2J et 3J fait réapparaître les
-  # cadres empilés quand on fait défiler.
-  printf '\033[H\033[2J\033[3J'
+  # RÉINITIALISATION COMPLÈTE du terminal (\033c), puis effacement écran +
+  # historique. Termius ignore le simple effacement d'historique (\033[3J) :
+  # les affichages précédents s'y accumulaient, d'où les cadres en double au
+  # retour d'un sous-menu, et le message d'accueil du serveur restait visible
+  # en remontant. La réinitialisation, elle, vide réellement l'historique :
+  # on peut toujours faire défiler, mais il n'y reste que l'affichage courant.
+  # \033%G : on re-sélectionne l'UTF-8 après la réinitialisation, sinon
+  # certains terminaux repassent en jeu de caractères simple et les emojis
+  # comme les bordures du cadre s'affichent en symboles illisibles.
+  printf '\033c\033%%G\033[H\033[2J\033[3J'
   top
   center "R H A F F   S E R V I C E" "${BOLD}${WHT}"
   center "panel de gestion & contrôle" "${GRY}"
