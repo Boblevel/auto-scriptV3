@@ -78,9 +78,9 @@ while true; do
   entry "02" "🌐" "L2TP"
   entry "03" "📡" "PPTP"
   entry "04" "🔐" "SSTP"
-  entry "05" "🟣" "Vmess  (Xray)"
-  entry "06" "🔵" "Vless  (Xray)"
-  entry "07" "🟠" "Trojan (Xray)"
+  entry "05" "🟣" "Vmess"
+  entry "06" "🔵" "Vless"
+  entry "07" "🟠" "Trojan"
   entry "08" "🟢" "Shadowsocks"
   entry "09" "🛡️" "WireGuard"
   sep
