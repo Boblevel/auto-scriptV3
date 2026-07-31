@@ -1,0 +1,71 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · installation Hysteria2   (install-hysteria [auto])
+# ============================================================
+source /etc/nvpanel/lib/ui.sh
+[ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+AUTO=0; [ "$1" = "auto" ] && AUTO=1
+PORT=443
+DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
+CERT="/etc/letsencrypt/live/$DOMAIN"
+
+[ "$AUTO" = 1 ] || { banner; center " INSTALLATION HYSTERIA2 " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation (1 à 2 minutes)…\n"; }
+
+# Hysteria a besoin d'un vrai certificat TLS : on réutilise celui déjà
+# émis par install-tls, jamais une deuxième émission ACME séparée.
+if [ -z "$DOMAIN" ] || [ ! -f "$CERT/fullchain.pem" ]; then
+  if [ "$AUTO" = 1 ]; then printf "  ${YLW}!${NC} Hysteria nécessite un domaine + TLS (Paramètres 1 puis 2).\n"; exit 1; fi
+  clear; banner; center " ✘  DOMAINE / TLS REQUIS " "${BOLD}${RED}"; line
+  err "Configure d'abord un domaine (Paramètres → 1) puis active le TLS (Paramètres → 2)."
+  pause; exit 1
+fi
+
+bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1
+
+mkdir -p /etc/nvpanel/db /etc/hysteria
+touch /etc/nvpanel/db/hysteria
+
+if command -v /usr/local/bin/nvpanel-hysteria >/dev/null 2>&1; then
+  /usr/local/bin/nvpanel-hysteria rebuild >/dev/null 2>&1
+else
+  # config minimale si nvpanel-hysteria n'est pas encore en place
+  cat > /etc/hysteria/config.yaml <<EOF
+listen: :$PORT
+tls:
+  cert: $CERT/fullchain.pem
+  key: $CERT/privkey.pem
+auth:
+  type: userpass
+  userpass: {}
+masquerade:
+  type: proxy
+  proxy:
+    url: https://news.ycombinator.com/
+    rewriteHost: true
+EOF
+fi
+
+systemctl enable hysteria-server >/dev/null 2>&1
+systemctl restart hysteria-server >/dev/null 2>&1
+sleep 2
+
+iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null
+command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && ufw allow $PORT/udp >/dev/null 2>&1
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+
+OK=0; systemctl is-active --quiet hysteria-server && OK=1
+
+if [ "$AUTO" = 1 ]; then
+  [ "$OK" = 1 ] && printf "  ${GRN}✔${NC} Hysteria2 prêt.\n" || printf "  ${YLW}!${NC} Hysteria2 non activé.\n"
+  exit 0
+fi
+clear; banner
+if [ "$OK" = 1 ]; then
+  center " ✔  HYSTERIA2 OPÉRATIONNEL " "${BOLD}${GRN}"; line
+  ok "Service actif sur le port UDP $PORT."
+  printf "\n   ${GRY}Crée un compte via le menu Hysteria pour obtenir un lien de connexion.${NC}\n"
+else
+  center " ✘  HYSTERIA2 NON ACTIVÉ " "${BOLD}${RED}"; line
+  err "Le service n'a pas démarré."
+fi
+pause

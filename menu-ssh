@@ -260,6 +260,73 @@ cleanup_menu() {
   done
 }
 
+hysteria_menu() {
+  while true; do
+    header; center " ⚡ HYSTERIA2 " "${BOLD}${WHT}"; line
+    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+      ok "Hysteria2 actif (UDP 443)"
+    else
+      warn "Hysteria2 non installé."
+    fi
+    echo
+    entry "1" "➕" "Créer un compte"
+    entry "2" "📋" "Lister les comptes"
+    entry "3" "🗑️" "Supprimer un compte"
+    entry "4" "⬇️" "Installer / réinstaller"
+    entry "5" "🗑️" "Désinstaller"
+    entry "0" "⬅️" "Retour"
+    line
+    ask "$(printf " ${WHT}Choix :${NC} ")" h || break
+    case "$h" in
+      1) hy_create ;; 2) hy_list ;; 3) hy_delete ;;
+      4) install-hysteria ;; 5) hy_uninstall ;;
+      0) break ;; *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
+}
+
+hy_create(){
+  header; center " ➕ NOUVEAU COMPTE HYSTERIA2 " "${BOLD}${WHT}"; line
+  ask " Nom d'utilisateur : " u
+  ask " Mot de passe (vide = généré) : " p
+  [ -z "$p" ] && p=$(openssl rand -hex 6)
+  ask " Durée en jours [30] : " d; d=${d:-30}
+  local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" 2>&1)
+  if echo "$out" | grep -q "^OK"; then
+    echo "$out" | tail -n +2
+    ok "Compte créé."
+  else
+    err "Échec (utilisateur déjà pris, ou domaine/TLS non configuré)."
+  fi
+  pause
+}
+
+hy_list(){
+  header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line
+  local rows; rows=$(/usr/local/bin/nvpanel-hysteria list)
+  [ -z "$rows" ] && { warn "Aucun compte."; pause; return; }
+  printf "   ${GRY}%-16s %-12s %s${NC}\n" "Utilisateur" "Expire" "Statut"
+  echo "$rows" | while IFS='|' read -r u e s; do printf "   %-16s %-12s %s\n" "$u" "$e" "$s"; done
+  pause
+}
+
+hy_delete(){
+  header; center " 🗑️ SUPPRIMER UN COMPTE HYSTERIA2 " "${BOLD}${WHT}"; line
+  ask " Utilisateur à supprimer : " u
+  local out; out=$(/usr/local/bin/nvpanel-hysteria del "$u" 2>&1)
+  echo "$out" | grep -q "^OK" && ok "Compte supprimé." || err "Utilisateur introuvable."
+  pause
+}
+
+hy_uninstall(){
+  header; center " 🗑️ DÉSINSTALLER HYSTERIA2 " "${BOLD}${WHT}"; line
+  confirm " Supprimer Hysteria2 et tous ses comptes ?" || { pause; return; }
+  systemctl disable --now hysteria-server >/dev/null 2>&1
+  rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml
+  ok "Hysteria2 désinstallé."
+  pause
+}
+
 while true; do
   header
   entry "1" "➕" "Créer un compte"
@@ -270,16 +337,18 @@ while true; do
   entry "6" "🗑️" "Supprimer un compte"
   entry "7" "🌐" "SlowDNS"
   entry "8" "📡" "UDP (badvpn / udp-custom)"
-  entry "9" "🧹" "Nettoyage des comptes"
-  entry "10" "🎁" "Compte test 24 h"
+  entry "9" "⚡" "Hysteria2"
+  entry "10" "🧹" "Nettoyage des comptes"
+  entry "11" "🎁" "Compte test 24 h"
   entry "0" "⬅️" "Retour"
   line
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in
     1) create_account ;; 2) list_accounts ;; 3) view_account ;;
     4) renew_account ;;  5) lock_toggle ;;   6) delete_account ;;
-    7) slowdns_menu ;;   8) udp_status ;;    9) cleanup_menu ;;
-    10) trial_account ;;
+    7) slowdns_menu ;;   8) udp_status ;;    9) hysteria_menu ;;
+    10) cleanup_menu ;;
+    11) trial_account ;;
     0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

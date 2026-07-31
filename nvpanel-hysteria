@@ -1,0 +1,116 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · comptes Hysteria2
+#  Comptes dans /etc/nvpanel/db/hysteria (### user pass exp [L]).
+#  /etc/hysteria/config.yaml est ENTIÈREMENT régénéré à chaque
+#  changement : contrairement à Xray, ce fichier n'est jamais édité
+#  à la main ailleurs — une réécriture complète est donc sans danger
+#  ici, et bien plus fiable qu'un patch YAML partiel.
+#  Usage : nvpanel-hysteria add|list|info|del|renew|lock|unlock|purge|rebuild|online ...
+# ============================================================
+DB=/etc/nvpanel/db/hysteria
+CONF=/etc/hysteria/config.yaml
+mkdir -p /etc/nvpanel/db; touch "$DB"
+
+_clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
+
+_rebuild(){
+  local domain cert
+  domain=$(cat /etc/nvpanel/domain 2>/dev/null)
+  cert="/etc/letsencrypt/live/$domain"
+  [ -f "$cert/fullchain.pem" ] || return 1
+  {
+    echo "listen: :443"
+    echo "tls:"
+    echo "  cert: $cert/fullchain.pem"
+    echo "  key: $cert/privkey.pem"
+    echo "auth:"
+    echo "  type: userpass"
+    echo "  userpass:"
+    awk '/^### /{ if ($5!="L") printf "    %s: %s\n", $2, $3 }' "$DB"
+    echo "masquerade:"
+    echo "  type: proxy"
+    echo "  proxy:"
+    echo "    url: https://news.ycombinator.com/"
+    echo "    rewriteHost: true"
+  } > "$CONF"
+  systemctl restart hysteria-server >/dev/null 2>&1
+}
+
+_box(){ # user pass created exp
+  local u="$1" p="$2" cr="$3" ex="$4" host
+  host=$(cat /etc/nvpanel/domain 2>/dev/null)
+  [ -z "$host" ] && host="$(cat /etc/nvpanel/ip 2>/dev/null)"
+  cat <<EOF
+========== 🔐 COMPTE HYSTERIA2 ==========
+🌐 Hôte        : $host
+🔌 Port        : 443 (UDP)
+👤 Utilisateur : $u
+🔑 Mot de passe: $p
+🔗 Lien        : hy2://$u:$p@$host:443/?sni=$host#$u
+📅 Créé le     : $cr
+⏳ Expire le   : $ex
+==========================================
+EOF
+}
+
+cmd="$1"; shift 2>/dev/null
+case "$cmd" in
+  add)
+    user=$(_clean "$1"); pass=$(_clean "$2"); days="$3"
+    [ -z "$user" ] || [ -z "$pass" ] && { echo "ERR args"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    grep -q "^### $user " "$DB" && { echo "ERR exists"; exit 1; }
+    exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
+    echo "### $user $pass $exp" >> "$DB"
+    _rebuild || { sed -i "/^### $user /d" "$DB"; echo "ERR notls"; exit 1; }
+    echo "OK $user $exp"
+    _box "$user" "$pass" "$cr" "$exp" ;;
+  list)
+    awk '/^### /{ st=($5=="L")?"verrou":"actif"; print $2"|"$4"|"st }' "$DB" 2>/dev/null ;;
+  info)
+    user=$(_clean "$1")
+    row=$(grep "^### $user " "$DB" 2>/dev/null | head -1)
+    [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
+    echo "OK $user"
+    _box "$user" "$(echo "$row" | awk '{print $3}')" "-" "$(echo "$row" | awk '{print $4}')" ;;
+  lock)
+    user=$(_clean "$1")
+    grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$DB"
+    _rebuild; echo "OK locked" ;;
+  unlock)
+    user=$(_clean "$1")
+    grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2|" "$DB"
+    _rebuild; echo "OK unlocked" ;;
+  del)
+    user=$(_clean "$1")
+    grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "/^### $user /d" "$DB"
+    _rebuild; echo "OK deleted" ;;
+  renew)
+    user=$(_clean "$1"); days="$2"
+    grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
+    exp=$(date -d "+$days days" +"%Y-%m-%d")
+    sed -i "s|^### $user \([^ ]*\) .*|### $user \1 $exp|" "$DB"
+    echo "OK $user $exp" ;;
+  purge)
+    mode=$(_clean "$1"); today=$(date +%F); n=0
+    list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$DB" 2>/dev/null)
+    for u in $list; do
+      [ -z "$u" ] && continue
+      sed -i "/^### $u /d" "$DB"; n=$((n+1))
+    done
+    [ "$n" -gt 0 ] && _rebuild
+    echo "OK $n" ;;
+  online)
+    # QUIC multiplexe tout sur un seul socket UDP : impossible de compter
+    # les sessions par utilisateur avec ss/pgrep, contrairement à PPP.
+    systemctl is-active --quiet hysteria-server && echo 1 || echo 0 ;;
+  rebuild)
+    _rebuild && echo "OK" || echo "ERR notls" ;;
+  *) echo "usage: nvpanel-hysteria add|list|info|del|renew|lock|unlock|purge|rebuild|online ..."; exit 1 ;;
+esac
+exit 0

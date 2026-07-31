@@ -22,16 +22,16 @@ BOLD='\033[1m'
 W=56
 
 # ---- Primitives de dessin -----------------------------------
-line()  { printf "${CYN}"; printf '─%.0s' $(seq 1 $W); printf "${NC}\n"; }
-top()   { printf "${CYN}╭"; printf '─%.0s' $(seq 1 $W); printf "╮${NC}\n"; }
-bot()   { printf "${CYN}╰"; printf '─%.0s' $(seq 1 $W); printf "╯${NC}\n"; }
+line()  { printf "${CYN}"; printf '━%.0s' $(seq 1 $W); printf "${NC}\n"; }
+top()   { printf "${CYN}┏"; printf '━%.0s' $(seq 1 $W); printf "┓${NC}\n"; }
+bot()   { printf "${CYN}┗"; printf '━%.0s' $(seq 1 $W); printf "┛${NC}\n"; }
 
 center() {
   local txt="$1"; local color="${2:-$WHT}"
   local len=${#txt}
   local pad=$(( (W - len) / 2 ))
   local rpad=$(( W - len - pad ))
-  printf "${CYN}│${NC}%*s${color}%s${NC}%*s${CYN}│${NC}\n" "$pad" "" "$txt" "$rpad" ""
+  printf "${CYN}┃${NC}%*s${color}%s${NC}%*s${CYN}┃${NC}\n" "$pad" "" "$txt" "$rpad" ""
 }
 
 # Menu : entry "01" "🔒" "Label"  (avec emoji)  ou  entry "1" "Label"
@@ -49,9 +49,9 @@ entry_row() {
 
 entry() {
   if [ "$#" -ge 3 ]; then
-    printf "  ${GRN}[%s]${NC} %s %s\n" "$1" "$2" "$3"
+    printf "  ${GRN}[%s]${NC} %s ${BOLD}%s${NC}\n" "$1" "$2" "$3"
   else
-    printf "  ${GRN}[%s]${NC} %s\n" "$1" "$2"
+    printf "  ${GRN}[%s]${NC} ${BOLD}%s${NC}\n" "$1" "$2"
   fi
 }
 
@@ -103,9 +103,9 @@ _edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
   r=$(( W - n - l ))            # tirets à droite : le texte est centré
   printf "${CYN}%s%s%s%s%s${NC}\n" \
     "$1" \
-    "$(printf '─%.0s' $(seq 1 "$l" 2>/dev/null))" \
+    "$(printf '━%.0s' $(seq 1 "$l" 2>/dev/null))" \
     "$t" \
-    "$(printf '─%.0s' $(seq 1 "$r" 2>/dev/null))" \
+    "$(printf '━%.0s' $(seq 1 "$r" 2>/dev/null))" \
     "$2"
 }
 
@@ -113,10 +113,10 @@ _edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
 infobox(){
   flush_in
   printf '\033[H\033[2J\033[3J'
-  _edge "╭" "╮" "R H A F F   S E R V I C E"
+  _edge "┏" "┓" "R H A F F   S E R V I C E"
   sysinfo
   stats
-  _edge "╰" "╯" "$CONTACT"
+  _edge "┗" "┛" "$CONTACT"
 }
 
 banner() {
@@ -214,8 +214,10 @@ proto_dash() {
   case "$mode" in
     ssh)
       online=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
-                 uid=$(id -u "$pu" 2>/dev/null)
-                 [ -n "$uid" ] && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] && echo 1
+                 # Ne compte que les comptes réellement créés par le panel :
+                 # un utilisateur système/admin connecté en SSH avec un UID
+                 # dans la même plage ne doit jamais apparaître comme client VPN.
+                 grep -q "^### $pu " "/etc/nvpanel/db/$dbf" 2>/dev/null && echo 1
                done | wc -l)
       if [ -f "/etc/nvpanel/db/$dbf" ]; then
         while read -r _ u _; do
