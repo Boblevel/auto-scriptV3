@@ -12,10 +12,10 @@ RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\03
 clear
 printf "${CYN}"
 cat <<'ART'
-   ┌────────────────────────────────────────────────────┐
-   │        R H A F F   S E R V I C E                     │
-   │        Mise à jour                                   │
-   └────────────────────────────────────────────────────┘
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃        R H A F F   S E R V I C E                     ┃
+   ┃        Mise à jour                                   ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ART
 printf "${NC}\n"
 
@@ -54,6 +54,7 @@ for pair in \
   "install-sstp:/usr/local/bin/install-sstp" \
   "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls" \
   "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp" \
+  "install-hysteria:/usr/local/bin/install-hysteria" "nvpanel-hysteria:/usr/local/bin/nvpanel-hysteria" \
   "update.sh:/usr/local/bin/update"; do
   fetch "${pair%%:*}" "${pair##*:}"
   CUR=$(( CUR<70 ? CUR+3 : CUR )); draw "$CUR" "Téléchargement des composants…"
@@ -111,9 +112,9 @@ sleep 0.3
 clear
 printf "${GRN}"
 cat <<'DONE'
-   ┌──────────────────────────────────────────────────┐
-   │        ✔   Mise à jour terminée                    │
-   └──────────────────────────────────────────────────┘
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃        ✔   Mise à jour terminée                    ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 DONE
 printf "${NC}\n"
 if [ -n "$FAILED" ]; then

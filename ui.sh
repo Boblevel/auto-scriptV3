@@ -49,9 +49,9 @@ entry_row() {
 
 entry() {
   if [ "$#" -ge 3 ]; then
-    printf "  ${GRN}[%s]${NC} %s ${BOLD}%s${NC}\n" "$1" "$2" "$3"
+    printf "  ${GRN}[%s]${NC} %s ${WHT}%s${NC}\n" "$1" "$2" "$3"
   else
-    printf "  ${GRN}[%s]${NC} ${BOLD}%s${NC}\n" "$1" "$2"
+    printf "  ${GRN}[%s]${NC} ${WHT}%s${NC}\n" "$1" "$2"
   fi
 }
 
