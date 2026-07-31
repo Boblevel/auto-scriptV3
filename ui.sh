@@ -47,11 +47,12 @@ entry_row() {
   printf "%b\n" "$out"
 }
 
+_upper(){ printf '%s' "$1" | tr 'a-zàâäéèêëîïôöùûüçœ' 'A-ZÀÂÄÉÈÊËÎÏÔÖÙÛÜÇŒ'; }
 entry() {
   if [ "$#" -ge 3 ]; then
-    printf "  ${GRN}[%s]${NC} %s ${WHT}%s${NC}\n" "$1" "$2" "$3"
+    printf "  ${GRN}[%s]${NC} %s ${WHT}%s${NC}\n" "$1" "$2" "$(_upper "$3")"
   else
-    printf "  ${GRN}[%s]${NC} ${WHT}%s${NC}\n" "$1" "$2"
+    printf "  ${GRN}[%s]${NC} ${WHT}%s${NC}\n" "$1" "$(_upper "$2")"
   fi
 }
 
