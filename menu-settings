@@ -9,6 +9,34 @@ BKDIR=/root
 
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
 
+traffic_report(){
+  header; center " 📊  BILAN DU TRAFIC (TOUS PROTOCOLES) " "${BOLD}${WHT}"; line
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
+  local DB=/etc/nvpanel/db/conso
+  [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
+
+  local days week month all
+  days=$(wc -l < "$DB" 2>/dev/null); days=${days:-0}
+  week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  all=$(awk -F'|' '{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+
+  echo
+  printf "   ${GRY}7 derniers jours         :${NC} ${WHT}%s${NC}\n" "$(_hr "${week:-0}")"
+  printf "   ${GRY}Ce mois-ci               :${NC} ${WHT}%s${NC}\n" "$(_hr "${month:-0}")"
+  printf "   ${GRY}Historique disponible ${WHT}(%s j)${GRY} :${NC} ${WHT}%s${NC}\n" "$days" "$(_hr "${all:-0}")"
+  echo
+  printf "   ${GRY}Total client, tous protocoles confondus${NC}\n"
+  printf "   ${GRY}(SSH, SlowDNS, UDP, Vmess, Vless, Trojan,${NC}\n"
+  printf "   ${GRY}Shadowsocks, WireGuard, L2TP, PPTP, SSTP).${NC}\n"
+  if [ "${days:-0}" -lt 365 ] 2>/dev/null; then
+    echo
+    printf "   ${YLW}Historique conservé : 120 jours maximum.${NC}\n"
+    printf "   ${YLW}Une vue « 1 an » complète n'est pas encore possible.${NC}\n"
+  fi
+  pause
+}
+
 set_domain(){
   header; center " 🌐  DOMAINE DU SERVEUR " "${BOLD}${WHT}"; line
   printf "   ${GRY}Actuel :${NC} %s\n\n" "$(cat /etc/nvpanel/domain 2>/dev/null || echo 'non configuré')"
@@ -41,9 +69,6 @@ set_domain(){
     ok "Façade web mise à jour."
   fi
   echo
-  printf "   ${WHT}Pense à vérifier tes enregistrements DNS :${NC}\n"
-  printf "   ${GRY}• A  : %s  →  %s${NC}\n" "${d%%.*}" "$(cat /etc/nvpanel/ip 2>/dev/null)"
-  printf "   ${GRY}• NS : ns-%s  →  %s${NC}\n" "${d%%.*}" "$d"
   printf "   ${YLW}Les comptes déjà créés doivent être ré-envoyés (option « Revoir un compte »).${NC}\n"
   pause
 }
@@ -60,11 +85,6 @@ backup_now(){
   header; local f="$BKDIR/rhaff-backup-$(date +%F-%H%M).tar.gz"
   tar czf "$f" /etc/nvpanel /usr/local/etc/xray /etc/wireguard 2>/dev/null
   ok "Sauvegarde créée : $f"; pause
-}
-autobackup(){
-  header
-  ( crontab -l 2>/dev/null | grep -v rhaff-backup; echo "0 4 * * * tar czf $BKDIR/rhaff-backup-auto.tar.gz /etc/nvpanel /usr/local/etc/xray /etc/wireguard 2>/dev/null" ) | crontab -
-  ok "Sauvegarde automatique activée (tous les jours à 4h)."; pause
 }
 restore_data(){
   header; local files=("$BKDIR"/rhaff-backup-*.tar.gz)
@@ -141,24 +161,28 @@ speedtest(){
 }
 restart_services(){
   header; center " ♻️  REDÉMARRAGE DES SERVICES " "${BOLD}${WHT}"; line
-  local s name pair done=0
+  echo
+  loading "Redémarrage des services"
+  local s pair total=0 done=0
   for pair in \
     "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray" "nginx:Nginx (TLS/WS)" \
     "nvpanel-slowdns:SlowDNS" "nvpanel-badvpn-7100:UDP 7100" "nvpanel-badvpn-7200:UDP 7200" \
     "nvpanel-badvpn-7300:UDP 7300" "nvpanel-udp-custom:UDP custom" "wg-quick@wg0:WireGuard" \
     "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
-    s="${pair%%:*}"; name="${pair##*:}"
+    s="${pair%%:*}"
     if systemctl is-active --quiet "$s" 2>/dev/null || systemctl is-enabled --quiet "$s" 2>/dev/null; then
-      if systemctl restart "$s" >/dev/null 2>&1; then
-        printf "   ${GRN}✔ redémarré  ${NC} %s\n" "$name"; done=$((done+1))
-      else
-        printf "   ${RED}✘ échec      ${NC} %s\n" "$name"
-      fi
-    else
-      printf "   ${GRY}– non installé${NC} ${GRY}%s${NC}\n" "$name"
+      total=$((total+1))
+      systemctl restart "$s" >/dev/null 2>&1 && done=$((done+1))
     fi
   done
-  echo; ok "$done service(s) redémarré(s)."
+  echo
+  if [ "$total" -eq 0 ]; then
+    warn "Aucun service actif détecté."
+  elif [ "$done" -eq "$total" ]; then
+    ok "$done service(s) redémarré(s) avec succès."
+  else
+    warn "$done/$total service(s) redémarré(s). Si un souci persiste, réessaie dans une minute."
+  fi
   pause
 }
 renew_cert(){
@@ -318,7 +342,7 @@ while true; do
   entry "1"  "🌐" "Ajouter / changer le domaine"
   entry "2"  "🔒" "Activer le TLS (HTTPS)"
   entry "3"  "⚙️" "Changer le port Dropbear"
-  entry "4"  "💾" "Sauvegarde automatique"
+  entry "4"  "📈" "Bilan du trafic (tous protocoles)"
   entry "5"  "📦" "Sauvegarder maintenant"
   entry "6"  "🔄" "Restaurer une sauvegarde"
   entry "7"  "📊" "Utilisation RAM / trafic"
@@ -336,7 +360,7 @@ while true; do
   ask "$(printf " ${WHT}➤ Choix [0-17] :${NC} ")" o || break
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
-    3) change_port ;; 4) autobackup ;; 5) backup_now ;; 6) restore_data ;;
+    3) change_port ;; 4) traffic_report ;; 5) backup_now ;; 6) restore_data ;;
     7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
     11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
     14) script_info ;; 15) reset_traffic ;;
