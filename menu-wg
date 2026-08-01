@@ -105,13 +105,13 @@ EOF
 
 list_peers() {
   header
-  printf " ${WHT}%-16s %-14s %-12s %s${NC}\n" "CLIENT" "IP" "EXPIRE" "ACTIF DEPUIS"
+  printf " ${WHT}%-16s %-14s %-12s %-8s %s${NC}\n" "COMPTE" "IP" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
   local nm pub ip exp ct
   while read -r _ nm pub ip exp; do
     [ -z "$nm" ] && continue
     ct=$(_wg_time "$pub")
-    printf " %-16s %-14s %-12s %s\n" "$nm" "${ip:-?}" "${exp:-?}" "${ct:-—}"
+    printf " %-16s %-14s %-12s %-8s %s\n" "$nm" "${ip:-?}" "${exp:-?}" "actif" "${ct:-—}"
   done < "$DB"
   pause
 }

@@ -85,8 +85,14 @@ create(){
 
 list_all(){
   header
-  printf " ${WHT}%-20s %s${NC}\n" "COMPTE" "EXPIRE"
-  nvpanel-ppp list "$PROTO" | while IFS='|' read -r n e; do printf " %-20s %s\n" "$n" "$e"; done
+  printf " ${WHT}%-20s %-12s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT"
+  line
+  nvpanel-ppp list "$PROTO" | while IFS='|' read -r n e s; do
+    [ -z "$n" ] && continue
+    printf " %-20s %-12s %s\n" "$n" "${e:-?}" "${s:-actif}"
+  done
+  echo
+  printf "   ${GRY}Suivi individuel des connexions non disponible pour ce protocole.${NC}\n"
   pause
 }
 

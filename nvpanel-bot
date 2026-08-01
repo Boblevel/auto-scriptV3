@@ -116,6 +116,7 @@ def main_kb():
         [{"text": "\U0001F7E0 Trojan", "callback_data": "p:trojan"}, {"text": "\U0001F7E2 Shadowsocks", "callback_data": "p:ss"}],
         [{"text": "\U0001F7E4 L2TP", "callback_data": "pp:l2tp"}, {"text": "\U0001F4E1 PPTP", "callback_data": "pp:pptp"}],
         [{"text": "\U0001F510 SSTP", "callback_data": "pp:sstp"}, {"text": "\U0001F6E1 WireGuard", "callback_data": "wg:list"}],
+        [{"text": "\u26A1 Hysteria2", "callback_data": "hy:menu"}],
         [{"text": "\U0001F381 Compte test 24h", "callback_data": "trial"}],
         [{"text": "\U0001F9F9 Purger les expir\u00e9s", "callback_data": "purge"}],
         [{"text": "\U0001F504 Rafra\u00eechir le menu", "callback_data": "menu"}],
@@ -169,6 +170,12 @@ def ppp_kb(p):
         [{"text": "\U0001F5D1 Supprimer", "callback_data": "pd2:%s" % p}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
     ]}
 
+def hy_kb():
+    return {"inline_keyboard": [
+        [{"text": "\u2795 Ajouter", "callback_data": "hya"}, {"text": "\U0001F4CB Liste", "callback_data": "hyl"}],
+        [{"text": "\U0001F5D1 Supprimer", "callback_data": "hyd"}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
+    ]}
+
 def split_dns_key(box):
     """Sépare la clé DNS du reste de la fiche.
 
@@ -210,6 +217,12 @@ def ppp(*args):
     except Exception as e:
         return "ERR %s" % e
 
+def hy(*args):
+    try:
+        return subprocess.run(["nvpanel-hysteria", *args], capture_output=True, text=True, timeout=40).stdout.strip()
+    except Exception as e:
+        return "ERR %s" % e
+
 def cancel_kb():
     return {"inline_keyboard": [[{"text": "\u274C Annuler / Retour", "callback_data": "cancel"}]]}
 
@@ -231,7 +244,8 @@ def do_monitor(chat):
     ssh = count_db("ssh"); vm = count_db("vmess"); vl = count_db("vless")
     tr = count_db("trojan"); ss = count_db("shadowsocks"); wg = count_db("wireguard")
     l2 = count_db("l2tp"); pp = count_db("pptp"); st = count_db("sstp")
-    total = ssh + vm + vl + tr + ss + wg + l2 + pp + st
+    hy_ct = count_db("hysteria")
+    total = ssh + vm + vl + tr + ss + wg + l2 + pp + st + hy_ct
     on_ssh = ssh_online(); bl_ssh = ssh_blocked()
     on_vm = port_online(8080); on_vl = port_online(8081)
     on_tr = port_online(8082); on_ss = port_online(8388); on_wg = wg_online()
@@ -243,6 +257,7 @@ def do_monitor(chat):
             ("Trojan", tr, on_tr), ("Shadowsocks", ss, on_ss), ("WireGuard", wg, on_wg),
             ("L2TP", l2, on_l2), ("PPTP", pp, on_pp), ("SSTP", st, on_st)]
     tbl = "\n".join("%-13s %3d  %3d" % (n, c, o) for n, c, o in rows)
+    tbl += "\n%-13s %3d  %3s" % ("Hysteria2", hy_ct, "?")
 
     txt = (
         "\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n"
@@ -361,6 +376,18 @@ def handle_callback(chat, data):
         except Exception:
             txt = ""
         send(chat, "<b>\U0001F6E1 WireGuard</b>\n<pre>%s</pre>" % esc(txt or "aucun client")); return
+    if data == "hy:menu":
+        send(chat, "<b>\u26A1 Hysteria2</b> \u2014 choisis :", kb=hy_kb()); return
+    if data == "hyl":
+        rows = hy("list")
+        txt = "\n".join("%-16s %s" % tuple(r.split("|")[:2]) for r in rows.split("\n") if "|" in r)
+        send(chat, "<b>\U0001F4CB Hysteria2</b>\n<pre>%s</pre>" % esc(txt or "aucun compte"), kb=hy_kb()); return
+    if data == "hya":
+        STATE[chat] = {"action": "hyadd"}
+        send(chat, "Envoie : <code>utilisateur motdepasse jours</code>", kb=cancel_kb()); return
+    if data == "hyd":
+        STATE[chat] = {"action": "hydel"}
+        send(chat, "Envoie le <b>nom</b> du compte \u00e0 supprimer :", kb=cancel_kb()); return
     if data == "list":
         do_list(chat); return
     if data == "status":
@@ -473,6 +500,18 @@ def handle_text(chat, text):
     elif a == "pppdel":
         r = ppp("del", st["proto"], parts[0])
         send(chat, ("\u2705 %s supprim\u00e9" % parts[0]) if r.startswith("OK") else ("\u274C %s" % esc(r)))
+    elif a == "hyadd":
+        if len(parts) < 2:
+            send(chat, "Format : utilisateur motdepasse jours"); return
+        days = parts[2] if len(parts) > 2 else "30"
+        r = hy("add", parts[0], parts[1], days)
+        if r.startswith("OK"):
+            send(chat, "\u2705 Compte Hysteria2 cr\u00e9\u00e9\n<pre>%s</pre>" % esc("\n".join(r.splitlines()[1:])))
+        else:
+            send(chat, "\u274C %s" % esc(r))
+    elif a == "hydel":
+        r = hy("del", parts[0])
+        send(chat, ("\u2705 %s supprim\u00e9" % esc(parts[0])) if r.startswith("OK") else ("\u274C %s" % esc(r)))
     elif a == "xadd":
         proto = st["proto"]
         if len(parts) < 1: send(chat, "Format : nom jours"); return

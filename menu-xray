@@ -41,8 +41,16 @@ add_client() {
 }
 
 list_clients() {
-  header; printf " ${GRY}%-20s %s${NC}\n" "Nom" "Expire"; line
-  nvpanel-cli xlist "$PROTO" | while IFS='|' ask "" n e; do printf " %-20s %s\n" "$n" "$e"; done
+  header
+  printf " ${WHT}%-20s %-12s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT"
+  line
+  nvpanel-cli xlist "$PROTO" | while IFS='|' ask "" n e s; do
+    [ -z "$n" ] && continue
+    printf " %-20s %-12s %s\n" "$n" "${e:-?}" "${s:-actif}"
+  done
+  echo
+  printf "   ${GRY}Suivi individuel des connexions non disponible pour ce protocole${NC}\n"
+  printf "   ${GRY}(Xray ne rattache pas les sessions établies à un compte précis).${NC}\n"
   pause
 }
 

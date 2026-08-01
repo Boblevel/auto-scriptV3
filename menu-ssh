@@ -305,7 +305,7 @@ hy_list(){
   header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line
   local rows; rows=$(/usr/local/bin/nvpanel-hysteria list)
   [ -z "$rows" ] && { warn "Aucun compte."; pause; return; }
-  printf "   ${GRY}%-16s %-12s %s${NC}\n" "Utilisateur" "Expire" "Statut"
+  printf "   ${WHT}%-16s %-12s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT"
   echo "$rows" | while IFS='|' read -r u e s; do printf "   %-16s %-12s %s\n" "$u" "$e" "$s"; done
   pause
 }

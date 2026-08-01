@@ -22,6 +22,16 @@ fi
 
 bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1
 
+# Hysteria tourne sous un utilisateur dédié (pas root) : sans ceci, il ne
+# peut pas lire le certificat Let's Encrypt (dossier root-only par défaut).
+# Les ACL par défaut (-d) garantissent que ça survit aux renouvellements
+# automatiques du certificat dans 90 jours.
+apt-get install -y acl >/dev/null 2>&1
+if id hysteria >/dev/null 2>&1 && command -v setfacl >/dev/null 2>&1; then
+  setfacl -R -m u:hysteria:rX /etc/letsencrypt/live/ /etc/letsencrypt/archive/ 2>/dev/null
+  setfacl -R -d -m u:hysteria:rX /etc/letsencrypt/live/ /etc/letsencrypt/archive/ 2>/dev/null
+fi
+
 mkdir -p /etc/nvpanel/db /etc/hysteria
 touch /etc/nvpanel/db/hysteria
 
