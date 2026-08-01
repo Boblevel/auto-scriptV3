@@ -14,7 +14,6 @@ banner; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; line
 [ -z "$DOMAIN" ] && { err "Aucun domaine défini (menu-settings → option 1)."; pause; exit 1; }
 
 printf " Domaine : ${WHT}%s${NC}\n" "$DOMAIN"
-printf " ${GRY}%s doit pointer (enregistrement A) vers %s, sans proxy Cloudflare.${NC}\n" "$DOMAIN" "$IP"
 printf " ${GRY}Si le certificat échoue, tes comptes continueront de fonctionner.${NC}\n\n"
 ask " Continuer ? (o/n) : " r; confirm "$r" || exit 0
 
