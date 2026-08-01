@@ -75,14 +75,14 @@ while true; do
   infobox
   sep             # trait de séparation avant la première commande
   entry "01" "🔒" "SSH · SlowDNS · UDP"
-  entry "02" "🌐" "L2TP"
-  entry "03" "📡" "PPTP"
-  entry "04" "🔐" "SSTP"
-  entry "05" "🟣" "Vmess"
-  entry "06" "🔵" "Vless"
-  entry "07" "🟠" "Trojan"
-  entry "08" "🟢" "Shadowsocks"
-  entry "09" "🛡️" "WireGuard"
+  entry "02" "🌐" "Menu · L2TP"
+  entry "03" "📡" "Menu · PPTP"
+  entry "04" "🔐" "Menu · SSTP"
+  entry "05" "🟣" "Xray · Vmess"
+  entry "06" "🔵" "Xray · Vless"
+  entry "07" "🟠" "Xray · Trojan"
+  entry "08" "🟢" "Menu · Shadowsocks"
+  entry "09" "🛡️" "Menu · WireGuard"
   sep
   entry "10" "🤖" "Bot Telegram"
   entry "11" "📈" "Statut des services"

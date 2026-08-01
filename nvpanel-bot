@@ -91,8 +91,7 @@ def _int(s):
 
 def ssh_online():
     return _int(sh("ps -eo user,comm | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | "
-                   "while read u; do i=$(id -u \"$u\" 2>/dev/null); "
-                   "[ -n \"$i\" ] && [ \"$i\" -ge 1000 ] && [ \"$i\" -lt 60000 ] && echo 1; done | wc -l"))
+                   "while read u; do grep -q \"^### $u \" /etc/nvpanel/db/ssh 2>/dev/null && echo 1; done | wc -l"))
 
 def ssh_blocked():
     return _int(sh("c=0; while read _ u _; do [ -z \"$u\" ] && continue; "

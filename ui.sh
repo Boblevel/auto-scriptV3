@@ -180,25 +180,51 @@ sysinfo() {
 _count_db(){ local n; n=$(grep -c '^### ' "/etc/nvpanel/db/$1" 2>/dev/null); printf '%s' "${n:-0}"; }
 
 stats() {
-  local ssh online blocked total hier auj mois
+  local online blocked total hier auj mois
+  local ssh on_ssh bl_ssh
   ssh=$(grep -c '^### ' /etc/nvpanel/db/ssh 2>/dev/null); ssh=${ssh:-0}
-  online=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
-             uid=$(id -u "$pu" 2>/dev/null)
-             [ -n "$uid" ] && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] && echo 1
+  on_ssh=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
+             # Ne compte que les comptes réellement créés par le panel.
+             grep -q "^### $pu " /etc/nvpanel/db/ssh 2>/dev/null && echo 1
            done | wc -l)
-  # Bloqué : uniquement les comptes SSH gérés qui sont réellement verrouillés
-  blocked=0
+  bl_ssh=0
   if [ -f /etc/nvpanel/db/ssh ]; then
     while read -r _ u _; do
       [ -z "$u" ] && continue
       local st; st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
-      [ "$st" = "L" ] && blocked=$((blocked+1))
+      [ "$st" = "L" ] && bl_ssh=$((bl_ssh+1))
     done < /etc/nvpanel/db/ssh
   fi
-  local vm vl tr ss wg
+
+  local vm vl tr ss wg l2 pp sst hy
   vm=$(_count_db vmess); vl=$(_count_db vless); tr=$(_count_db trojan)
   ss=$(_count_db shadowsocks); wg=$(_count_db wireguard)
-  total=$(( ssh + vm + vl + tr + ss + wg ))
+  l2=$(_count_db l2tp); pp=$(_count_db pptp); sst=$(_count_db sstp)
+  hy=$(_count_db hysteria)
+  total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
+
+  local on_vm on_vl on_tr on_ss on_wg on_l2 on_pp on_sst
+  on_vm=$(ss -tnH state established '( sport = :8080 )' 2>/dev/null | wc -l)
+  on_vl=$(ss -tnH state established '( sport = :8081 )' 2>/dev/null | wc -l)
+  on_tr=$(ss -tnH state established '( sport = :8082 )' 2>/dev/null | wc -l)
+  on_ss=$(ss -tnH state established '( sport = :8388 )' 2>/dev/null | wc -l)
+  on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
+  on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}
+  on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}
+  on_sst=$(nvpanel-ppp online sstp 2>/dev/null); on_sst=${on_sst:-0}
+  # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
+  # exclu plutôt que d'afficher un faux chiffre.
+  online=$(( on_ssh + on_vm + on_vl + on_tr + on_ss + on_wg + on_l2 + on_pp + on_sst ))
+
+  local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst
+  bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
+  bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
+  bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
+  bl_ss=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/shadowsocks 2>/dev/null)
+  bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
+  bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
+  bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
+  blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst ))
 
   IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
 
@@ -229,13 +255,14 @@ proto_dash() {
       fi ;;
     port:*)
       local p="${mode#port:}"
-      online=$(ss -tnH state established "( sport = :$p )" 2>/dev/null | wc -l) ;;
+      online=$(ss -tnH state established "( sport = :$p )" 2>/dev/null | wc -l)
+      blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;
     ppp:*)
       local pp="${mode#ppp:}"
       online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}
-      blocked=$(awk -v d="$(date +%F)" '/^### /{ if ($4!="" && $4<d) c++ } END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null) ;;
+      blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
   esac
   IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
   printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"
