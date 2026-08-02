@@ -11,7 +11,9 @@ IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
 [ "$AUTO" = 1 ] || { banner; center " INSTALLATION PPTP " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation…\n"; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y pptpd ppp iptables >/dev/null 2>&1
+PPTPD_BIN=$(command -v pptpd 2>/dev/null)
 
+if [ -n "$PPTPD_BIN" ]; then
 cat > /etc/pptpd.conf <<EOF
 option /etc/ppp/pptpd-options
 logwtmp
@@ -36,6 +38,7 @@ novj
 novjccomp
 nologfd
 EOF
+fi
 
 # routage + NAT
 sed -i '/^net.ipv4.ip_forward/d' /etc/sysctl.conf
@@ -52,9 +55,11 @@ iptables -C INPUT -p gre -j ACCEPT 2>/dev/null || iptables -I INPUT -p gre -j AC
 iptables -I FORWARD -p tcp --syn -s $NET.0/24 -j TCPMSS --set-mss 1356 2>/dev/null
 command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && { ufw allow 1723/tcp >/dev/null 2>&1; ufw allow proto gre from any >/dev/null 2>&1; }
 
-systemctl enable pptpd >/dev/null 2>&1
-systemctl restart pptpd >/dev/null 2>&1
-sleep 1
+if [ -n "$PPTPD_BIN" ]; then
+  systemctl enable pptpd >/dev/null 2>&1
+  systemctl restart pptpd >/dev/null 2>&1
+  sleep 1
+fi
 OK=0; systemctl is-active --quiet pptpd && OK=1
 LIS=0
 { ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null; } | grep -q ':1723' && LIS=1
@@ -70,6 +75,12 @@ if [ "$OK" = 1 ] && [ "$LIS" = 1 ]; then
   ok "Service actif, port 1723 en écoute."
   printf "   ${GRY}Crée un compte depuis le menu PPTP, puis connecte-toi avec${NC}\n"
   printf "   ${GRY}l'adresse du serveur, l'utilisateur et le mot de passe.${NC}\n"
+elif [ -z "$PPTPD_BIN" ]; then
+  center " ✘  PPTP NON ACTIVÉ " "${BOLD}${RED}"; line
+  err "Le paquet pptpd n'a pas pu s'installer."
+  printf "   ${GRY}Ubuntu 24.04 et plus récent ne le distribue plus dans ses dépôts${NC}\n"
+  printf "   ${GRY}(retiré pour raisons de sécurité). Debian le propose encore.${NC}\n"
+  printf "   ${GRY}Utilise plutôt L2TP ou SSTP sur ce serveur.${NC}\n"
 else
   center " ✘  PPTP NON ACTIVÉ " "${BOLD}${RED}"; line
   err "Le service PPTP n'a pas démarré."

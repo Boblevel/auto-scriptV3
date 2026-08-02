@@ -53,7 +53,7 @@ if [ -n "$SSTPD" ]; then
 Description=RHAFF SERVICE SSTP
 After=network.target
 [Service]
-ExecStart=$SSTPD -p $PORT -c $CRT -k $KEY --local $NET.1 --remote $NET.10-200 --pppd-config /etc/ppp/options.sstpd
+ExecStart=$SSTPD -p $PORT -c $CRT -k $KEY --local $NET.1 --remote $NET.0/24 --pppd-config /etc/ppp/options.sstpd
 Restart=always
 RestartSec=5
 [Install]
