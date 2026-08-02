@@ -51,6 +51,22 @@ iptables -I INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
 iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null \
   || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
 
+# Sans ceci, cette règle disparaît silencieusement au prochain redémarrage
+# du serveur (iptables -A n'est pas persistant par défaut) : c'était la
+# cause d'un vrai bug déjà rencontré (SlowDNS qui "marche puis s'arrête").
+if ! command -v netfilter-persistent >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null
+  echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
+  apt-get install -y iptables-persistent >/dev/null 2>&1
+fi
+if command -v netfilter-persistent >/dev/null 2>&1; then
+  netfilter-persistent save >/dev/null 2>&1
+else
+  mkdir -p /etc/iptables 2>/dev/null
+  iptables-save > /etc/iptables/rules.v4 2>/dev/null
+fi
+
 # --- Service (forward vers le SSH local sur 22) -------------
 cat > /etc/systemd/system/nvpanel-slowdns.service <<EOF
 [Unit]
