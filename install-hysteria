@@ -56,8 +56,16 @@ EOF
 fi
 
 systemctl enable hysteria-server >/dev/null 2>&1
-systemctl restart hysteria-server >/dev/null 2>&1
-sleep 2
+
+# Hysteria refuse de démarrer avec un auth.userpass vide (aucun compte) :
+# on ne force le démarrage que s'il existe déjà au moins un compte.
+HAS_ACCOUNT=0
+grep -q '^### ' /etc/nvpanel/db/hysteria 2>/dev/null && HAS_ACCOUNT=1
+
+if [ "$HAS_ACCOUNT" = 1 ]; then
+  systemctl restart hysteria-server >/dev/null 2>&1
+  sleep 2
+fi
 
 iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null
 command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && ufw allow $PORT/udp >/dev/null 2>&1
@@ -66,7 +74,9 @@ command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && uf
 OK=0; systemctl is-active --quiet hysteria-server && OK=1
 
 if [ "$AUTO" = 1 ]; then
-  [ "$OK" = 1 ] && printf "  ${GRN}✔${NC} Hysteria2 prêt.\n" || printf "  ${YLW}!${NC} Hysteria2 non activé.\n"
+  if [ "$OK" = 1 ]; then printf "  ${GRN}✔${NC} Hysteria2 prêt.\n"
+  elif [ "$HAS_ACCOUNT" = 0 ]; then printf "  ${CYN}i${NC} Hysteria2 installé, en attente d'un premier compte.\n"
+  else printf "  ${YLW}!${NC} Hysteria2 non activé.\n"; fi
   exit 0
 fi
 clear; banner
@@ -74,6 +84,11 @@ if [ "$OK" = 1 ]; then
   center " ✔  HYSTERIA2 OPÉRATIONNEL " "${BOLD}${GRN}"; line
   ok "Service actif sur le port UDP $PORT."
   printf "\n   ${GRY}Crée un compte via le menu Hysteria pour obtenir un lien de connexion.${NC}\n"
+elif [ "$HAS_ACCOUNT" = 0 ]; then
+  center " ℹ️  HYSTERIA2 INSTALLÉ " "${BOLD}${CYN}"; line
+  printf "   ${WHT}Binaire, certificat et configuration prêts.${NC}\n"
+  printf "   ${GRY}Le service démarre automatiquement dès la création du premier compte.${NC}\n"
+  printf "   ${GRY}Menu Hysteria2 → 1) Créer un compte.${NC}\n"
 else
   center " ✘  HYSTERIA2 NON ACTIVÉ " "${BOLD}${RED}"; line
   err "Le service n'a pas démarré."

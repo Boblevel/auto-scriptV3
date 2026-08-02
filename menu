@@ -82,7 +82,7 @@ while true; do
   entry "06" "🔵" "Xray · Vless"
   entry "07" "🟠" "Xray · Trojan"
   entry "08" "🟢" "Menu · Shadowsocks"
-  entry "09" "🛡️" "Menu · WireGuard"
+  entry "09" "🔰" "Menu · WireGuard"
   sep
   entry "10" "🤖" "Bot Telegram"
   entry "11" "📈" "Statut des services"
