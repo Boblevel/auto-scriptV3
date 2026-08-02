@@ -265,6 +265,8 @@ hysteria_menu() {
     header; center " ⚡ HYSTERIA2 " "${BOLD}${WHT}"; line
     if systemctl is-active --quiet hysteria-server 2>/dev/null; then
       ok "Hysteria2 actif (UDP 443)"
+    elif [ -f /etc/hysteria/config.yaml ]; then
+      warn "Installé, en attente d'un premier compte (option 1)."
     else
       warn "Hysteria2 non installé."
     fi
