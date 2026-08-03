@@ -29,9 +29,30 @@ _yes "$c" || { echo "Annulé."; exit 0; }
 echo; printf "${RED}➜ Suppression complète en cours…${NC}\n"
 
 # 1) Comptes SSH gérés
+# IMPORTANT : couper la session AVANT userdel. Sur Debian, userdel refuse
+# ou échoue silencieusement à supprimer un compte qui a une session active
+# (systemd-logind la garde ouverte), même avec -f. Sans ce pkill, tout
+# compte connecté au moment de la désinstallation survivait comme
+# utilisateur fantôme : invisible du panel (base remise à zéro à la
+# réinstallation) mais toujours détecté par `id`, d'où « Existe déjà »
+# lors de la recréation d'un compte pourtant absent du tableau de bord.
 if [ -f /etc/nvpanel/db/ssh ]; then
-  while read -r _ u _; do [ -n "$u" ] && userdel -f "$u" 2>/dev/null; done < /etc/nvpanel/db/ssh
+  while read -r _ u _; do
+    [ -n "$u" ] || continue
+    pkill -KILL -u "$u" 2>/dev/null
+    userdel -f "$u" 2>/dev/null
+  done < /etc/nvpanel/db/ssh
 fi
+# Filet de sécurité : balaie aussi les comptes fantômes déjà orphelins
+# (créés par une désinstallation précédente, avant ce correctif, qui ne
+# tuait pas la session avant userdel). Signature exacte des comptes du
+# panel : shell /bin/false, UID 1000-59999 (nvpanel-cli create).
+while IFS=: read -r gu _ guid _ _ _ gshell; do
+  if [ "$gshell" = "/bin/false" ] && [ "$guid" -ge 1000 ] 2>/dev/null && [ "$guid" -lt 60000 ] 2>/dev/null; then
+    pkill -KILL -u "$gu" 2>/dev/null
+    userdel -f "$gu" 2>/dev/null
+  fi
+done < /etc/passwd
 
 # 2) Services systemd
 for s in nvpanel-slowdns nvpanel-udp-custom nvpanel-limit nvpanel-bot \
