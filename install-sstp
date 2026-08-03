@@ -53,7 +53,7 @@ if [ -n "$SSTPD" ]; then
 Description=RHAFF SERVICE SSTP
 After=network.target
 [Service]
-ExecStart=$SSTPD -p $PORT -c $CRT -k $KEY --local $NET.1 --remote $NET.0/24 --pppd-config /etc/ppp/options.sstpd
+ExecStart=$SSTPD -l 0.0.0.0 -p $PORT -c $CRT -k $KEY --local $NET.1 --remote $NET.0/24 --pppd-config /etc/ppp/options.sstpd
 Restart=always
 RestartSec=5
 [Install]
@@ -100,7 +100,7 @@ else
     err "Le composant SSTP n'a pas pu être installé sur ce serveur."
     printf "   ${GRY}Il nécessite python3-pip et un accès Internet.${NC}\n"
   else
-    err "Le service SSTP n'a pas démarré (port %s non ouvert)." "$PORT"
+    err "Le service SSTP n'a pas démarré (port $PORT non ouvert)."
   fi
   printf "   ${GRY}Tu peux utiliser L2TP à la place.${NC}\n"
 fi
