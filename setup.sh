@@ -29,7 +29,7 @@ printf "${NC}\n"
 
 # --- Saisies -------------------------------------------------
 read -rp "   🌐 Nom de domaine (laisser vide si aucun) : " NVDOMAIN
-read -rp "   🔌 Port [443] : " NVPORT
+read -rp "   🔌 Port (Entrée = 443 par défaut) : " NVPORT
 NVPORT=${NVPORT:-443}
 [[ "$NVPORT" =~ ^[0-9]+$ ]] || NVPORT=443
 echo

@@ -73,7 +73,7 @@ set_domain(){
   pause
 }
 change_port(){
-  header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$(grep -oP 'DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null || echo '?')"
+  header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$(grep -oP '^DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1 || echo '?')"
   ask " Nouveau port Dropbear : " p
   [[ "$p" =~ ^[0-9]+$ ]] || { err "Port invalide"; pause; return; }
   if grep -q DROPBEAR_PORT /etc/default/dropbear 2>/dev/null; then
