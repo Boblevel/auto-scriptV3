@@ -71,10 +71,17 @@ systemctl daemon-reload >/dev/null 2>&1
 # Dropbear : Ubuntu livre NO_START=1, le service ne démarre jamais sans ceci
 if dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
   touch /etc/default/dropbear
-  if grep -q '^NO_START=1' /etc/default/dropbear || ! systemctl is-active --quiet dropbear 2>/dev/null; then
+  # Se déclenche aussi si le port est resté sur 22 (paquet Debian 12 qui le
+  # livre déjà décommenté) : avant, on ne réparait que si le service était
+  # inactif ou NO_START=1, or Dropbear tournait déjà (sur le mauvais port),
+  # donc cette réparation ne s'exécutait jamais sur ces installations.
+  if grep -q '^NO_START=1' /etc/default/dropbear \
+     || ! systemctl is-active --quiet dropbear 2>/dev/null \
+     || grep -q '^DROPBEAR_PORT=22' /etc/default/dropbear; then
     sed -i '/^NO_START=/d' /etc/default/dropbear
     echo 'NO_START=0' >> /etc/default/dropbear
-    grep -q '^DROPBEAR_PORT=' /etc/default/dropbear || echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
+    sed -i '/^DROPBEAR_PORT=/d' /etc/default/dropbear
+    echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
     grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
     systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket' && systemctl disable --now dropbear.socket >/dev/null 2>&1
     systemctl unmask dropbear >/dev/null 2>&1
@@ -82,6 +89,11 @@ if dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
     systemctl restart dropbear >/dev/null 2>&1
   fi
 fi
+# Comptes du panel avec shell /bin/false : sans /bin/false dans /etc/shells,
+# Dropbear rejette l'authentification par mot de passe ("invalid shell,
+# rejected") même avec le bon mot de passe. Corrige aussi les installations
+# déjà en place.
+grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shells
 # Le bot Telegram n'est PAS redémarré ici : c'est à toi de le faire
 # depuis le menu (Bot Telegram → « Redémarrer le bot »).
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1

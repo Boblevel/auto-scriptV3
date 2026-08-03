@@ -67,7 +67,11 @@ if command -v dropbear >/dev/null 2>&1 || dpkg -l 2>/dev/null | grep -q '^ii.*dr
   touch /etc/default/dropbear
   sed -i '/^NO_START=/d' /etc/default/dropbear
   echo 'NO_START=0' >> /etc/default/dropbear
-  grep -q '^DROPBEAR_PORT=' /etc/default/dropbear || echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
+  # FORCER le port (certains paquets, ex. Debian 12, livrent DROPBEAR_PORT=22
+  # déjà décommenté : un simple "grep || echo" ne l'aurait jamais corrigé et
+  # Dropbear entrait alors en conflit avec OpenSSH sur le port 22).
+  sed -i '/^DROPBEAR_PORT=/d' /etc/default/dropbear
+  echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
   grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
   # certaines versions fournissent dropbear.socket au lieu du service classique
   if systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket'; then
@@ -77,6 +81,13 @@ if command -v dropbear >/dev/null 2>&1 || dpkg -l 2>/dev/null | grep -q '^ii.*dr
   systemctl enable dropbear >/dev/null 2>&1
   systemctl restart dropbear >/dev/null 2>&1
 fi
+
+# --- Comptes du panel avec shell /bin/false : Dropbear (et OpenSSH selon
+# PAM) rejette l'authentification par mot de passe si le shell du compte
+# n'est pas listé dans /etc/shells ("invalid shell, rejected" dans les logs
+# même avec le bon mot de passe). Sans cette ligne, AUCUN compte créé par
+# le panel ne peut se connecter, quel que soit le port ou le mot de passe.
+grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shells
 
 fill 40 "Déploiement du panel…"
 mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
