@@ -87,6 +87,21 @@ _chain_bytes(){ # somme des octets d'une chaîne
 poll(){
   command -v iptables >/dev/null 2>&1 || return 0
   iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || setup_chains
+  # Réaffirme la position du renvoi À CHAQUE relevé, pas seulement à la
+  # création des chaînes. Motif : les installateurs de protocoles (ex.
+  # install-slowdns sur le port UDP 5300, exactement celui compté plus bas)
+  # font `iptables -I INPUT ... -j ACCEPT`, qui s'insère TOUJOURS en tête
+  # de chaîne. Chaque installation/réinstallation d'un protocole APRÈS que
+  # nvpanel-conso a créé son renvoi le repousse alors plus loin — jusqu'à
+  # ce qu'une règle ACCEPT plus haute intercepte le trafic concerné et
+  # empêche définitivement qu'il atteigne la règle de comptage (le
+  # compteur se fige alors silencieusement, sans erreur visible). Un
+  # delete-puis-réinsertion est idempotent et sans risque : il ne fait que
+  # garantir que le renvoi reste bien la toute première règle.
+  iptables -w 3 -D INPUT  -j "$CIN"  2>/dev/null
+  iptables -w 3 -I INPUT  -j "$CIN"  2>/dev/null
+  iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null
+  iptables -w 3 -I OUTPUT -j "$COUT" 2>/dev/null
   local raw last delta today cur i o
   i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT")
   raw=$(( i + o ))

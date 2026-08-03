@@ -173,6 +173,32 @@ sysinfo() {
   printf " ${GRY}🔗 Dom. :${NC} %-20s ${GRY}⏱️  Up  :${NC} %s\n" "${domain:0:20}" "${up:-.}"
 }
 
+# Compte les CLIENTS RÉELS distincts (par IP source), jamais le nombre brut
+# de sockets établis : une application peut ouvrir plusieurs connexions TCP
+# en parallèle (multiplexage), et une connexion mal refermée après une
+# tentative ratée peut rester des heures en ESTABLISHED. Un simple `wc -l`
+# fait alors exploser le chiffre très au-delà du nombre réel de personnes
+# connectées (ex. observé : 1 client Vmess réel affiché comme 100+ « en ligne »).
+_online_uniq_port() {
+  local port="$1"
+  ss -tnH state established "( sport = :$port )" 2>/dev/null \
+    | awk '{print $4}' | sed -E 's/:[0-9]+$//' | sort -u | wc -l
+}
+
+# Xray (Vmess/Vless/Trojan) : les trois partagent la MÊME façade nginx (un
+# seul port TLS, routage par chemin /vmess /vless /trojan). Xray ne reçoit
+# ces connexions QUE via la boucle locale : l'adresse vue côté Xray est
+# TOUJOURS 127.0.0.1 (nginx lui-même), jamais l'IP du client — impossible
+# donc de compter par IP à ce niveau, et impossible de séparer par protocole
+# quel que soit le port loopback interrogé (8080/8081/8082). La SEULE IP
+# fiable est celle vue par nginx, sur son port PUBLIC. Ce total (clients
+# distincts connectés à la façade Xray, tous protocoles confondus) est donc
+# le seul chiffre honnête disponible ; il est utilisé pour les 3 protocoles.
+_xray_online() {
+  local xport; xport=$(cat /etc/nvpanel/xport 2>/dev/null || echo 443)
+  _online_uniq_port "$xport"
+}
+
 # ---- Statistiques comptes ----------------------------------
 # ATTENTION : « grep -c » renvoie un code d'erreur quand le compte est 0,
 # tout en affichant « 0 ». Un « || echo 0 » ajouterait donc un SECOND zéro
@@ -203,18 +229,16 @@ stats() {
   hy=$(_count_db hysteria)
   total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
 
-  local on_vm on_vl on_tr on_ss on_wg on_l2 on_pp on_sst
-  on_vm=$(ss -tnH state established '( sport = :8080 )' 2>/dev/null | wc -l)
-  on_vl=$(ss -tnH state established '( sport = :8081 )' 2>/dev/null | wc -l)
-  on_tr=$(ss -tnH state established '( sport = :8082 )' 2>/dev/null | wc -l)
-  on_ss=$(ss -tnH state established '( sport = :8388 )' 2>/dev/null | wc -l)
+  local on_xray on_ss on_wg on_l2 on_pp on_sst
+  on_xray=$(_xray_online)
+  on_ss=$(_online_uniq_port 8388)
   on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
   on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}
   on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}
   on_sst=$(nvpanel-ppp online sstp 2>/dev/null); on_sst=${on_sst:-0}
   # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
   # exclu plutôt que d'afficher un faux chiffre.
-  online=$(( on_ssh + on_vm + on_vl + on_tr + on_ss + on_wg + on_l2 + on_pp + on_sst ))
+  online=$(( on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_sst ))
 
   local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst
   bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
@@ -255,7 +279,10 @@ proto_dash() {
       fi ;;
     port:*)
       local p="${mode#port:}"
-      online=$(ss -tnH state established "( sport = :$p )" 2>/dev/null | wc -l)
+      online=$(_online_uniq_port "$p")
+      blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
+    xray)
+      online=$(_xray_online)
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;

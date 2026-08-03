@@ -531,8 +531,6 @@ def authorized(uid):
 
 def main():
     offset = None
-    if ADMIN:
-        api("sendMessage", chat_id=ADMIN, text=MENU_TXT, parse_mode="HTML", reply_markup=main_kb())
     while True:
         upd = api("getUpdates", offset=offset, timeout=50)
         if not upd.get("ok"):
@@ -554,6 +552,8 @@ def main():
 if __name__ == "__main__":
     if not TOKEN or not ADMIN:
         raise SystemExit("bot.conf incomplet (TOKEN / ADMIN)")
+    if ADMIN:
+        api("sendMessage", chat_id=ADMIN, text=MENU_TXT, parse_mode="HTML", reply_markup=main_kb())
     while True:
         try: main()
         except Exception: time.sleep(5)
