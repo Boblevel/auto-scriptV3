@@ -101,6 +101,8 @@ _chain_bytes(){ # somme des octets d'une chaîne
 
 poll(){
   command -v iptables >/dev/null 2>&1 || return 0
+  (
+  flock -w 5 201 || return 0
   # IMPORTANT : setup_chains() ne doit être appelé QUE si la chaîne est
   # absente — il fait un FLUSH complet (-F) avant de reconstruire, ce qui
   # remet TOUS les compteurs à zéro. L'appeler à chaque relevé (erreur
@@ -157,6 +159,7 @@ poll(){
   sed -i "/^$today|/d" "$DB" 2>/dev/null
   printf '%s|%s\n' "$today" "$(( cur + delta ))" >> "$DB"
   tail -n 120 "$DB" > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
+  ) 201>"$DBDIR/.conso.lock"
   return 0
 }
 
