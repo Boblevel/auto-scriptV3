@@ -126,6 +126,15 @@ _chain_bytes(){ # somme des octets d'une chaîne
   iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
 }
 
+# Au moins un compte client existe-t-il, tous protocoles confondus ?
+_has_account(){
+  local f
+  for f in ssh vmess vless trojan shadowsocks wireguard l2tp pptp sstp hysteria; do
+    grep -q '^### ' "$DBDIR/$f" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 # Lit les compteurs des chaînes et ajoute à l'historique la DIFFÉRENCE avec le
 # dernier relevé. Extrait de poll() pour pouvoir être appelé AUSSI avant un
 # flush : sans cela tout le trafic accumulé depuis le dernier relevé était
@@ -152,6 +161,16 @@ _accumulate(){
     delta="$raw"
   fi
   printf '%s' "$raw" > "$LASTF" 2>/dev/null
+
+  # Tant qu'aucun compte n'existe, aucun octet ne peut appartenir à un client.
+  # Ce qui touche malgré tout les ports comptés est du bruit d'internet — sur
+  # le port SlowDNS surtout, très sollicité par les scans et les résolveurs
+  # dès que l'enregistrement NS est publié. C'est ce qui faisait grimper la
+  # consommation de quelques Ko à chaque rafraîchissement du menu sur un
+  # serveur pourtant vierge de tout compte.
+  # Le dernier relevé vient d'être mis à jour juste au-dessus : ce bruit ne
+  # sera donc pas non plus imputé plus tard, à la création du premier compte.
+  _has_account || return 0
 
   [ "$delta" -le 0 ] 2>/dev/null && return 0
   today=$(date +%F)

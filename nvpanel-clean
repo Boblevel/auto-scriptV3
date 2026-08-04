@@ -20,12 +20,21 @@ done
 
 # --- Clients Xray / Shadowsocks -----------------------------
 purge_proto() {
-  local db="$1" tag="$2"
+  local db="$1" tag="$2" today
   [ -f "$db" ] || return
+  today=$(date +%F)
   while read -r _ name uuid exp; do
     [ -z "$name" ] && continue
-    es=$(date -d "$exp" +%s 2>/dev/null) || continue
-    if [ "$now" -ge "$es" ]; then
+    # Comparaison de DATES, pas d'horodatages. Avec « date -d "$exp" +%s » on
+    # obtenait minuit du jour d'expiration : le compte était donc supprimé dès
+    # 00h00 CE jour-là, alors qu'il devait rester valable jusqu'à sa fin. Un
+    # compte créé pour 1 jour mourait ainsi la nuit suivante, et le client
+    # recevait « invalid request user id » alors que sa fiche semblait bonne.
+    # nvpanel-cli et nvpanel-ppp utilisent déjà cette comparaison stricte :
+    # les trois purges se comportent désormais à l'identique.
+    # Un champ non conforme (compte verrouillé : « date L ») est ignoré.
+    case "$exp" in ''|*[!0-9-]*) continue ;; esac
+    if [ "$exp" \< "$today" ]; then
       if [ -f "$XCONF" ]; then
         jq "(.inbounds[] | select(.tag==\"$tag\") | .settings.clients) |= map(select(.email!=\"$name\"))" \
           "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"

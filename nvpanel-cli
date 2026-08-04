@@ -303,7 +303,17 @@ case "$cmd" in
         trojan) client="{\"password\":\"$id\",\"email\":\"$name\"}" ;;
       esac
     fi
-    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) += [$client]" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
+    # La base ne doit JAMAIS être écrite avant confirmation que le client est
+    # bien présent dans config.json. Si jq échouait, ou si l'entrée portant ce
+    # tag était absente, jq renvoyait malgré tout 0 sans rien modifier : le
+    # compte apparaissait dans le panel et la fiche remise au client affichait
+    # un identifiant que Xray ne connaissait pas — d'où « invalid request user
+    # id » côté serveur pour un compte pourtant listé comme actif.
+    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) += [$client]" "$XCONF" > "$XCONF.tmp" 2>/dev/null || {
+      rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
+    jq -e --arg e "$name" '[.inbounds[]?.settings?.clients[]?.email] | index($e) != null' \
+      "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
+    mv "$XCONF.tmp" "$XCONF"
     echo "### $name $id $exp" >> "$XDB"
     systemctl restart xray >/dev/null 2>&1
     echo "OK $name $exp"

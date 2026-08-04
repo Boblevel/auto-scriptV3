@@ -21,6 +21,12 @@ conf = load_conf()
 TOKEN = conf.get("TOKEN", ""); ADMIN = str(conf.get("ADMIN", ""))
 API = "https://api.telegram.org/bot%s/" % TOKEN
 STATE = {}
+# Position de lecture des mises à jour Telegram. Doit être GLOBALE : elle était
+# locale à main(), donc remise à zéro à chaque relance de la boucle (exception
+# réseau, redémarrage du service). Telegram conserve 24 h les mises à jour non
+# confirmées et les renvoyait alors toutes — le menu s'affichait plusieurs fois
+# de suite.
+OFFSET = None
 
 def api(method, **params):
     data = urllib.parse.urlencode(
@@ -530,13 +536,13 @@ def authorized(uid):
     return str(uid) == ADMIN
 
 def main():
-    offset = None
+    global OFFSET
     while True:
-        upd = api("getUpdates", offset=offset, timeout=50)
+        upd = api("getUpdates", offset=OFFSET, timeout=50)
         if not upd.get("ok"):
             time.sleep(3); continue
         for u in upd["result"]:
-            offset = u["update_id"] + 1
+            OFFSET = u["update_id"] + 1
             if "callback_query" in u:
                 cq = u["callback_query"]; uid = cq["from"]["id"]; chat = cq["message"]["chat"]["id"]
                 api("answerCallbackQuery", callback_query_id=cq["id"])
@@ -552,6 +558,16 @@ def main():
 if __name__ == "__main__":
     if not TOKEN or not ADMIN:
         raise SystemExit("bot.conf incomplet (TOKEN / ADMIN)")
+    # Purge des mises à jour restées en attente côté Telegram (24 h de
+    # rétention). Sans elle, chaque démarrage du service rejouait les anciens
+    # /start et le menu apparaissait plusieurs fois d'affilée.
+    try:
+        _old = api("getUpdates", offset=-1, timeout=0).get("result") or []
+        if _old:
+            OFFSET = _old[-1]["update_id"] + 1
+            api("getUpdates", offset=OFFSET, timeout=0)
+    except Exception:
+        pass
     if ADMIN:
         api("sendMessage", chat_id=ADMIN, text=MENU_TXT, parse_mode="HTML", reply_markup=main_kb())
     while True:
