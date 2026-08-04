@@ -230,8 +230,12 @@ stats() {
   total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
 
   local on_xray on_ss on_wg on_l2 on_pp on_sst
-  on_xray=$(_xray_online)
-  on_ss=$(_online_uniq_port 8388)
+  # Ne compte « en ligne » que si des comptes existent pour ce protocole :
+  # sinon une connexion quelconque sur le port public (scan internet, très
+  # courant sur tout VPS exposé) peut apparaître comme un faux client alors
+  # qu'aucun compte n'a jamais été créé.
+  on_xray=0; [ "$(( vm + vl + tr ))" -gt 0 ] && on_xray=$(_xray_online)
+  on_ss=0;   [ "$ss" -gt 0 ] && on_ss=$(_online_uniq_port 8388)
   on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
   on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}
   on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}
@@ -282,7 +286,12 @@ proto_dash() {
       online=$(_online_uniq_port "$p")
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     xray)
-      online=$(_xray_online)
+      online=0
+      local _xv _xl _xt
+      _xv=$(grep -c '^### ' /etc/nvpanel/db/vmess 2>/dev/null); _xv=${_xv:-0}
+      _xl=$(grep -c '^### ' /etc/nvpanel/db/vless 2>/dev/null); _xl=${_xl:-0}
+      _xt=$(grep -c '^### ' /etc/nvpanel/db/trojan 2>/dev/null); _xt=${_xt:-0}
+      [ "$(( _xv + _xl + _xt ))" -gt 0 ] && online=$(_xray_online)
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;

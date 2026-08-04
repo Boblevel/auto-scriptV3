@@ -20,7 +20,23 @@ if [ -z "$DOMAIN" ] || [ ! -f "$CERT/fullchain.pem" ]; then
   pause; exit 1
 fi
 
-bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1
+bash <(curl -fsSL https://get.hy2.sh/) > /var/log/nvpanel-hysteria-install.log 2>&1
+
+# Sans cette vérification, un échec de l'installateur officiel (réseau,
+# dépôt injoignable, apt en échec…) passait totalement inaperçu : le
+# script continuait comme si de rien n'était, activait un service sans
+# binaire, et finissait par un message générique « non activé » sans
+# jamais dire pourquoi.
+if ! command -v hysteria >/dev/null 2>&1; then
+  if [ "$AUTO" = 1 ]; then
+    printf "  ${RED}✘${NC} Installation de Hysteria2 échouée (voir /var/log/nvpanel-hysteria-install.log).\n"
+    exit 1
+  fi
+  clear; banner; center " ✘  INSTALLATION HYSTERIA2 ÉCHOUÉE " "${BOLD}${RED}"; line
+  err "Le binaire Hysteria2 n'a pas pu être installé."
+  printf "\n   ${GRY}Détail : tail -20 /var/log/nvpanel-hysteria-install.log${NC}\n"
+  pause; exit 1
+fi
 
 # Hysteria tourne sous un utilisateur dédié (pas root) : sans ceci, il ne
 # peut pas lire le certificat Let's Encrypt (dossier root-only par défaut).

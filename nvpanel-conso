@@ -86,7 +86,18 @@ _chain_bytes(){ # somme des octets d'une chaîne
 
 poll(){
   command -v iptables >/dev/null 2>&1 || return 0
-  iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || setup_chains
+  # Reconstruit systématiquement les règles de comptage à CHAQUE relevé,
+  # pas seulement si la chaîne est absente. Motif : setup_chains() n'était
+  # exécuté qu'une seule fois (à la toute première création de la chaîne),
+  # donc (a) tout compte SSH créé après coup n'obtenait jamais sa règle
+  # par UID, et (b) toute règle corrompue/déplacée plus tard par un autre
+  # script (quel qu'il soit, sur n'importe quel serveur) n'était plus
+  # jamais réparée. La reconstruction remet les compteurs à zéro, mais la
+  # logique de delta ci-dessous gère déjà ce cas (une chute du compteur
+  # est traitée comme une remise à zéro légitime, pas une perte) : c'est
+  # donc une auto-réparation sûre, exécutée à chaque cycle (cron + chaque
+  # ouverture du tableau de bord).
+  setup_chains
   # Réaffirme la position du renvoi À CHAQUE relevé, pas seulement à la
   # création des chaînes. Motif : les installateurs de protocoles (ex.
   # install-slowdns sur le port UDP 5300, exactement celui compté plus bas)
