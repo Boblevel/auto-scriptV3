@@ -29,15 +29,27 @@ draw(){ local p=$1 lbl=$2 f=$(( p*BARW/100 )) e i; e=$(( BARW - f ))
 fill(){ while [ "$CUR" -lt "$1" ]; do CUR=$((CUR+2)); draw "$CUR" "$2"; sleep 0.015; done; draw "$CUR" "$2"; }
 
 # ---- Téléchargement silencieux -----------------------------
-FAILED=""
+FAILED=""; CHANGED=0
 fetch(){
-  local name dest="$2" ok=0
+  local name dest="$2" ok=0 tmp
+  tmp=$(mktemp)
   for name in "$1" "$1.txt"; do
-    if curl -fsSL "$REPO_RAW/$name" -o "$dest" 2>/dev/null && [ -s "$dest" ] && ! head -c 200 "$dest" | grep -q '404: Not Found'; then
-      chmod +x "$dest"; ok=1; break
+    if curl -fsSL "$REPO_RAW/$name" -o "$tmp" 2>/dev/null && [ -s "$tmp" ] && ! head -c 200 "$tmp" | grep -q '404: Not Found'; then
+      ok=1; break
     fi
   done
-  [ "$ok" = 1 ] || FAILED="$FAILED $1"
+  if [ "$ok" = 1 ]; then
+    # Ne compte (et n'écrase) que si le contenu a réellement changé — c'est
+    # ce qui permet de distinguer « déjà à jour » d'une vraie mise à jour.
+    if [ -f "$dest" ] && cmp -s "$tmp" "$dest" 2>/dev/null; then
+      rm -f "$tmp"
+    else
+      mv "$tmp" "$dest"; chmod +x "$dest"; CHANGED=$((CHANGED+1))
+    fi
+  else
+    rm -f "$tmp"
+    FAILED="$FAILED $1"
+  fi
 }
 
 fill 15 "Téléchargement des composants…"
@@ -122,13 +134,25 @@ fill 100 "Terminé"
 sleep 0.3
 
 clear
-printf "${GRN}"
-cat <<'DONE'
+if [ "$CHANGED" -eq 0 ] && [ -z "$FAILED" ]; then
+  printf "${GRN}"
+  cat <<'UPTODATE'
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃      ✔   Le script est déjà à jour                 ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+UPTODATE
+  printf "${NC}\n"
+  printf "   ${GRY}Aucun composant n'a changé depuis la dernière mise à jour.${NC}\n\n"
+else
+  printf "${GRN}"
+  cat <<'DONE'
    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
    ┃        ✔   Mise à jour terminée                    ┃
    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 DONE
-printf "${NC}\n"
+  printf "${NC}\n"
+  [ -z "$FAILED" ] && printf "   ${GRY}Le script est maintenant à jour (%s composant(s) mis à jour).${NC}\n\n" "$CHANGED"
+fi
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Mise à jour partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion du serveur et relance : update${NC}\n\n"
