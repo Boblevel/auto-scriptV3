@@ -77,11 +77,14 @@ _label(){
     | sed 's/[^A-Za-z0-9._-]/_/g; s/__*/_/g; s/^_//; s/_*$//' \
     | cut -c1-40
 }
-# nom complet : « BANNIERE-client »  (ou format par défaut si pas de bannière)
+# nom affiché par l'application cliente : toujours « XRAY_PROTO_compte ».
+# La bannière était utilisée en préfixe, mais elle contient des balises de mise
+# en forme (couleurs, gras) que le nettoyage transformait en suite de tirets
+# bas : le client voyait « font_color_00FF7F_b_b-test » au lieu de son compte.
 _remark(){ # $1 = PROTO (VMESS/VLESS/TROJAN/SS)  $2 = nom du compte
-  local b n; b=$(_label)
+  local n
   n=$(printf '%s' "$2" | sed 's/[^A-Za-z0-9._-]/_/g')
-  if [ -n "$b" ]; then printf '%s-%s' "$b" "$n"; else printf 'XRAY_%s_%s' "$1" "$n"; fi
+  printf 'XRAY_%s_%s' "$1" "$n"
 }
 # rien à encoder : _remark ne produit que des caractères sûrs
 _remark_url(){ _remark "$1" "$2"; }

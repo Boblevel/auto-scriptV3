@@ -235,9 +235,11 @@ def send(chat, text, kb=None):
     mk = kb if kb is not None else main_kb()
     api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
 
-MENU_TXT = ("<b>\U0001F6F0 RHAFF SERVICE</b>\n"
-            "<i>Panel gestion &amp; contr\u00f4le</i>\n\n"
-            "Choisissez une commande \U0001F447 :")
+MENU_TXT = ("\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+            "   \U0001F6F0 <b>RHAFF SERVICE</b>\n"
+            "   <i>Panel gestion &amp; contr\u00f4le</i>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            "Choisissez une commande \U0001F447")
 
 def show_menu(chat):
     send(chat, MENU_TXT)

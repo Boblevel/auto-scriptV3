@@ -116,8 +116,7 @@ enable_bbr(){
 speedtest(){
   header; center " 📶  TEST DE VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
   local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
-  printf "   ${GRY}📡 Latence  :${NC} ${WHT}%s ms${NC}\n" "${lat:-n/a}"
-  printf "   ${GRY}⬇  Mesure du débit en cours…${NC}\n\n"
+  printf "   ${GRY}⬇  Mesure de la vitesse en cours…${NC}\n\n"
 
   local tmp; tmp=$(mktemp)
   # Mesure sur une DURÉE FIXE (8 s) : bien plus fiable qu'un petit fichier,
@@ -148,11 +147,10 @@ speedtest(){
     local mbps mbs; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
     mbs=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b/1048576}')
     line
-    printf "   ${GRN}✔ Débit descendant :${NC} ${WHT}%s Mbps${NC}  ${GRY}(%s Mo/s)${NC}\n" "$mbps" "$mbs"
-    printf "   ${GRY}   Latence : %s ms${NC}\n\n" "${lat:-n/a}"
-    printf "   ${GRY}Il s'agit de la vitesse de TON SERVEUR vers Internet,${NC}\n"
-    printf "   ${GRY}pas de la vitesse ressentie par un client dans le tunnel${NC}\n"
-    printf "   ${GRY}(elle dépend aussi de sa connexion mobile).${NC}\n"
+    printf "   ${GRN}✔ Vitesse du serveur :${NC} ${WHT}%s Mbps${NC}\n\n" "$mbps"
+    printf "   ${GRY}C'est le débit du serveur vers Internet. Un client dans le${NC}\n"
+    printf "   ${GRY}tunnel n'ira jamais plus vite, mais souvent moins : sa propre${NC}\n"
+    printf "   ${GRY}connexion mobile le limite en premier.${NC}\n"
   else
     err "Aucune source de test n'a répondu (réseau du serveur restreint ou pare-feu)."
     printf "   ${GRY}Latence mesurée : %s ms${NC}\n" "${lat:-n/a}"
