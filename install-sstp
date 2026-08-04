@@ -17,7 +17,7 @@ DIR=/etc/nvpanel/sstp; mkdir -p "$DIR"
 
 [ "$AUTO" = 1 ] || { banner; center " INSTALLATION SSTP " "${BOLD}${WHT}"; line; printf "${CYN}➜${NC} Installation (1 à 3 minutes)…\n"; }
 export DEBIAN_FRONTEND=noninteractive
-apt-get install -y ppp python3 python3-pip openssl iptables >/dev/null 2>&1
+apt-get install -y ppp python3 python3-pip openssl iptables sstp-client >/dev/null 2>&1
 pip3 install --break-system-packages sstp-server >/dev/null 2>&1 || pip3 install sstp-server >/dev/null 2>&1
 SSTPD=$(command -v sstpd 2>/dev/null)
 
