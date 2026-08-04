@@ -80,24 +80,40 @@ setup_chains(){
   return 0
 }
 
+# Ajoute les règles par UID manquantes pour les comptes SSH créés APRÈS la
+# toute première mise en place des chaînes — SANS jamais les flusher (donc
+# sans jamais remettre les compteurs déjà en cours d'accumulation à zéro).
+# `-C` vérifie si la règle existe déjà avant de l'ajouter (idempotent).
+ensure_accounts(){
+  command -v iptables >/dev/null 2>&1 || return 0
+  local u uid
+  for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
+    uid=$(id -u "$u" 2>/dev/null) || continue
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    iptables -w 3 -C "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null \
+      || iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+  done
+}
+
 _chain_bytes(){ # somme des octets d'une chaîne
   iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
 }
 
 poll(){
   command -v iptables >/dev/null 2>&1 || return 0
-  # Reconstruit systématiquement les règles de comptage à CHAQUE relevé,
-  # pas seulement si la chaîne est absente. Motif : setup_chains() n'était
-  # exécuté qu'une seule fois (à la toute première création de la chaîne),
-  # donc (a) tout compte SSH créé après coup n'obtenait jamais sa règle
-  # par UID, et (b) toute règle corrompue/déplacée plus tard par un autre
-  # script (quel qu'il soit, sur n'importe quel serveur) n'était plus
-  # jamais réparée. La reconstruction remet les compteurs à zéro, mais la
-  # logique de delta ci-dessous gère déjà ce cas (une chute du compteur
-  # est traitée comme une remise à zéro légitime, pas une perte) : c'est
-  # donc une auto-réparation sûre, exécutée à chaque cycle (cron + chaque
-  # ouverture du tableau de bord).
-  setup_chains
+  # IMPORTANT : setup_chains() ne doit être appelé QUE si la chaîne est
+  # absente — il fait un FLUSH complet (-F) avant de reconstruire, ce qui
+  # remet TOUS les compteurs à zéro. L'appeler à chaque relevé (erreur
+  # commise puis corrigée le jour même) mesurait alors un `raw` toujours
+  # proche de zéro juste après son propre flush : le vrai trafic accumulé
+  # entre deux relevés n'était quasiment jamais capturé — la conso restait
+  # figée malgré un usage réel (confirmé par `nvpanel-conso debug` montrant
+  # plusieurs Mo comptés dans les règles mais "Dernier relevé brut : 0").
+  # Pour ajouter les comptes créés après coup SANS perdre l'historique des
+  # compteurs, on utilise ensure_accounts() (ci-dessus), qui n'AJOUTE que
+  # les règles manquantes et ne flushe jamais rien.
+  iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || setup_chains
+  ensure_accounts
   # Réaffirme la position du renvoi À CHAQUE relevé, pas seulement à la
   # création des chaînes. Motif : les installateurs de protocoles (ex.
   # install-slowdns sur le port UDP 5300, exactement celui compté plus bas)
