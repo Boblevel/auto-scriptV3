@@ -117,6 +117,19 @@ case "$cmd" in
       sstp) n=$(pgrep -fc 'pppd.*options\.sstpd' 2>/dev/null) ;;
       *)    n=0 ;;
     esac
+    n=${n:-0}
+    # Garde-fou anti-résidu : un pppd qui correspond au bon fichier d'options
+    # mais n'a jamais négocié d'interface ppp active (ex. plugin manquant,
+    # authentification jamais aboutie, processus resté accroché après un
+    # échec) n'est pas un vrai client — cas observé et confirmé sur SSTP
+    # (pppd resté après un échec de chargement de plugin, compté comme
+    # « 1 en ligne » alors qu'aucun client n'était connecté). On ne peut
+    # jamais afficher plus de sessions que d'interfaces ppp réellement UP
+    # sur le serveur, tous protocoles PPP confondus.
+    if [ "$n" -gt 0 ] 2>/dev/null; then
+      up=$(ip -o link show up type ppp 2>/dev/null | wc -l); up=${up:-0}
+      [ "$n" -gt "$up" ] 2>/dev/null && n="$up"
+    fi
     printf '%s\n' "${n:-0}" ;;
   *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|online <proto> ..."; exit 1 ;;
 esac
