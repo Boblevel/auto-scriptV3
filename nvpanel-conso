@@ -158,6 +158,12 @@ poll(){
   cur=${cur:-0}
   sed -i "/^$today|/d" "$DB" 2>/dev/null
   printf '%s|%s\n' "$today" "$(( cur + delta ))" >> "$DB"
+  # Auto-nettoyage : ne garder qu'une seule ligne par date (la dernière),
+  # au cas où d'anciens doublons traîneraient encore dans le fichier
+  # (résidu d'avant le verrou flock). Sans ça, read_vals resterait
+  # protégé pour les nouveaux calculs mais le fichier resterait pollué.
+  awk -F'|' '{val[$1]=$2; order[$1]=NR} END{for(k in val) print order[k]"\t"k"|"val[k]}' "$DB" 2>/dev/null \
+    | sort -n | cut -f2- > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
   tail -n 120 "$DB" > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
   ) 201>"$DBDIR/.conso.lock"
   return 0
@@ -166,12 +172,23 @@ poll(){
 
 read_vals(){ # affiche "hier|aujourdhui|mois" en octets
   poll >/dev/null 2>&1
-  local t y m today yest month
+  local today yest month
   today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
-  t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  m=$(awk -F'|' -v p="$month" 'index($1,p)==1{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  echo "${y:-0}|${t:-0}|${m:-0}"
+  # IMPORTANT : chaque date ne doit compter qu'UNE fois. On ne fait plus
+  # s+=$2 sur toutes les lignes correspondantes (si un doublon traîne dans
+  # le fichier, la somme double le total et il ne bouge plus avec le vrai
+  # trafic). On garde uniquement la DERNIÈRE valeur connue par date
+  # (val[$1]=$2 écrase la précédente), puis on additionne par date unique.
+  awk -F'|' -v d="$today" -v y="$yest" -v p="$month" '
+    { val[$1]=$2 }
+    END{
+      t=(d in val)?val[d]:0
+      ye=(y in val)?val[y]:0
+      m=0
+      for (k in val) if (index(k,p)==1) m+=val[k]
+      printf "%d|%d|%d\n", ye+0, t+0, m+0
+    }
+  ' "$DB" 2>/dev/null
 }
 
 reset_all(){
