@@ -119,6 +119,7 @@ for pair in \
   "install-sstp:/usr/local/bin/install-sstp" \
   "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls" \
   "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp" \
+  "install-hysteria:/usr/local/bin/install-hysteria" "nvpanel-hysteria:/usr/local/bin/nvpanel-hysteria" \
   "update.sh:/usr/local/bin/update"; do
   fetch "${pair%%:*}" "${pair##*:}"
 done

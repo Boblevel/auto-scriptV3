@@ -34,7 +34,18 @@ _rebuild(){
     echo "    url: https://news.ycombinator.com/"
     echo "    rewriteHost: true"
   } > "$CONF"
-  systemctl restart hysteria-server >/dev/null 2>&1
+  # Le code de retour ne doit PAS dépendre du redémarrage du service : si
+  # hysteria-server refuse de démarrer (binaire absent, port occupé), la
+  # configuration reste correctement écrite et le compte doit être conservé.
+  # Avant, un simple échec de démarrage faisait supprimer le compte tout juste
+  # créé et renvoyait « ERR notls », que le menu traduisait par « utilisateur
+  # déjà pris » — d'où un compte annoncé comme existant alors qu'il n'existait
+  # pas.
+  #   0 = configuration écrite et service démarré
+  #   1 = certificat TLS absent (rien n'a été écrit)
+  #   2 = configuration écrite mais service non démarré
+  systemctl restart hysteria-server >/dev/null 2>&1 || return 2
+  return 0
 }
 
 _box(){ # user pass created exp
@@ -63,7 +74,10 @@ case "$cmd" in
     grep -q "^### $user " "$DB" && { echo "ERR exists"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
     echo "### $user $pass $exp" >> "$DB"
-    _rebuild || { sed -i "/^### $user /d" "$DB"; echo "ERR notls"; exit 1; }
+    _rebuild; rc=$?
+    # Seul le cas « certificat absent » annule la création : la configuration
+    # n'a alors pas pu être écrite du tout.
+    [ "$rc" = 1 ] && { sed -i "/^### $user /d" "$DB"; echo "ERR notls"; exit 1; }
     echo "OK $user $exp"
     _box "$user" "$pass" "$cr" "$exp" ;;
   list)

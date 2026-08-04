@@ -281,7 +281,16 @@ hysteria_menu() {
     ask "$(printf " ${WHT}Choix :${NC} ")" h || break
     case "$h" in
       1) hy_create ;; 2) hy_list ;; 3) hy_delete ;;
-      4) install-hysteria ;; 5) hy_uninstall ;;
+      # Sans ce test, quand le composant n'était pas présent sur le serveur la
+      # commande échouait en silence : l'option semblait « refuser » de lancer
+      # l'installation, sans le moindre message.
+      4) if [ -x /usr/local/bin/install-hysteria ]; then
+           /usr/local/bin/install-hysteria
+         else
+           err "Composant d'installation absent. Tape « update » puis réessaie."
+           pause
+         fi ;;
+      5) hy_uninstall ;;
       0) break ;; *) warn "Invalide"; sleep 1 ;;
     esac
   done
@@ -293,12 +302,23 @@ hy_create(){
   ask " Mot de passe (vide = généré) : " p
   [ -z "$p" ] && p=$(openssl rand -hex 6)
   ask " Durée en jours [30] : " d; d=${d:-30}
+  if [ ! -x /usr/local/bin/nvpanel-hysteria ]; then
+    err "Hysteria2 n'est pas installé sur ce serveur (option 4)."; pause; return
+  fi
   local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" 2>&1)
   if echo "$out" | grep -q "^OK"; then
     echo "$out" | tail -n +2
     ok "Compte créé."
   else
-    err "Échec (utilisateur déjà pris, ou domaine/TLS non configuré)."
+    # Un message unique pour trois causes très différentes rendait tout
+    # diagnostic impossible : un simple service arrêté s'affichait comme
+    # « utilisateur déjà pris ».
+    case "$out" in
+      *"ERR exists"*) err "Ce nom d'utilisateur est déjà pris." ;;
+      *"ERR notls"*)  err "Domaine ou certificat TLS absent (Paramètres → 1 puis 2)." ;;
+      *"ERR args"*)   err "Nom d'utilisateur ou mot de passe vide." ;;
+      *)              err "Création impossible pour l'instant." ;;
+    esac
   fi
   pause
 }

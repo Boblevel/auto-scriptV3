@@ -16,7 +16,7 @@ DB="$DBDIR/conso"
 # Version des règles de comptage. À incrémenter dès qu'on change ce qui est
 # compté : l'historique accumulé par l'ancienne méthode est alors effacé,
 # sinon des valeurs erronées (dizaines de Go fantômes) resteraient affichées.
-RULES_VER=5
+RULES_VER=6
 VERF="$DBDIR/conso.ver"
 LASTF="$DBDIR/conso.last"   # derniers compteurs bruts lus
 CIN=NVCONSO_IN
@@ -29,6 +29,11 @@ mkdir -p "$DBDIR"; touch "$DB"
 if [ "$(cat "$VERF" 2>/dev/null)" != "$RULES_VER" ]; then
   : > "$DB" 2>/dev/null
   rm -f "$LASTF" 2>/dev/null
+  # Les compteurs iptables encore en place contiennent l'ancien cumul : sans
+  # cette remise à zéro, le premier relevé après mise à jour le réinjecterait
+  # d'un seul coup dans le nouvel historique pourtant vidé.
+  iptables -w 3 -Z "$CIN"  2>/dev/null
+  iptables -w 3 -Z "$COUT" 2>/dev/null
   printf '%s' "$RULES_VER" > "$VERF" 2>/dev/null
 fi
 
@@ -36,6 +41,24 @@ setup_chains(){
   command -v iptables >/dev/null 2>&1 || return 1
   local UDP x
   x=$(cat /etc/nvpanel/xport 2>/dev/null); x=${x:-443}
+
+  # ------------------------------------------------------------------
+  # CAUSE DE LA CONSOMMATION FIGÉE (corrigée ici) :
+  # cette fonction fait un -F (flush) qui remet TOUS les compteurs à zéro.
+  # Or « nvpanel-conso setup » est appelé depuis une douzaine d'endroits,
+  # dont nvpanel-clean lancé par cron TOUTES LES 10 MINUTES, alors que le
+  # relevé (poll) n'a lieu que toutes les 5 minutes.
+  # Résultat : à chaque relevé, la valeur brute lue était sensiblement la
+  # même que celle du relevé précédent (5 min de trafic à chaque fois), donc
+  # la différence calculée valait 0 — la consommation n'augmentait plus
+  # JAMAIS, quel que soit le trafic réel des clients.
+  # Correction : on enregistre ce que les chaînes ont compté AVANT de les
+  # vider, puis on repart d'un dernier relevé à zéro (cohérent avec des
+  # compteurs remis à zéro). Plus aucune perte, et aucun double comptage.
+  # ------------------------------------------------------------------
+  if iptables -w 3 -nL "$CIN" >/dev/null 2>&1; then
+    _accumulate
+  fi
 
   iptables -w 3 -N "$CIN"  2>/dev/null; iptables -w 3 -F "$CIN"  2>/dev/null
   iptables -w 3 -N "$COUT" 2>/dev/null; iptables -w 3 -F "$COUT" 2>/dev/null
@@ -77,6 +100,10 @@ setup_chains(){
   [ -n "$uc" ] && UDP="$UDP,$uc"
   iptables -w 3 -A "$CIN"  -p udp -m multiport --dports "$UDP" -j RETURN 2>/dev/null
   iptables -w 3 -A "$COUT" -p udp -m multiport --sports "$UDP" -j RETURN 2>/dev/null
+  # Les compteurs viennent d'être vidés : le dernier relevé doit valoir 0,
+  # sinon le prochain poll calculerait une différence négative puis repartirait
+  # de travers.
+  printf '0' > "$LASTF" 2>/dev/null
   return 0
 }
 
@@ -97,6 +124,43 @@ ensure_accounts(){
 
 _chain_bytes(){ # somme des octets d'une chaîne
   iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
+}
+
+# Lit les compteurs des chaînes et ajoute à l'historique la DIFFÉRENCE avec le
+# dernier relevé. Extrait de poll() pour pouvoir être appelé AUSSI avant un
+# flush : sans cela tout le trafic accumulé depuis le dernier relevé était
+# définitivement perdu (voir setup_chains).
+# N'assure PAS le verrou : l'appelant doit déjà le détenir.
+_accumulate(){
+  local raw last delta today cur i o
+  i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT")
+  raw=$(( i + o ))
+
+  # On NE remet PLUS les compteurs à zéro. On mémorise leur dernière valeur
+  # brute et on n'ajoute que la DIFFÉRENCE.
+  # Avant, on lisait puis on remettait à zéro : si cette remise à zéro
+  # échouait (deux commandes iptables simultanées se bloquent l'une l'autre),
+  # la même valeur était recomptée à chaque affichage du menu — d'où des
+  # dizaines de Go apparus sans aucun trafic réel.
+  last=$(cat "$LASTF" 2>/dev/null); last=${last:-0}
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$raw" -ge "$last" ] 2>/dev/null; then
+    delta=$(( raw - last ))
+  else
+    # les compteurs ont été remis à zéro par ailleurs (redémarrage, règles
+    # recréées) : on repart de la valeur courante
+    delta="$raw"
+  fi
+  printf '%s' "$raw" > "$LASTF" 2>/dev/null
+
+  [ "$delta" -le 0 ] 2>/dev/null && return 0
+  today=$(date +%F)
+  cur=$(awk -F'|' -v d="$today" '$1==d{print $2}' "$DB" 2>/dev/null | tail -1)
+  cur=${cur:-0}
+  sed -i "/^$today|/d" "$DB" 2>/dev/null
+  printf '%s|%s\n' "$today" "$(( cur + delta ))" >> "$DB"
+  tail -n 120 "$DB" > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
+  return 0
 }
 
 poll(){
@@ -131,40 +195,7 @@ poll(){
   iptables -w 3 -I INPUT  -j "$CIN"  2>/dev/null
   iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null
   iptables -w 3 -I OUTPUT -j "$COUT" 2>/dev/null
-  local raw last delta today cur i o
-  i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT")
-  raw=$(( i + o ))
-
-  # On NE remet PLUS les compteurs à zéro. On mémorise leur dernière valeur
-  # brute et on n'ajoute que la DIFFÉRENCE.
-  # Avant, on lisait puis on remettait à zéro : si cette remise à zéro
-  # échouait (deux commandes iptables simultanées se bloquent l'une l'autre),
-  # la même valeur était recomptée à chaque affichage du menu — d'où des
-  # dizaines de Go apparus sans aucun trafic réel.
-  last=$(cat "$LASTF" 2>/dev/null); last=${last:-0}
-  case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  if [ "$raw" -ge "$last" ] 2>/dev/null; then
-    delta=$(( raw - last ))
-  else
-    # les compteurs ont été remis à zéro par ailleurs (redémarrage, règles
-    # recréées) : on repart de la valeur courante
-    delta="$raw"
-  fi
-  printf '%s' "$raw" > "$LASTF" 2>/dev/null
-
-  [ "$delta" -le 0 ] 2>/dev/null && return 0
-  today=$(date +%F)
-  cur=$(awk -F'|' -v d="$today" '$1==d{print $2}' "$DB" 2>/dev/null | tail -1)
-  cur=${cur:-0}
-  sed -i "/^$today|/d" "$DB" 2>/dev/null
-  printf '%s|%s\n' "$today" "$(( cur + delta ))" >> "$DB"
-  # Auto-nettoyage : ne garder qu'une seule ligne par date (la dernière),
-  # au cas où d'anciens doublons traîneraient encore dans le fichier
-  # (résidu d'avant le verrou flock). Sans ça, read_vals resterait
-  # protégé pour les nouveaux calculs mais le fichier resterait pollué.
-  awk -F'|' '{val[$1]=$2; order[$1]=NR} END{for(k in val) print order[k]"\t"k"|"val[k]}' "$DB" 2>/dev/null \
-    | sort -n | cut -f2- > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
-  tail -n 120 "$DB" > "$DB.tmp" 2>/dev/null && mv "$DB.tmp" "$DB"
+  _accumulate
   ) 201>"$DBDIR/.conso.lock"
   return 0
 }
@@ -172,23 +203,12 @@ poll(){
 
 read_vals(){ # affiche "hier|aujourdhui|mois" en octets
   poll >/dev/null 2>&1
-  local today yest month
+  local t y m today yest month
   today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
-  # IMPORTANT : chaque date ne doit compter qu'UNE fois. On ne fait plus
-  # s+=$2 sur toutes les lignes correspondantes (si un doublon traîne dans
-  # le fichier, la somme double le total et il ne bouge plus avec le vrai
-  # trafic). On garde uniquement la DERNIÈRE valeur connue par date
-  # (val[$1]=$2 écrase la précédente), puis on additionne par date unique.
-  awk -F'|' -v d="$today" -v y="$yest" -v p="$month" '
-    { val[$1]=$2 }
-    END{
-      t=(d in val)?val[d]:0
-      ye=(y in val)?val[y]:0
-      m=0
-      for (k in val) if (index(k,p)==1) m+=val[k]
-      printf "%d|%d|%d\n", ye+0, t+0, m+0
-    }
-  ' "$DB" 2>/dev/null
+  t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  m=$(awk -F'|' -v p="$month" 'index($1,p)==1{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  echo "${y:-0}|${t:-0}|${m:-0}"
 }
 
 reset_all(){
@@ -237,10 +257,13 @@ debug_rules(){
 
 case "$1" in
   debug)  debug_rules ;;
-  setup)  setup_chains ;;
+  # setup et reset touchent aux compteurs : ils prennent le MÊME verrou que
+  # poll, sinon un relevé lancé en parallèle (cron, affichage d'un menu)
+  # pouvait lire des compteurs en cours de reconstruction et compter deux fois.
+  setup)  ( flock -w 10 202 || exit 0; setup_chains ) 202>"$DBDIR/.conso.lock" ;;
   poll)   poll ;;
   read)   read_vals ;;
-  reset)  reset_all ;;
+  reset)  ( flock -w 10 202 || exit 0; reset_all ) 202>"$DBDIR/.conso.lock" ;;
   remove) remove_all ;;
   *)      echo "usage: nvpanel-conso setup|poll|read|reset|remove|debug" ;;
 esac
