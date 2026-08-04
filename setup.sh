@@ -145,6 +145,9 @@ systemctl enable --now nvpanel-limit >/dev/null 2>&1
 # compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
 ( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
+# relevé d'activité des comptes Xray : à la minute, pour que la colonne
+# « CONNECTÉ DEPUIS » soit précise sans jamais interroger le réseau
+( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null
 
 # --- Message d'accueil du serveur (MOTD) ---------------------------------
 # Ubuntu et Debian affichent au login un long texte : bannière de la

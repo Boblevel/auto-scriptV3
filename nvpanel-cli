@@ -14,6 +14,91 @@ NDIR=/etc/nvpanel/xray
 mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 
 # ---- helpers -----------------------------------------------
+XAPI=127.0.0.1:10085
+XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_activite
+
+# Active le service de statistiques dans une configuration qui ne l'a pas
+# encore (serveurs installés avant cette version).
+# Les clients ne sont JAMAIS touchés : seules les clés manquantes sont
+# ajoutées, et le remplacement n'a lieu qu'après vérification que le nombre de
+# clients est rigoureusement identique avant et après.
+_xapi_ensure(){
+  [ -f "$XCONF" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -e '(.api.tag=="api") and ([.inbounds[]?.tag?]|index("api")) and ([.outbounds[]?.tag?]|index("api"))' \
+    "$XCONF" >/dev/null 2>&1 && return 0
+  jq '
+      .stats = (.stats // {})
+    | .api = { "tag":"api", "services":["StatsService"] }
+    | .policy = ((.policy // {}) * { "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } } })
+    | .inbounds = ( if ([.inbounds[]?.tag?]|index("api")) then .inbounds
+        else [ { "tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"} } ] + .inbounds end )
+    | .outbounds = ( if ([.outbounds[]?.tag?]|index("api")) then .outbounds
+        else .outbounds + [ { "protocol":"freedom","tag":"api" } ] end )
+    | .routing = ((.routing // {}) | .rules = ((.rules // []) + [ {"type":"field","inboundTag":["api"],"outboundTag":"api"} ]))
+  ' "$XCONF" > "$XCONF.tmp" 2>/dev/null || { rm -f "$XCONF.tmp"; return 1; }
+  local a b
+  a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF"     2>/dev/null)
+  b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF.tmp" 2>/dev/null)
+  [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$XCONF.tmp"; return 1; }
+  mv "$XCONF.tmp" "$XCONF"
+  systemctl restart xray >/dev/null 2>&1
+  return 0
+}
+
+# Relève les compteurs de trafic de chaque compte et en déduit son activité.
+# Xray ne dit pas « qui est connecté » : il tient en revanche un compteur
+# d'octets par compte. Un compteur qui progresse = un compte en train de s'en
+# servir. On mémorise l'instant où cette activité a commencé ; après trois
+# minutes sans le moindre octet, le compte est considéré déconnecté.
+xsample_run(){
+  command -v xray >/dev/null 2>&1 || return 0
+  command -v jq   >/dev/null 2>&1 || return 0
+  local now snap tmp em tot prev first last row
+  now=$(date +%s)
+  snap=$(xray api statsquery --server="$XAPI" -pattern "user>>>" 2>/dev/null \
+    | jq -r '.stat[]? | "\(.name) \(.value // 0)"' 2>/dev/null \
+    | awk '{ split($1, p, ">>>"); if (p[2] != "") t[p[2]] += $2 } END { for (u in t) printf "%s %d\n", u, t[u] }')
+  [ -z "$snap" ] && return 0
+  touch "$XSTAT"
+  tmp=$(mktemp) || return 0
+  while read -r em tot; do
+    [ -z "$em" ] && continue
+    row=$(grep "^$em|" "$XSTAT" 2>/dev/null | head -1)
+    prev=$(printf '%s' "$row" | cut -d'|' -f2); first=$(printf '%s' "$row" | cut -d'|' -f3)
+    last=$(printf '%s' "$row" | cut -d'|' -f4)
+    case "$prev"  in ''|*[!0-9]*) prev=0  ;; esac
+    case "$first" in ''|*[!0-9]*) first=0 ;; esac
+    case "$last"  in ''|*[!0-9]*) last=0  ;; esac
+    if [ -z "$row" ]; then
+      # Première observation : le compteur porte déjà le cumul depuis le
+      # démarrage de Xray. On l'enregistre comme référence sans en conclure
+      # que le compte est connecté maintenant.
+      first=0; last=$now
+    elif [ "$tot" -gt "$prev" ] 2>/dev/null; then
+      [ "$first" -eq 0 ] && first=$now
+      last=$now
+    elif [ "$first" -ne 0 ] && [ $(( now - last )) -ge 180 ]; then
+      first=0
+    fi
+    printf '%s|%s|%s|%s\n' "$em" "$tot" "$first" "$last" >> "$tmp"
+  done <<< "$snap"
+  mv "$tmp" "$XSTAT" 2>/dev/null || rm -f "$tmp"
+  return 0
+}
+
+# Durée d'activité d'un compte, prête à afficher.
+_conn_since(){
+  local row first now d
+  row=$(grep "^$1|" "$XSTAT" 2>/dev/null | head -1)
+  first=$(printf '%s' "$row" | cut -d'|' -f3)
+  case "$first" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
+  now=$(date +%s); d=$(( now - first ))
+  if   [ "$d" -lt 60 ];   then printf '< 1 min'
+  elif [ "$d" -lt 3600 ]; then printf '%d min' "$(( d / 60 ))"
+  else printf '%d h %02d' "$(( d / 3600 ))" "$(( (d % 3600) / 60 ))"; fi
+}
+
 _today(){ date +%Y-%m-%d; }
 _ip(){ cat /etc/nvpanel/ip 2>/dev/null; }
 _dom(){ cat /etc/nvpanel/domain 2>/dev/null; }
@@ -323,7 +408,18 @@ case "$cmd" in
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
   xlist)
     proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    awk '/^### /{ st=($5=="L")?"verrou":"actif"; print $2"|"$4"|"st }' "$XDB" 2>/dev/null ;;
+    _xapi_ensure; xsample_run
+    while read -r _ nm _ ex fl; do
+      [ -z "$nm" ] && continue
+      if [ "$fl" = "L" ]; then st="verrou"; ct="—"; else st="actif"; ct=$(_conn_since "$nm"); fi
+      printf '%s|%s|%s|%s\n' "$nm" "$ex" "$st" "$ct"
+    done < <(grep '^### ' "$XDB" 2>/dev/null) ;;
+  xsample)
+    # relevé périodique appelé par cron (aucune sortie)
+    xsample_run ;;
+  xapi)
+    # activation du service de statistiques (appelé par la mise à jour)
+    _xapi_ensure && echo "OK" || echo "ERR" ;;
   xdel)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
@@ -397,5 +493,5 @@ case "$cmd" in
       *) echo "ERR proto"; exit 1 ;;
     esac ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo|xlock|xunlock|purge"; exit 1 ;;
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xdel|xrenew|xinfo|xlock|xunlock|xsample|xapi|purge"; exit 1 ;;
 esac

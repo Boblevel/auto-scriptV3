@@ -42,15 +42,15 @@ add_client() {
 
 list_clients() {
   header
-  printf " ${WHT}%-20s %-12s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT"
+  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  # « xlist » renvoie trois champs (nom|expiration|état) ; seuls les deux
-  # premiers étaient lus, l'état des comptes verrouillés n'apparaissait donc
-  # nulle part dans la liste.
-  local n e s
-  while IFS='|' read -r n e s; do
+  # « xlist » renvoie quatre champs (nom|expiration|état|activité) ; seuls les
+  # deux premiers étaient lus, l'état des comptes verrouillés n'apparaissait
+  # donc nulle part dans la liste.
+  local n e s c
+  while IFS='|' read -r n e s c; do
     [ -z "$n" ] && continue
-    printf " %-20s %-12s %s\n" "$n" "${e:-?}" "${s:-actif}"
+    printf " %-16s %-12s %-8s %s\n" "$n" "${e:-?}" "${s:-actif}" "${c:-—}"
   done < <(nvpanel-cli xlist "$PROTO")
   pause
 }

@@ -33,7 +33,20 @@ if [ ! -s "$XDIR/config.json" ]; then
 cat > "$XDIR/config.json" <<EOF
 {
   "log": { "loglevel": "warning" },
+  "stats": {},
+  "api": { "tag": "api", "services": ["StatsService"] },
+  "policy": {
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
+    "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
+  },
+  "routing": {
+    "rules": [ { "type": "field", "inboundTag": ["api"], "outboundTag": "api" } ]
+  },
   "inbounds": [
+    {
+      "tag": "api", "port": 10085, "listen": "127.0.0.1", "protocol": "dokodemo-door",
+      "settings": { "address": "127.0.0.1" }
+    },
     {
       "tag": "vmess-in", "port": 8080, "protocol": "vmess",
       "settings": { "clients": [] },
@@ -59,7 +72,10 @@ cat > "$XDIR/config.json" <<EOF
       }
     }
   ],
-  "outbounds": [ { "protocol": "freedom" } ]
+  "outbounds": [
+    { "protocol": "freedom" },
+    { "protocol": "freedom", "tag": "api" }
+  ]
 }
 EOF
 fi

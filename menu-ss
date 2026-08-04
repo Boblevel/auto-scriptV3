@@ -35,8 +35,14 @@ add_client() {
   pause
 }
 list_clients() {
-  header; printf " ${GRY}%-20s %s${NC}\n" "Nom" "Expire"; line
-  nvpanel-cli xlist ss | while IFS='|' ask "" n e; do printf " %-20s %s\n" "$n" "$e"; done
+  header
+  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+  line
+  local n e s c
+  while IFS='|' read -r n e s c; do
+    [ -z "$n" ] && continue
+    printf " %-16s %-12s %-8s %s\n" "$n" "${e:-?}" "${s:-actif}" "${c:-—}"
+  done < <(nvpanel-cli xlist ss)
   pause
 }
 

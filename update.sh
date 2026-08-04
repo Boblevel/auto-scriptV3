@@ -130,6 +130,12 @@ if [ -x /usr/local/bin/nvpanel-conso ]; then
   /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
   ( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
 fi
+# statistiques par compte Xray : ajoutées à une configuration existante sans
+# jamais toucher aux clients déjà créés, puis relevé d'activité à la minute
+if [ -x /usr/local/bin/nvpanel-cli ]; then
+  /usr/local/bin/nvpanel-cli xapi >/dev/null 2>&1
+  ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null
+fi
 fill 100 "Terminé"
 sleep 0.3
 
