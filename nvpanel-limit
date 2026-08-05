@@ -7,25 +7,49 @@
 DB=/etc/nvpanel/db/limit
 [ -f "$DB" ] || touch "$DB"
 
-count_sessions() {
-  # nombre de sessions sshd/dropbear ouvertes par l'utilisateur
-  ps -eo user,comm | awk -v u="$1" '$1==u && ($2 ~ /sshd|dropbear/){c++} END{print c+0}'
+# Liste « pid adresse » des connexions établies appartenant à un compte,
+# les plus anciennes d'abord.
+#
+# On ne compte PLUS les processus. Une seule application cliente ouvre
+# plusieurs connexions SSH en parallèle — canaux, redirections, reconnexions :
+# trois à quatre pour un seul téléphone. Avec l'ancien comptage, une limite de
+# 2 appareils était donc dépassée dès le PREMIER appareil, et le limiteur
+# coupait la session toutes les 20 secondes. C'est ce qui donnait l'impression
+# d'être limité à un seul utilisateur.
+# Un appareil = une adresse distante. Plusieurs connexions venant de la même
+# adresse ne comptent que pour un.
+sessions_of() {
+  ss -tnp state established 2>/dev/null | awk '
+    /pid=/ {
+      peer = $4
+      if (match($0, /pid=[0-9]+/)) {
+        pid = substr($0, RSTART + 4, RLENGTH - 4)
+        sub(/:[0-9]+$/, "", peer)
+        print pid, peer
+      }
+    }' | sort -n | while read -r pid ip; do
+      owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ "$owner" = "$1" ] && printf '%s %s\n' "$pid" "$ip"
+    done
 }
 
 while true; do
   while read -r user max; do
     [ -z "$user" ] && continue
     [[ "$max" =~ ^[0-9]+$ ]] || continue
-    now=$(count_sessions "$user")
-    if [ "$now" -gt "$max" ]; then
-      # coupe les sessions excédentaires (les plus récentes d'abord)
-      pids=$(ps -eo pid,user,comm --sort=-pid | awk -v u="$user" '$2==u && ($3 ~ /sshd|dropbear/){print $1}')
-      excess=$(( now - max ))
-      for pid in $pids; do
-        [ "$excess" -le 0 ] && break
-        kill -9 "$pid" 2>/dev/null && excess=$(( excess - 1 ))
-      done
-    fi
+    [ "$max" -le 0 ] && continue
+    list=$(sessions_of "$user")
+    [ -z "$list" ] && continue
+    # les « max » premières adresses vues sont conservées, les suivantes
+    # correspondent à des appareils en trop et sont déconnectées
+    kept=""; n=0
+    while read -r pid ip; do
+      [ -z "$pid" ] && continue
+      case " $kept " in
+        *" $ip "*) ;;
+        *) if [ "$n" -lt "$max" ]; then kept="$kept $ip"; n=$((n+1)); else kill -9 "$pid" 2>/dev/null; fi ;;
+      esac
+    done <<< "$list"
   done < "$DB"
   sleep 20
 done
