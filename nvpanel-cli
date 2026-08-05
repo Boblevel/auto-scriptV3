@@ -100,6 +100,27 @@ _conn_since(){
 }
 
 _today(){ date +%Y-%m-%d; }
+
+# udp-custom (mode « passwords ») ne lit pas /etc/shadow : il cherche les
+# identifiants dans le champ commentaire de /etc/passwd, au format
+# « limite_de_connexions,mot_de_passe ». Sans cette inscription, le module UDP
+# ne reconnaît aucun compte créé par le panel.
+# Deux caractères sont interdits : « : » sépare les champs de /etc/passwd et
+# « , » sépare la limite du mot de passe. Un mot de passe qui en contient est
+# laissé de côté — le compte reste parfaitement utilisable en SSH, seul l'UDP
+# ne le reconnaîtra pas.
+_udp_cred(){ # $1 = compte  $2 = mot de passe  $3 = limite
+  command -v usermod >/dev/null 2>&1 || return 0
+  case "$2" in *:*|*,*) return 0 ;; esac
+  usermod -c "${3:-2},$2" "$1" >/dev/null 2>&1
+  return 0
+}
+# Retire les identifiants UDP : le compte ne passe plus par le module UDP.
+_udp_cred_clear(){
+  command -v usermod >/dev/null 2>&1 || return 0
+  usermod -c "" "$1" >/dev/null 2>&1
+  return 0
+}
 _ip(){ cat /etc/nvpanel/ip 2>/dev/null; }
 _dom(){ cat /etc/nvpanel/domain 2>/dev/null; }
 _host(){ local d; d=$(_dom); [ -n "$d" ] && printf '%s' "$d" || _ip; }
@@ -299,6 +320,7 @@ case "$cmd" in
     printf '%s\n%s\n' "$pass" "$pass" | passwd "$user" &>/dev/null
     passwd -u "$user" &>/dev/null          # s'assure que le compte est déverrouillé
     chage -M 99999 "$user" &>/dev/null     # le mot de passe n'expire jamais
+    _udp_cred "$user" "$pass" "$lim"
     echo "### $user $exp" >> "$DB"
     grep -q "^$user " "$LIMDB" && sed -i "s/^$user .*/$user $lim/" "$LIMDB" || echo "$user $lim" >> "$LIMDB"
     if [ "${gb:-0}" -gt 0 ] 2>/dev/null; then
@@ -344,8 +366,15 @@ case "$cmd" in
     sed -i "/^$user /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
     [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
     echo "OK deleted" ;;
-  lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
-  unlock) u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -u "$u" &>/dev/null; echo "OK unlocked"; } || echo "ERR nouser" ;;
+  # Le verrouillage doit couper l'UDP aussi : udp-custom ne consulte pas
+  # /etc/shadow, un compte verrouillé par « passwd -l » continuait donc de
+  # passer par le module UDP comme si de rien n'était.
+  lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; _udp_cred_clear "$u"; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
+  unlock) u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -u "$u" &>/dev/null; \
+            _p=$(grep "^$u|" "$META" 2>/dev/null | head -1 | cut -d'|' -f2); \
+            _l=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null); \
+            [ -n "$_p" ] && _udp_cred "$u" "$_p" "${_l:-2}"; \
+            echo "OK unlocked"; } || echo "ERR nouser" ;;
   list)
     # On liste les comptes DU PANEL (base interne), pas tous les utilisateurs
     # Linux : sinon les comptes système et les comptes supprimés continuaient
