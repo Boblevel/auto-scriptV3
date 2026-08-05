@@ -146,6 +146,12 @@ if [ -f /etc/nvpanel/udp/config.json ] && grep -q '":36712"' /etc/nvpanel/udp/co
   systemctl restart nvpanel-udp-custom >/dev/null 2>&1
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
 fi
+# Réparation des outils indispensables : sur certains serveurs, l'installation
+# initiale d'un paquet a pu échouer sans le signaler (jq absent = création de
+# compte Xray impossible).
+for _t in curl jq openssl python3; do
+  command -v "$_t" >/dev/null 2>&1 || apt-get install -y "$_t" >/dev/null 2>&1
+done
 fill 100 "Terminé"
 sleep 0.3
 

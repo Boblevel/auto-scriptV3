@@ -61,6 +61,27 @@ apt-get update -y >/dev/null 2>&1
 apt-get install -y curl wget jq unzip cron screen socat python3 openssl \
     net-tools dropbear stunnel4 fail2ban vnstat iptables nginx certbot qrencode >/dev/null 2>&1
 
+# --- Contrôle des outils indispensables -------------------------------------
+# L'installation groupée ci-dessus est silencieuse : si un dépôt est
+# momentanément injoignable, elle échoue sans rien dire et le panel se déclare
+# prêt. C'est ce qui s'est produit avec jq — absent, toute création de compte
+# Xray renvoyait « ERR conf » sans que la cause soit visible nulle part.
+# On vérifie donc chaque outil vital et on réessaie individuellement.
+_MISSING=""
+for _t in curl jq openssl python3; do
+  command -v "$_t" >/dev/null 2>&1 || {
+    apt-get install -y "$_t" >/dev/null 2>&1
+    command -v "$_t" >/dev/null 2>&1 || _MISSING="$_MISSING $_t"
+  }
+done
+if [ -n "$_MISSING" ]; then
+  echo
+  printf "  Outils indispensables introuvables :%s\n" "$_MISSING"
+  printf "  Le serveur n'a pas pu les télécharger. Vérifie sa connexion,\n"
+  printf "  puis relance l'installation.\n\n"
+  exit 1
+fi
+
 # --- Dropbear : Ubuntu livre NO_START=1, le service ne demarre jamais --------
 # (sur Debian le paquet demarre seul ; sans ceci, le SSH WebSocket/SSL est mort)
 if command -v dropbear >/dev/null 2>&1 || dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
