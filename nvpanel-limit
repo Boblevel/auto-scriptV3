@@ -7,21 +7,36 @@
 DB=/etc/nvpanel/db/limit
 [ -f "$DB" ] || touch "$DB"
 
-# Liste « pid adresse » des connexions établies appartenant à un compte,
+# Liste « pid adresse » des connexions ENTRANTES appartenant à un compte,
 # les plus anciennes d'abord.
 #
-# On ne compte PLUS les processus. Une seule application cliente ouvre
-# plusieurs connexions SSH en parallèle — canaux, redirections, reconnexions :
-# trois à quatre pour un seul téléphone. Avec l'ancien comptage, une limite de
-# 2 appareils était donc dépassée dès le PREMIER appareil, et le limiteur
-# coupait la session toutes les 20 secondes. C'est ce qui donnait l'impression
-# d'être limité à un seul utilisateur.
-# Un appareil = une adresse distante. Plusieurs connexions venant de la même
-# adresse ne comptent que pour un.
+# Deux pièges, tous deux rencontrés en conditions réelles :
+#
+# 1) On ne compte pas les processus. Une seule application cliente ouvre
+#    plusieurs connexions SSH en parallèle — canaux, redirections,
+#    reconnexions. Un appareil = une adresse distante.
+#
+# 2) On ne retient QUE les connexions dont le port local est un port SSH.
+#    Le processus sshd d'un client ouvre aussi toutes les connexions du
+#    tunnel VERS Internet, et elles lui appartiennent : chaque site visité
+#    apparaissait donc comme un appareil supplémentaire, avec une adresse
+#    différente à chaque fois. Un client ouvrant une simple page web
+#    fabriquait des dizaines d'appareils en quelques secondes et se faisait
+#    déconnecter à chaque passage de la boucle. C'est la cause des coupures
+#    toutes les 20 secondes.
+ssh_ports() {
+  local dp
+  dp=$(grep -oP '^DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1)
+  printf '22 143 %s' "${dp:-}"
+}
+
 sessions_of() {
-  ss -tnp state established 2>/dev/null | awk '
+  local ports; ports=" $(ssh_ports) "
+  ss -tnp state established 2>/dev/null | awk -v p="$ports" '
     /pid=/ {
-      peer = $4
+      local_ep = $3; peer = $4
+      lport = local_ep; sub(/^.*:/, "", lport)
+      if (index(p, " " lport " ") == 0) next
       if (match($0, /pid=[0-9]+/)) {
         pid = substr($0, RSTART + 4, RLENGTH - 4)
         sub(/:[0-9]+$/, "", peer)
