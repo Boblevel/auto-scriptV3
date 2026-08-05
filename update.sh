@@ -136,6 +136,16 @@ if [ -x /usr/local/bin/nvpanel-cli ]; then
   /usr/local/bin/nvpanel-cli xapi >/dev/null 2>&1
   ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null
 fi
+# udp-custom : bascule de l'ancien port 36712 vers l'UDP 22, afin que le client
+# saisisse le même port pour SSH, SlowDns et UDP Custom
+if [ -f /etc/nvpanel/udp/config.json ] && grep -q '":36712"' /etc/nvpanel/udp/config.json 2>/dev/null; then
+  sed -i 's/":36712"/":22"/' /etc/nvpanel/udp/config.json 2>/dev/null
+  iptables -D INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+  iptables -C INPUT -p udp --dport 22 -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p udp --dport 22 -j ACCEPT 2>/dev/null
+  systemctl restart nvpanel-udp-custom >/dev/null 2>&1
+  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+fi
 fill 100 "Terminé"
 sleep 0.3
 

@@ -162,10 +162,16 @@ restart_services(){
   echo
   loading "Redémarrage des services"
   local s pair total=0 done=0
+  # Liste complète des services du panel. Les protocoles PPP et Hysteria2
+  # manquaient : après un correctif, ils continuaient de tourner avec
+  # l'ancienne version et il fallait les relancer à la main en ligne de
+  # commande. Un service absent ou non installé est simplement ignoré.
   for pair in \
     "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray" "nginx:Nginx (TLS/WS)" \
     "nvpanel-slowdns:SlowDNS" "nvpanel-badvpn-7100:UDP 7100" "nvpanel-badvpn-7200:UDP 7200" \
     "nvpanel-badvpn-7300:UDP 7300" "nvpanel-udp-custom:UDP custom" "wg-quick@wg0:WireGuard" \
+    "xl2tpd:L2TP" "strongswan-starter:IPsec" "strongswan:IPsec" "pptpd:PPTP" \
+    "nvpanel-sstp:SSTP" "hysteria-server:Hysteria2" \
     "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
     s="${pair%%:*}"
     if systemctl is-active --quiet "$s" 2>/dev/null || systemctl is-enabled --quiet "$s" 2>/dev/null; then
@@ -347,7 +353,7 @@ while true; do
   entry "8"  "🧠" "Créer un SwapRAM"
   entry "9"  "⚡" "Activer BBR"
   entry "10" "🚀" "Test de vitesse du serveur"
-  entry "11" "♻️" "Redémarrer les services VPN"
+  entry "11" "♻️" "Redémarrer les services"
   entry "12" "📜" "Renouveler les certificats"
   entry "13" "📝" "Ajouter une bannière SSH"
   entry "14" "ℹ️" "Info du script"
