@@ -220,9 +220,19 @@ UDPC_OK=0
 curl -fsSL "$REPO_RAW/$UDPC_SRC" -o "$DIR/udp-custom" 2>/dev/null
 if is_bin "$DIR/udp-custom"; then
   chmod +x "$DIR/udp-custom"
-  [ -f "$DIR/config.json" ] || cat > "$DIR/config.json" <<'EOF'
-{ "listen": ":36712", "stream_buffer": 33554432, "receive_buffer": 83886080, "auth": { "mode": "passwords" } }
+  # Écoute sur le port UDP 22, et non plus 36712.
+  # UDP et TCP sont deux espaces de ports distincts : le 22 en UDP est libre
+  # même si SSH occupe le 22 en TCP. Le client saisit donc le MÊME port pour
+  # SSH, SlowDns et UDP Custom — il lui suffit de cocher ou décocher la case,
+  # sans jamais retoucher au port, source d'erreur fréquente.
+  if [ -f "$DIR/config.json" ]; then
+    # installation antérieure : on bascule le port sans toucher au reste
+    sed -i 's/":36712"/":22"/' "$DIR/config.json" 2>/dev/null
+  else
+    cat > "$DIR/config.json" <<'EOF'
+{ "listen": ":22", "stream_buffer": 33554432, "receive_buffer": 83886080, "auth": { "mode": "passwords" } }
 EOF
+  fi
   cat > /etc/systemd/system/nvpanel-udp-custom.service <<EOF
 [Unit]
 Description=RHAFF SERVICE udp-custom
@@ -245,11 +255,13 @@ fi
 
 # ---------- 3) pare-feu : autoriser l'UDP -------------------
 if command -v iptables >/dev/null 2>&1; then
-  iptables -C INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || \
-    iptables -I INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+  # le port d'écoute est désormais l'UDP 22 : on retire l'ancienne règle
+  iptables -D INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+  iptables -C INPUT -p udp --dport 22 -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p udp --dport 22 -j ACCEPT 2>/dev/null
 fi
 command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active && \
-  ufw allow 36712/udp >/dev/null 2>&1
+  ufw allow 22/udp >/dev/null 2>&1
 
 # le compteur de conso doit connaître les nouveaux ports
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
@@ -281,7 +293,7 @@ else
 fi
 echo
 if [ "$UDPC_OK" = 1 ]; then
-  ok "udp-custom actif (port 36712)"
+  ok "udp-custom actif (port 22 en UDP — même port que SSH)"
 else
   printf "   ${GRY}udp-custom : non disponible sur ce serveur.${NC}\n"
   printf "   ${GRY}Ce module est facultatif : l'UDP fonctionne sans lui.${NC}\n"

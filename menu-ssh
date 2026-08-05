@@ -51,7 +51,7 @@ create_account() {
     id "$user" &>/dev/null && { err "Existe déjà"; pause; return; }
     ask " Mot de passe : " pass
     ask " Durée (jours) : " days;   [[ "$days" =~ ^[0-9]+$ ]] || days=30
-    ask " Limite d'appareils : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=2
+    ask " Limite d'appareils (0 = illimité) : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
     ask " Bandwidth en Go (0 = illimité) : " gb; [[ "$gb" =~ ^[0-9]+$ ]] || gb=0
   fi
   out=$(nvpanel-cli create "$user" "$pass" "$days" "$lim" "$gb")

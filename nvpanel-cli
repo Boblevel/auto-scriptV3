@@ -112,7 +112,12 @@ _today(){ date +%Y-%m-%d; }
 _udp_cred(){ # $1 = compte  $2 = mot de passe  $3 = limite
   command -v usermod >/dev/null 2>&1 || return 0
   case "$2" in *:*|*,*) return 0 ;; esac
-  usermod -c "${3:-2},$2" "$1" >/dev/null 2>&1
+  local l="$3"
+  # « 0 » signifie illimité côté panel. Transmis tel quel, udp-custom pourrait
+  # le lire comme « aucune connexion autorisée » : on envoie une valeur haute.
+  case "$l" in ''|*[!0-9]*) l=999 ;; esac
+  [ "$l" -le 0 ] 2>/dev/null && l=999
+  usermod -c "$l,$2" "$1" >/dev/null 2>&1
   return 0
 }
 # Retire les identifiants UDP : le compte ne passe plus par le module UDP.
@@ -144,7 +149,9 @@ ssh_box(){ # user pass created exp
   if [ -n "$(_dom)" ]; then ns="ns-$(_dom)"; else ns="-"; fi
   key=$(_sldnskey)
   # nombre d'appareils et volume autorisés, lus dans les bases du panel
-  lim=$(awk -v u="$user" '$1==u{print $2}' "$LIMDB" 2>/dev/null); lim=${lim:-2}
+  lim=$(awk -v u="$user" '$1==u{print $2}' "$LIMDB" 2>/dev/null); lim=${lim:-0}
+  # 0 signifie « aucune limite », exactement comme pour le bandwidth
+  [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   q=$(awk -v u="$user" '$1==u{print $2}' "$QDB" 2>/dev/null); q=${q:-0}
   if [ "$q" -gt 0 ] 2>/dev/null; then
     bw=$(awk -v b="$q" 'BEGIN{printf "%.0f Go", b/1073741824}')
@@ -306,7 +313,7 @@ case "$cmd" in
     # peuvent glisser dans la saisie — cause fréquente d'échec d'auth
     user=$(printf '%s' "$1" | tr -d '\r\n\t ')
     pass=$(printf '%s' "$2" | tr -d '\r\n')
-    days="${3:-30}"; lim="${4:-2}"; gb="${5:-0}"
+    days="${3:-30}"; lim="${4:-0}"; gb="${5:-0}"
     { [ -z "$user" ] || [ -z "$pass" ]; } && { echo "ERR args"; exit 1; }
     # Beaucoup d'applications VPN refusent les mots de passe très courts :
     # on impose 4 caractères minimum pour éviter de livrer un compte inutilisable.
