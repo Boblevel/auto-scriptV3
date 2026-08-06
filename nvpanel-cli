@@ -507,6 +507,16 @@ case "$cmd" in
           [ -z "$u" ] && continue
           pkill -KILL -u "$u" 2>/dev/null
           userdel -f "$u" >/dev/null 2>&1
+          # On ne retire la fiche du panel QUE si le compte système est
+          # confirmé absent (id échoue). Sans cette vérification, un
+          # userdel en échec (pour n'importe quelle raison) supprimait
+          # quand même la fiche : le compte disparaissait du panel tout
+          # en restant réellement présent sur le serveur, bloquant à
+          # jamais la recréation du même nom sans qu'il soit visible
+          # nulle part pour le supprimer.
+          if id "$u" &>/dev/null; then
+            continue
+          fi
           sed -i "/^### $u /d" "$DB" 2>/dev/null
           sed -i "/^$u|/d" "$META" 2>/dev/null
           sed -i "/^$u /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
@@ -520,9 +530,13 @@ case "$cmd" in
         list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$XDB" 2>/dev/null)
         for nm in $list; do
           [ -z "$nm" ] && continue
-          jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"
-          sed -i "/^### $nm /d" "$XDB" 2>/dev/null
-          n=$((n+1))
+          # Même garde-fou que pour SSH ci-dessus : on ne retire la fiche
+          # que si jq a réellement réussi à retirer le client de la config
+          # Xray, pour ne jamais laisser un fantôme silencieux.
+          if jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"; then
+            sed -i "/^### $nm /d" "$XDB" 2>/dev/null
+            n=$((n+1))
+          fi
         done
         [ "$n" -gt 0 ] && systemctl restart xray >/dev/null 2>&1
         echo "OK $n" ;;

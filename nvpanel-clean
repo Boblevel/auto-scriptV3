@@ -8,15 +8,21 @@ XCONF=/usr/local/etc/xray/config.json
 changed=0
 
 # --- Comptes SSH --------------------------------------------
-awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd | while read -r u; do
-  exp=$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | xargs)
-  [ "$exp" = "never" ] || [ -z "$exp" ] && continue
-  es=$(date -d "$exp" +%s 2>/dev/null) || continue
-  if [ "$now" -ge "$es" ]; then
-    userdel -f "$u" 2>/dev/null
-    sed -i "/^### $u /d" /etc/nvpanel/db/ssh 2>/dev/null
-  fi
-done
+# On délègue à « nvpanel-cli purge ssh expired » plutôt que de garder une
+# logique maison ici. Deux raisons :
+#   1) Cette version-ci lisait la date via `chage -l` (texte dépendant de la
+#      langue du serveur) puis `date -d` : toute variation de format faisait
+#      échouer silencieusement le parsing (compte alors jamais purgé).
+#   2) Elle supprimait la fiche du panel (sed) JUSTE APRÈS `userdel`, SANS
+#      vérifier que userdel avait réussi. Si userdel échouait pour une
+#      raison quelconque (compte système bloqué, verrou...), la fiche
+#      disparaissait quand même du panel — mais le compte Linux, lui,
+#      restait bien réel, bloquant à jamais la recréation du même nom
+#      (« Existe déjà » sans que le compte soit visible nulle part).
+# nvpanel-cli purge ssh (déjà utilisée par le nettoyage manuel du menu)
+# tue d'abord les sessions actives, vérifie réellement la suppression
+# avant de toucher la fiche, et nettoie aussi META/LIMDB/QDB au passage.
+[ -x /usr/local/bin/nvpanel-cli ] && /usr/local/bin/nvpanel-cli purge ssh expired >/dev/null 2>&1
 
 # --- Clients Xray / Shadowsocks -----------------------------
 purge_proto() {
@@ -35,12 +41,18 @@ purge_proto() {
     # Un champ non conforme (compte verrouillé : « date L ») est ignoré.
     case "$exp" in ''|*[!0-9-]*) continue ;; esac
     if [ "$exp" \< "$today" ]; then
+      local ok=1
       if [ -f "$XCONF" ]; then
+        ok=0
         jq "(.inbounds[] | select(.tag==\"$tag\") | .settings.clients) |= map(select(.email!=\"$name\"))" \
-          "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
-        changed=1
+          "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF" && ok=1
+        [ "$ok" = 1 ] && changed=1
       fi
-      sed -i "/^### $name /d" "$db"
+      # On ne retire la fiche du panel que si la config Xray a bien été mise
+      # à jour (ou n'existe pas encore) : sinon un échec silencieux de jq
+      # laisserait un client fantôme dans config.json tout en faisant
+      # disparaître la fiche du panel, sans doublon détecté à la recréation.
+      [ "$ok" = 1 ] && sed -i "/^### $name /d" "$db"
     fi
   done < "$db"
 }
