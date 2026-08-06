@@ -123,7 +123,13 @@ ensure_accounts(){
 }
 
 _chain_bytes(){ # somme des octets d'une chaîne
-  iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%d", s+0}'
+  # printf "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu),
+  # "%d" convertit la somme via un entier 32 bits et déborde au-delà de 4 Go
+  # (constaté : trafic réel ~28 Go affiché comme 4294967294 octets, soit
+  # 2^32-2 — la consommation se figeait dès que le vrai trafic dépassait
+  # cette limite). "%.0f" passe par le formatage flottant natif d'awk
+  # (double précision, exact jusqu'à 2^53 octets), sans cette limite.
+  iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%.0f", s+0}'
 }
 
 # Au moins un compte client existe-t-il, tous protocoles confondus ?
@@ -224,9 +230,12 @@ read_vals(){ # affiche "hier|aujourdhui|mois" en octets
   poll >/dev/null 2>&1
   local t y m today yest month
   today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
-  t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  m=$(awk -F'|' -v p="$month" 'index($1,p)==1{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  # "%.0f" et non "%d" : même correction que dans _chain_bytes ci-dessus,
+  # pour ne pas réintroduire le débordement 32 bits lors de la somme
+  # mensuelle (qui additionne plusieurs jours et dépasse vite 4 Go).
+  t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+  y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+  m=$(awk -F'|' -v p="$month" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   echo "${y:-0}|${t:-0}|${m:-0}"
 }
 
