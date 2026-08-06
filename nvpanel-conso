@@ -153,7 +153,13 @@ _chain_bytes(){ # somme des octets d'une chaîne
 # --comment "$2" (voir setup_chains) : permet à chaque menu de protocole
 # de n'afficher QUE sa propre consommation, sans toucher au total global.
 _tag_bytes(){
-  iptables -w 3 -nvxL "$1" 2>/dev/null | awk -v t="/\\* $2 \\*/" 'NR>2 && index($0,t){s+=$2} END{printf "%.0f", s+0}'
+  # index() est une recherche de SOUS-CHAÎNE LITTÉRALE (pas une regex) :
+  # les antislashs d'échappement (\* ) n'ont donc jamais lieu d'être ici.
+  # Avec eux, "t" valait littéralement "/\* vless \*/" alors que la vraie
+  # ligne iptables contient "/* vless */" (sans antislash) : index() ne
+  # trouvait donc JAMAIS de correspondance, pour aucune étiquette — la
+  # consommation par protocole restait figée à 0 malgré du vrai trafic.
+  iptables -w 3 -nvxL "$1" 2>/dev/null | awk -v t="/* $2 */" 'NR>2 && index($0,t){s+=$2} END{printf "%.0f", s+0}'
 }
 
 # Au moins un compte client existe-t-il, tous protocoles confondus ?
