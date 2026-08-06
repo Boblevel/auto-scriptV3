@@ -18,7 +18,7 @@ DB=/etc/nvpanel/db/$PROTO
 mkdir -p /etc/nvpanel/db; touch "$DB"
 
 dash(){
-  proto_dash "$PROTO" "ppp:$PROTO"
+  proto_dash "$PROTO" "ppp:$PROTO" ppp
   if systemctl is-active --quiet "$SVC" 2>/dev/null; then
     printf " ${GRY}⚙️  Service :${NC} ${GRN}actif${NC}\n"
   else

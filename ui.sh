@@ -145,14 +145,20 @@ _iface(){ ip route 2>/dev/null | awk '/default/{print $5; exit}'; }
 _hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go To Po",u," "); i=1; while(b>=1024 && i<6){b/=1024;i++} printf "%.1f %s", b, u[i] }'; }
 
 # renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
+# Sans argument : total global (accueil). Avec un argument (ex. "vmess",
+# "ssh_bundle") : consommation de ce seul protocole, pour les menus dédiés.
 _conso_raw(){
   # Consommation des CLIENTS uniquement. Aucun repli sur vnstat :
   # vnstat mesure tout le trafic de la machine (mises à jour, sauvegardes,
   # trafic de l'hébergeur…) et affichait des dizaines de Go jamais consommés
   # par un client VPN.
-  local r
+  local tag="$1" r
   if [ -x /usr/local/bin/nvpanel-conso ]; then
-    r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
+    if [ -n "$tag" ]; then
+      r=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
+    else
+      r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
+    fi
     case "$r" in *'|'*'|'*) echo "$r"; return ;; esac
   fi
   echo "0|0|0"
@@ -263,7 +269,7 @@ stats() {
 # Tableau de bord d'un protocole précis (affiché en en-tête de son menu)
 #   $1 = fichier DB sous /etc/nvpanel/db/   ·   $2 = mode online : ssh | port:PORT | wg
 proto_dash() {
-  local dbf="$1" mode="$2" total online blocked hier auj mois
+  local dbf="$1" mode="$2" tag="$3" total online blocked hier auj mois
   total=$(grep -c '^### ' "/etc/nvpanel/db/$dbf" 2>/dev/null); total=${total:-0}
   online=0; blocked=0
   case "$mode" in
@@ -300,9 +306,15 @@ proto_dash() {
       online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
   esac
-  IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
+  IFS='|' read -r hier auj mois <<< "$(_conso_raw "$tag")"
   printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"
-  printf " ${GRY}📊 Trafic serveur — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+  if [ "$tag" = "ppp" ]; then
+    # L2TP, PPTP et SSTP partagent tous l'interface ppp+ : impossible de
+    # distinguer leur trafic au niveau noyau (limite technique, pas un bug).
+    printf " ${GRY}📊 Trafic PPP (L2TP+PPTP+SSTP) — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+  else
+    printf " ${GRY}📊 Trafic — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+  fi
 }
 
 # compat : ancien nom

@@ -148,9 +148,6 @@ speedtest(){
     mbs=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b/1048576}')
     line
     printf "   ${GRN}✔ Vitesse du serveur :${NC} ${WHT}%s Mbps${NC}\n\n" "$mbps"
-    printf "   ${GRY}C'est le débit du serveur vers Internet. Un client dans le${NC}\n"
-    printf "   ${GRY}tunnel n'ira jamais plus vite, mais souvent moins : sa propre${NC}\n"
-    printf "   ${GRY}connexion mobile le limite en premier.${NC}\n"
   else
     err "Aucune source de test n'a répondu (réseau du serveur restreint ou pare-feu)."
     printf "   ${GRY}Latence mesurée : %s ms${NC}\n" "${lat:-n/a}"

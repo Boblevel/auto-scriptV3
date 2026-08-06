@@ -14,7 +14,7 @@ mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null || echo "$IP")
 
-header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; proto_dash ssh ssh; line; }
+header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; proto_dash ssh ssh ssh_bundle; line; }
 
 # Sélecteur : liste les comptes SSH gérés et renvoie celui choisi par numéro.
 # Résultat dans la variable PICK. Retour 1 si annulé / aucun compte.
