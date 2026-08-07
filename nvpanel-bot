@@ -445,9 +445,19 @@ def do_xlist(chat, proto):
     for p in rows:
         name = p[0]; exp = p[1] if len(p) > 1 else "?"
         etat = p[2] if len(p) > 2 else "actif"
+        # 4e champ de xlist : durée d'activité mesurée via l'API de stats
+        # Xray (échantillonnage du trafic par compte, pas des processus —
+        # possible même si Xray multiplexe tout en 127.0.0.1). "\u2014" si
+        # le compte est verrouillé ou inactif, exactement comme le panel.
+        ct = p[3] if len(p) > 3 else "\u2014"
         badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
-        blocks.append("\U0001F464 <b>%s</b>\n<code>\u251C Expire  %s\n\u2570 \u00c9tat    %s %s</code>"
-                      % (esc(name), esc(exp), badge, etat))
+        lignes = ["\u251C Expire     %s" % esc(exp)]
+        if ct and ct != "\u2014":
+            lignes.append("\u251C \u00c9tat       %s %s" % (badge, etat))
+            lignes.append("\u2570 Connect\u00e9   %s" % esc(ct))
+        else:
+            lignes.append("\u2570 \u00c9tat       %s %s" % (badge, etat))
+        blocks.append("\U0001F464 <b>%s</b>\n<code>%s</code>" % (esc(name), "\n".join(lignes)))
     send(chat, "\U0001F4CB <b>%s</b>  \u00b7  %d\n\n%s" % (proto.upper(), len(rows), "\n\n".join(blocks)),
          kb=proto_kb(proto))
 
