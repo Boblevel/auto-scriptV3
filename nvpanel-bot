@@ -4,7 +4,7 @@
 #  stdlib uniquement · reserve a l'ADMIN · boutons horizontaux
 #  Config : /etc/nvpanel/bot.conf  ->  TOKEN=...  ADMIN=...
 # ============================================================
-import json, subprocess, urllib.request, urllib.parse, time
+import json, subprocess, urllib.request, urllib.parse, time, shlex
 
 CONF = "/etc/nvpanel/bot.conf"
 
@@ -105,7 +105,29 @@ def ssh_blocked():
                    "[ \"$s\" = L ] && c=$((c+1)); done < /etc/nvpanel/db/ssh 2>/dev/null; echo $c"))
 
 def port_online(p):
-    return _int(sh("ss -tnH state established '( sport = :%s )' 2>/dev/null | wc -l" % p))
+    # Clients UNIQUES (par IP source), jamais un simple nombre de connexions
+    # établies : une application peut ouvrir plusieurs flux TCP en parallèle
+    # (multiplexage), ce qui gonflait ce chiffre bien au-delà du nombre réel
+    # de personnes connectées (ex. observé : 3 comptes Vless affichés comme
+    # 145 « en ligne »). Identique à _online_uniq_port() dans le panel.
+    return _int(sh("ss -tnH state established '( sport = :%s )' 2>/dev/null "
+                   "| awk '{print $4}' | sed -E 's/:[0-9]+$//' | sort -u | wc -l" % p))
+
+def xray_online():
+    # Identique à _xray_online() du panel : Vmess/Vless/Trojan partagent la
+    # même façade nginx, et côté Xray toute connexion arrive en 127.0.0.1 —
+    # impossible de séparer par protocole à ce niveau. Le seul chiffre
+    # honnête est le nombre de clients uniques sur le port PUBLIC de nginx ;
+    # il est donc partagé pour les trois protocoles, comme dans le panel.
+    xport = read_file("/etc/nvpanel/xport") or "443"
+    return port_online(xport)
+
+def blocked_count(name):
+    # Comptes verrouillés (colonne 5 = L) pour un protocole donné. Le bot ne
+    # comptait jusqu'ici que les comptes SSH verrouillés : le total
+    # « Bloqués » ne correspondait donc pas à celui du panel dès qu'un
+    # compte d'un autre protocole était verrouillé.
+    return _int(sh("awk '/^### /{if($5==\"L\")c++} END{print c+0}' /etc/nvpanel/db/%s 2>/dev/null" % name))
 
 def wg_online():
     return _int(sh("wg show wg0 latest-handshakes 2>/dev/null | "
@@ -231,6 +253,44 @@ def hy(*args):
 def cancel_kb():
     return {"inline_keyboard": [[{"text": "\u274C Annuler / Retour", "callback_data": "cancel"}]]}
 
+def conn_time(u):
+    """Durée de connexion d'un compte SSH — identique à _conn_time() du
+    panel (durée du plus vieux processus appartenant à l'utilisateur).
+    Retourne "" si pas connecté (aucune donnée fiable de ce type n'existe
+    pour les autres protocoles : voir wg_time pour WireGuard, le seul
+    autre protocole où c'est possible)."""
+    out = sh("ps -o etimes= -u %s 2>/dev/null | tr -d ' ' | sort -rn | head -1" % shlex.quote(u))
+    try:
+        et = int(out)
+    except Exception:
+        return ""
+    if et < 5:
+        return ""
+    if et >= 86400:
+        return "%dj %dh" % (et // 86400, (et % 86400) // 3600)
+    if et >= 3600:
+        return "%dh %02dmin" % (et // 3600, (et % 3600) // 60)
+    return "%dmin" % (et // 60)
+
+def wg_time(pub):
+    """Ancienneté de la dernière poignée de main WireGuard pour cette clé
+    publique — identique à _wg_time() du panel. Retourne "" si le client
+    n'a jamais négocié ou si sa dernière poignée de main date de plus de
+    3 minutes (considéré comme déconnecté)."""
+    hs = sh("wg show wg0 latest-handshakes 2>/dev/null | awk -v p=%s '$1==p{print $2}'" % shlex.quote(pub))
+    try:
+        hs = int(hs)
+    except Exception:
+        return ""
+    if hs == 0:
+        return ""
+    d = int(time.time()) - hs
+    if d > 180 or d < 0:
+        return ""
+    if d >= 3600:
+        return "%dh %02dmin" % (d // 3600, (d % 3600) // 60)
+    return "%dmin" % (d // 60)
+
 def send(chat, text, kb=None):
     mk = kb if kb is not None else main_kb()
     api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
@@ -253,18 +313,29 @@ def do_monitor(chat):
     l2 = count_db("l2tp"); pp = count_db("pptp"); st = count_db("sstp")
     hy_ct = count_db("hysteria")
     total = ssh + vm + vl + tr + ss + wg + l2 + pp + st + hy_ct
-    on_ssh = ssh_online(); bl_ssh = ssh_blocked()
-    on_vm = port_online(8080); on_vl = port_online(8081)
-    on_tr = port_online(8082); on_ss = port_online(8388); on_wg = wg_online()
+
+    on_ssh = ssh_online()
+    # Vmess/Vless/Trojan partagent la même façade nginx (Xray ne voit que
+    # 127.0.0.1 en interne) : un seul total de clients uniques pour les
+    # trois, comme dans le panel. Compté seulement si des comptes existent,
+    # sinon un simple scan internet sur le port public compterait comme un
+    # faux client.
+    on_xray = xray_online() if (vm + vl + tr) > 0 else 0
+    on_ss = port_online(8388) if ss > 0 else 0
+    on_wg = wg_online()
     on_l2 = _int(ppp("online", "l2tp")); on_pp = _int(ppp("online", "pptp"))
     on_st = _int(ppp("online", "sstp"))
-    total_on = on_ssh + on_vm + on_vl + on_tr + on_ss + on_wg + on_l2 + on_pp + on_st
+    # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
+    # exclu ici aussi (comme dans le panel) plutôt que d'afficher un faux
+    # chiffre.
+    total_on = on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_st
 
-    rows = [("SSH", ssh, on_ssh), ("Vmess", vm, on_vm), ("Vless", vl, on_vl),
-            ("Trojan", tr, on_tr), ("Shadowsocks", ss, on_ss), ("WireGuard", wg, on_wg),
-            ("L2TP", l2, on_l2), ("PPTP", pp, on_pp), ("SSTP", st, on_st)]
-    tbl = "\n".join("%-13s %3d  %3d" % (n, c, o) for n, c, o in rows)
-    tbl += "\n%-13s %3d  %3s" % ("Hysteria2", hy_ct, "?")
+    # Comptes verrouillés sur TOUS les protocoles, pas seulement SSH —
+    # sinon ce total ne correspondait pas à celui du panel dès qu'un compte
+    # d'un autre protocole était verrouillé.
+    blocked = (ssh_blocked() + blocked_count("vmess") + blocked_count("vless")
+               + blocked_count("trojan") + blocked_count("shadowsocks")
+               + blocked_count("l2tp") + blocked_count("pptp") + blocked_count("sstp"))
 
     txt = (
         "\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n"
@@ -284,11 +355,8 @@ def do_monitor(chat):
         "\u251C En ligne  %d\n"
         "\u2570 Bloqu\u00e9s   %d"
         "</code>\n\n"
-        "\U0001F4E1 <b>Par protocole</b>\n"
-        "<code>%-13s %3s  %3s\n"
-        "%s\n%s</code>"
-    ) % (ip, dom, up, ram, load, total, total_on, bl_ssh,
-         "Protocole", "Cpt", "Lgn", "\u2500" * 23, tbl)
+        "\u2550" * 23
+    ) % (ip, dom, up, ram, load, total, total_on, blocked)
     send(chat, txt)
 
 def do_list(chat):
@@ -301,13 +369,18 @@ def do_list(chat):
         user, exp, dev, quota, etat = p[0], p[1], p[2], p[3], p[4]
         badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
         q = "illimit\u00e9" if quota in ("0", "") else quota + " Go"
-        blocks.append(
-            "\U0001F464 <b>%s</b>\n<code>"
-            "\u251C Expire     %s\n"
-            "\u251C Appareils  %s\n"
-            "\u251C Bandwidth  %s\n"
-            "\u2570 \u00c9tat       %s %s</code>"
-            % (esc(user), esc(exp), dev, q, badge, etat))
+        ct = conn_time(user)
+        lignes = [
+            "\u251C Expire     %s" % esc(exp),
+            "\u251C Appareils  %s" % dev,
+            "\u251C Bandwidth  %s" % q,
+        ]
+        if ct:
+            lignes.append("\u251C \u00c9tat       %s %s" % (badge, etat))
+            lignes.append("\u2570 Connect\u00e9   %s" % esc(ct))
+        else:
+            lignes.append("\u2570 \u00c9tat       %s %s" % (badge, etat))
+        blocks.append("\U0001F464 <b>%s</b>\n<code>%s</code>" % (esc(user), "\n".join(lignes)))
     send(chat, "\U0001F4CB <b>COMPTES SSH</b>  \u00b7  %d\n\n%s" % (len(rows), "\n\n".join(blocks)))
 
 def do_xlist(chat, proto):
@@ -327,10 +400,15 @@ def do_xlist(chat, proto):
          kb=proto_kb(proto))
 
 def handle_callback(chat, data):
+    # Toute pression sur un bouton annule une action texte en attente,
+    # où qu'on aille dans le menu — pas seulement via "Annuler" ou
+    # "Menu". Les branches qui enchaînent sur une nouvelle action
+    # (ex. "pa:", "hya"...) redéfinissent STATE[chat] juste après, donc
+    # rien n'est perdu pour elles.
+    STATE.pop(chat, None)
     if data == "menu":
-        STATE.pop(chat, None); show_menu(chat); return
+        show_menu(chat); return
     if data == "cancel":
-        STATE.pop(chat, None)
         send(chat, "\u274C Action annul\u00e9e.")
         return
     if data == "monitor":
@@ -379,7 +457,13 @@ def handle_callback(chat, data):
         try:
             with open("/etc/nvpanel/db/wireguard") as f:
                 rows = [l.split() for l in f if l.startswith("### ")]
-            txt = "\n".join("%-16s %-14s %s" % (r[1], r[3], r[4]) for r in rows if len(r) > 4)
+            lignes = []
+            for r in rows:
+                if len(r) <= 4:
+                    continue
+                ct = wg_time(r[2]) or "\u2014"
+                lignes.append("%-16s %-14s %-12s %s" % (r[1], r[3], r[4], ct))
+            txt = "\n".join(lignes)
         except Exception:
             txt = ""
         send(chat, "<b>\U0001F6E1 WireGuard</b>\n<pre>%s</pre>" % esc(txt or "aucun client")); return
@@ -442,6 +526,10 @@ def handle_callback(chat, data):
         send(chat, prompts[data], kb=cancel_kb())
 
 def handle_text(chat, text):
+    if text.strip().lower() in ("annuler", "cancel", "/annuler", "/cancel"):
+        STATE.pop(chat, None)
+        send(chat, "\u274C Action annul\u00e9e.")
+        return
     st = STATE.pop(chat, None)
     if not st:
         show_menu(chat); return
@@ -554,7 +642,7 @@ def main():
                 m = u["message"]; uid = m["from"]["id"]; chat = m["chat"]["id"]
                 if not authorized(uid): api("sendMessage", chat_id=chat, text="\u26D4 Non autorise"); continue
                 txt = m.get("text", "")
-                if txt in ("/start", "/menu"): show_menu(chat)
+                if txt in ("/start", "/menu"): STATE.pop(chat, None); show_menu(chat)
                 else: handle_text(chat, txt)
 
 if __name__ == "__main__":
