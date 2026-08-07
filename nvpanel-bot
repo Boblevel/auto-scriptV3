@@ -83,6 +83,40 @@ def sys_info():
         pass
     return up, ram, load
 
+def os_name():
+    """Nom du système, identique à ce que le panel affiche (PRETTY_NAME de
+    /etc/os-release)."""
+    return sh('. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Linux}"') or "Linux"
+
+def cores():
+    """Nombre de cœurs CPU, identique au panel (nproc)."""
+    return sh("nproc 2>/dev/null") or "?"
+
+def hr(b):
+    """Format lisible (o/Ko/Mo/Go...), identique à _hr() du panel."""
+    try:
+        b = float(b)
+    except Exception:
+        b = 0.0
+    for u in ("o", "Ko", "Mo", "Go", "To", "Po"):
+        if b < 1024:
+            return "%.1f %s" % (b, u)
+        b /= 1024
+    return "%.1f Po" % b
+
+def conso_raw():
+    """hier|auj|mois en octets — délègue à nvpanel-conso, exactement la
+    même source de données que le panel (_conso_raw dans ui.sh)."""
+    try:
+        out = subprocess.run(["nvpanel-conso", "read"], capture_output=True,
+                              text=True, timeout=15).stdout.strip()
+        parts = out.split("|")
+        if len(parts) == 3:
+            return parts
+    except Exception:
+        pass
+    return ("0", "0", "0")
+
 def sh(cmd):
     try:
         return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=15).stdout.strip()
@@ -337,16 +371,27 @@ def do_monitor(chat):
                + blocked_count("trojan") + blocked_count("shadowsocks")
                + blocked_count("l2tp") + blocked_count("pptp") + blocked_count("sstp"))
 
+    osn = os_name(); cpu = cores()
+    hier, auj, mois = conso_raw()
+
+    # La ligne de fermeture est ajoutée APRÈS coup (+=), jamais collée dans
+    # le même tuple qu'un "* 23" : en Python, des littéraux adjacents comme
+    # "...</code>\n\n" "\u2550" * 23 sont d'abord fusionnés en un seul
+    # texte AVANT que "* 23" ne s'applique — ce qui répétait tout le bloc
+    # (avec la balise </code>) 23 fois, du HTML invalide que Telegram
+    # rejetait silencieusement : le bouton semblait ne "rien faire".
     txt = (
         "\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n"
         "  \U0001F4CA <b>SURVEILLANCE</b>\n"
         "\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D\n\n"
         "\U0001F5A5 <b>Serveur</b>\n"
         "<code>"
+        "\u251C OS       %s\n"
         "\u251C IP       %s\n"
         "\u251C Domaine  %s\n"
         "\u251C Uptime   %s\n"
         "\u251C RAM      %s\n"
+        "\u251C Core     %s\n"
         "\u2570 Charge   %s"
         "</code>\n\n"
         "\U0001F465 <b>Comptes</b>\n"
@@ -355,8 +400,15 @@ def do_monitor(chat):
         "\u251C En ligne  %d\n"
         "\u2570 Bloqu\u00e9s   %d"
         "</code>\n\n"
-        "\u2550" * 23
-    ) % (ip, dom, up, ram, load, total, total_on, blocked)
+        "\U0001F4CA <b>Consommation</b>\n"
+        "<code>"
+        "\u251C Hier         %s\n"
+        "\u251C Aujourd'hui  %s\n"
+        "\u2570 Ce mois      %s"
+        "</code>\n\n"
+    ) % (esc(osn), ip, dom, up, ram, cpu, load, total, total_on, blocked,
+         hr(hier), hr(auj), hr(mois))
+    txt += "\u2550" * 23
     send(chat, txt)
 
 def do_list(chat):
