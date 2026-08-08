@@ -144,21 +144,21 @@ banner() {
 _iface(){ ip route 2>/dev/null | awk '/default/{print $5; exit}'; }
 _hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go To Po",u," "); i=1; while(b>=1024 && i<6){b/=1024;i++} printf "%.1f %s", b, u[i] }'; }
 
+# Affichage uniquement (JJ-MM-AAAA) — les dates restent stockées en AAAA-MM-JJ
+# dans toutes les bases (comparaisons de tri comme "$exp < $today" en
+# dépendent) : ne jamais utiliser cette fonction pour stocker ou comparer,
+# seulement pour l'affichage final à l'écran.
+_fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
+
 # renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
-# Sans argument : total global (accueil). Avec un argument (ex. "vmess",
-# "ssh_bundle") : consommation de ce seul protocole, pour les menus dédiés.
 _conso_raw(){
   # Consommation des CLIENTS uniquement. Aucun repli sur vnstat :
   # vnstat mesure tout le trafic de la machine (mises à jour, sauvegardes,
   # trafic de l'hébergeur…) et affichait des dizaines de Go jamais consommés
   # par un client VPN.
-  local tag="$1" r
+  local r
   if [ -x /usr/local/bin/nvpanel-conso ]; then
-    if [ -n "$tag" ]; then
-      r=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
-    else
-      r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
-    fi
+    r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
     case "$r" in *'|'*'|'*) echo "$r"; return ;; esac
   fi
   echo "0|0|0"
@@ -240,7 +240,14 @@ stats() {
   # sinon une connexion quelconque sur le port public (scan internet, très
   # courant sur tout VPS exposé) peut apparaître comme un faux client alors
   # qu'aucun compte n'a jamais été créé.
-  on_xray=0; [ "$(( vm + vl + tr ))" -gt 0 ] && on_xray=$(_xray_online)
+  on_xray=0
+  # Chaque protocole Xray compte désormais ses propres comptes actifs
+  # (nvpanel-cli xonline, basé sur l'activité réelle par compte) plutôt
+  # qu'un seul total de sockets partagé sur le port public, qui ne pouvait
+  # pas distinguer Vmess/Vless/Trojan entre eux.
+  [ "$vm" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline vmess 2>/dev/null || echo 0) ))
+  [ "$vl" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline vless 2>/dev/null || echo 0) ))
+  [ "$tr" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline trojan 2>/dev/null || echo 0) ))
   on_ss=0;   [ "$ss" -gt 0 ] && on_ss=$(_online_uniq_port 8388)
   on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
   on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}
@@ -269,7 +276,7 @@ stats() {
 # Tableau de bord d'un protocole précis (affiché en en-tête de son menu)
 #   $1 = fichier DB sous /etc/nvpanel/db/   ·   $2 = mode online : ssh | port:PORT | wg
 proto_dash() {
-  local dbf="$1" mode="$2" tag="$3" total online blocked hier auj mois
+  local dbf="$1" mode="$2" total online blocked hier auj mois
   total=$(grep -c '^### ' "/etc/nvpanel/db/$dbf" 2>/dev/null); total=${total:-0}
   online=0; blocked=0
   case "$mode" in
@@ -292,12 +299,15 @@ proto_dash() {
       online=$(_online_uniq_port "$p")
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     xray)
+      # Auparavant : un seul total de sockets partagé sur le port public
+      # nginx (_xray_online), affiché IDENTIQUE dans les menus Vmess, Vless
+      # et Trojan — Xray ne voit que 127.0.0.1 en interne, impossible de
+      # les distinguer par ce biais. Désormais : nvpanel-cli xonline compte
+      # les comptes de CE protocole précis dont l'activité est en cours
+      # (même échantillonnage que « connecté depuis »), donc chaque menu
+      # affiche enfin son propre chiffre.
       online=0
-      local _xv _xl _xt
-      _xv=$(grep -c '^### ' /etc/nvpanel/db/vmess 2>/dev/null); _xv=${_xv:-0}
-      _xl=$(grep -c '^### ' /etc/nvpanel/db/vless 2>/dev/null); _xl=${_xl:-0}
-      _xt=$(grep -c '^### ' /etc/nvpanel/db/trojan 2>/dev/null); _xt=${_xt:-0}
-      [ "$(( _xv + _xl + _xt ))" -gt 0 ] && online=$(_xray_online)
+      [ "$total" -gt 0 ] && online=$(nvpanel-cli xonline "$dbf" 2>/dev/null); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;
@@ -306,15 +316,9 @@ proto_dash() {
       online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
   esac
-  IFS='|' read -r hier auj mois <<< "$(_conso_raw "$tag")"
+  IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
   printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"
-  if [ "$tag" = "ppp" ]; then
-    # L2TP, PPTP et SSTP partagent tous l'interface ppp+ : impossible de
-    # distinguer leur trafic au niveau noyau (limite technique, pas un bug).
-    printf " ${GRY}📊 Trafic PPP (L2TP+PPTP+SSTP) — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
-  else
-    printf " ${GRY}📊 Trafic — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
-  fi
+  printf " ${GRY}📊 Trafic serveur — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
 }
 
 # compat : ancien nom

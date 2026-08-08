@@ -104,6 +104,21 @@ def hr(b):
         b /= 1024
     return "%.1f Po" % b
 
+def fmt_date(d):
+    """Convertit une date AAAA-MM-JJ (format renvoyé par les scripts) en
+    JJ-MM-AAAA pour l'affichage — identique à _fmtd() du panel. Le bot ne
+    stocke ni ne compare jamais de dates, uniquement de l'affichage : rien
+    d'autre n'est concerné par cette conversion."""
+    if not d:
+        return d
+    try:
+        y, m, day = d.strip().split("-")
+        if len(y) == 4:
+            return "%s-%s-%s" % (day, m, y)
+    except Exception:
+        pass
+    return d
+
 def conso_raw():
     """hier|auj|mois en octets — délègue à nvpanel-conso, exactement la
     même source de données que le panel (_conso_raw dans ui.sh)."""
@@ -423,7 +438,7 @@ def do_list(chat):
         q = "illimit\u00e9" if quota in ("0", "") else quota + " Go"
         ct = conn_time(user)
         lignes = [
-            "\u251C Expire     %s" % esc(exp),
+            "\u251C Expire     %s" % esc(fmt_date(exp)),
             "\u251C Appareils  %s" % dev,
             "\u251C Bandwidth  %s" % q,
         ]
@@ -451,7 +466,7 @@ def do_xlist(chat, proto):
         # le compte est verrouillé ou inactif, exactement comme le panel.
         ct = p[3] if len(p) > 3 else "\u2014"
         badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
-        lignes = ["\u251C Expire     %s" % esc(exp)]
+        lignes = ["\u251C Expire     %s" % esc(fmt_date(exp))]
         if ct and ct != "\u2014":
             lignes.append("\u251C \u00c9tat       %s %s" % (badge, etat))
             lignes.append("\u2570 Connect\u00e9   %s" % esc(ct))
@@ -507,8 +522,13 @@ def handle_callback(chat, data):
     if data.startswith("pl2:"):
         p = data[4:]
         rows = ppp("list", p)
-        txt = "\n".join("%-16s %s" % tuple(r.split("|")[:2]) for r in rows.split("\n") if "|" in r)
-        send(chat, "<b>\U0001F4CB %s</b>\n<pre>%s</pre>" % (p.upper(), esc(txt or "aucun compte"))); return
+        lignes = []
+        for r in rows.split("\n"):
+            if "|" not in r:
+                continue
+            nm, ex = r.split("|")[:2]
+            lignes.append("%-16s %s" % (nm, fmt_date(ex)))
+        send(chat, "<b>\U0001F4CB %s</b>\n<pre>%s</pre>" % (p.upper(), esc("\n".join(lignes) or "aucun compte"))); return
     if data.startswith("pa2:"):
         STATE[chat] = {"action": "pppadd", "proto": data[4:]}
         send(chat, "Envoie : <code>utilisateur motdepasse jours</code>", kb=cancel_kb()); return
@@ -524,7 +544,7 @@ def handle_callback(chat, data):
                 if len(r) <= 4:
                     continue
                 ct = wg_time(r[2]) or "\u2014"
-                lignes.append("%-16s %-14s %-12s %s" % (r[1], r[3], r[4], ct))
+                lignes.append("%-16s %-14s %-12s %s" % (r[1], r[3], fmt_date(r[4]), ct))
             txt = "\n".join(lignes)
         except Exception:
             txt = ""
@@ -533,8 +553,13 @@ def handle_callback(chat, data):
         send(chat, "<b>\u26A1 Hysteria2</b> \u2014 choisis :", kb=hy_kb()); return
     if data == "hyl":
         rows = hy("list")
-        txt = "\n".join("%-16s %s" % tuple(r.split("|")[:2]) for r in rows.split("\n") if "|" in r)
-        send(chat, "<b>\U0001F4CB Hysteria2</b>\n<pre>%s</pre>" % esc(txt or "aucun compte"), kb=hy_kb()); return
+        lignes = []
+        for r in rows.split("\n"):
+            if "|" not in r:
+                continue
+            nm, ex = r.split("|")[:2]
+            lignes.append("%-16s %s" % (nm, fmt_date(ex)))
+        send(chat, "<b>\U0001F4CB Hysteria2</b>\n<pre>%s</pre>" % esc("\n".join(lignes) or "aucun compte"), kb=hy_kb()); return
     if data == "hya":
         STATE[chat] = {"action": "hyadd"}
         send(chat, "Envoie : <code>utilisateur motdepasse jours</code>", kb=cancel_kb()); return
@@ -622,7 +647,7 @@ def handle_text(chat, text):
         nom = PROTO_NAME.get(p, p.upper())
         if r.startswith("OK"):
             send(chat, "\u2705 <b>%s</b> \u2014 %s prolong\u00e9 jusqu'au %s"
-                 % (nom, esc(parts[0]), esc(r.split()[-1])))
+                 % (nom, esc(parts[0]), esc(fmt_date(r.split()[-1]))))
         else:
             send(chat, "\u274C <b>%s</b> \u2014 %s" % (nom, esc(r)))
     elif a in ("lockdo", "unlockdo"):

@@ -10,7 +10,7 @@ PROTO="$1"
 case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac
 
 case "$PROTO" in vmess) LPORT=8080 ;; vless) LPORT=8081 ;; trojan) LPORT=8082 ;; esac
-header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; proto_dash "$PROTO" xray "$PROTO"; line; }
+header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; proto_dash "$PROTO" xray; line; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -50,7 +50,7 @@ list_clients() {
   local n e s c
   while IFS='|' read -r n e s c; do
     [ -z "$n" ] && continue
-    printf " %-16s %-12s %-8s %s\n" "$n" "${e:-?}" "${s:-actif}" "${c:-—}"
+    printf " %-16s %-12s %-8s %s\n" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
   done < <(nvpanel-cli xlist "$PROTO")
   pause
 }

@@ -14,7 +14,7 @@ mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null || echo "$IP")
 
-header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; proto_dash ssh ssh ssh_bundle; line; }
+header(){ banner; center " GESTION SSH / SLOWDNS / UDP " "${BOLD}${WHT}"; line; proto_dash ssh ssh; line; }
 
 # Sélecteur : liste les comptes SSH gérés et renvoie celui choisi par numéro.
 # Résultat dans la variable PICK. Retour 1 si annulé / aucun compte.
@@ -28,7 +28,7 @@ pick_user() {
     exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
     if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="${RED}verrou${NC}"; else st="${GRN}actif${NC}"; fi
     local _ct; _ct=$(_conn_time "$u")
-    printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b  ${CYN}%s${NC}\n" "$i" "$u" "${exp:-?}" "$st" "${_ct:+⏱ $_ct}"
+    printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b  ${CYN}%s${NC}\n" "$i" "$u" "$(_fmtd "${exp:-?}")" "$st" "${_ct:+⏱ $_ct}"
     i=$((i+1))
   done
   echo; ask "   ➤ Numéro (0 = annuler) : " n
@@ -80,7 +80,7 @@ list_accounts() {
     [ -z "$u" ] && continue
     if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="verrou"; else st="actif"; fi
     ct=$(_conn_time "$u")
-    printf " %-16s %-12s %-8s %s\n" "$u" "${exp:-?}" "$st" "${ct:-—}"
+    printf " %-16s %-12s %-8s %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
   done < "$DB"
   pause
 }
@@ -328,7 +328,7 @@ hy_list(){
   local rows; rows=$(/usr/local/bin/nvpanel-hysteria list)
   [ -z "$rows" ] && { warn "Aucun compte."; pause; return; }
   printf "   ${WHT}%-16s %-12s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT"
-  echo "$rows" | while IFS='|' read -r u e s; do printf "   %-16s %-12s %s\n" "$u" "$e" "$s"; done
+  echo "$rows" | while IFS='|' read -r u e s; do printf "   %-16s %-12s %s\n" "$u" "$(_fmtd "$e")" "$s"; done
   pause
 }
 

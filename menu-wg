@@ -15,7 +15,7 @@ PORT=51820
 mkdir -p /etc/nvpanel/db "$NDIR"
 touch "$DB"
 
-header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; proto_dash wireguard wg wg; line; }
+header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; proto_dash wireguard wg; line; }
 
 install_wg() {
   header; printf "${CYN}➜${NC} Installation de WireGuard…\n"
@@ -111,7 +111,7 @@ list_peers() {
   while read -r _ nm pub ip exp; do
     [ -z "$nm" ] && continue
     ct=$(_wg_time "$pub")
-    printf " %-16s %-14s %-12s %-8s %s\n" "$nm" "${ip:-?}" "${exp:-?}" "actif" "${ct:-—}"
+    printf " %-16s %-14s %-12s %-8s %s\n" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "actif" "${ct:-—}"
   done < "$DB"
   pause
 }

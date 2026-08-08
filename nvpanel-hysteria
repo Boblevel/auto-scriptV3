@@ -13,6 +13,9 @@ CONF=/etc/hysteria/config.yaml
 mkdir -p /etc/nvpanel/db; touch "$DB"
 
 _clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
+# Affichage uniquement (JJ-MM-AAAA) — les dates restent stockées en AAAA-MM-JJ
+# partout ailleurs, les comparaisons de tri en dépendent.
+_fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
 
 _rebuild(){
   local domain cert
@@ -59,8 +62,8 @@ _box(){ # user pass created exp
 👤 Utilisateur : $u
 🔑 Mot de passe: $p
 🔗 Lien        : hy2://$u:$p@$host:443/?sni=$host#$u
-📅 Créé le     : $cr
-⏳ Expire le   : $ex
+📅 Créé le     : $(_fmtd "$cr")
+⏳ Expire le   : $(_fmtd "$ex")
 ==========================================
 EOF
 }
