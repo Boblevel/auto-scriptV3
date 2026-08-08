@@ -15,7 +15,7 @@ PORT=51820
 mkdir -p /etc/nvpanel/db "$NDIR"
 touch "$DB"
 
-header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; proto_dash wireguard wg; line; }
+header(){ banner; center " 🛡️  WIREGUARD " "${BOLD}${WHT}"; line; proto_dash wireguard wg wg; line; }
 
 install_wg() {
   header; printf "${CYN}➜${NC} Installation de WireGuard…\n"

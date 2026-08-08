@@ -372,8 +372,13 @@ def do_monitor(chat):
     on_xray = xray_online() if (vm + vl + tr) > 0 else 0
     on_ss = port_online(8388) if ss > 0 else 0
     on_wg = wg_online()
-    on_l2 = _int(ppp("online", "l2tp")); on_pp = _int(ppp("online", "pptp"))
-    on_st = _int(ppp("online", "sstp"))
+    # Même garde-fou que ci-dessus, manquant jusqu'ici : sans compte pour
+    # ce protocole, un pppd résiduel ou un scan quelconque pouvait
+    # apparaître comme un client en ligne (ex. observé : 7 clients L2TP/
+    # PPTP/SSTP fantômes en ligne avec 0 compte créé sur ces protocoles).
+    on_l2 = _int(ppp("online", "l2tp")) if l2 > 0 else 0
+    on_pp = _int(ppp("online", "pptp")) if pp > 0 else 0
+    on_st = _int(ppp("online", "sstp")) if st > 0 else 0
     # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
     # exclu ici aussi (comme dans le panel) plutôt que d'afficher un faux
     # chiffre.

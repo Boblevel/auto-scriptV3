@@ -151,14 +151,21 @@ _hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go T
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
 
 # renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
+# renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
+# Sans argument : total global (accueil). Avec un argument (ex. "vmess",
+# "ssh_bundle") : consommation de ce seul protocole, pour les menus dédiés.
 _conso_raw(){
   # Consommation des CLIENTS uniquement. Aucun repli sur vnstat :
   # vnstat mesure tout le trafic de la machine (mises à jour, sauvegardes,
   # trafic de l'hébergeur…) et affichait des dizaines de Go jamais consommés
   # par un client VPN.
-  local r
+  local tag="$1" r
   if [ -x /usr/local/bin/nvpanel-conso ]; then
-    r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
+    if [ -n "$tag" ]; then
+      r=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
+    else
+      r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
+    fi
     case "$r" in *'|'*'|'*) echo "$r"; return ;; esac
   fi
   echo "0|0|0"
@@ -250,9 +257,9 @@ stats() {
   [ "$tr" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline trojan 2>/dev/null || echo 0) ))
   on_ss=0;   [ "$ss" -gt 0 ] && on_ss=$(_online_uniq_port 8388)
   on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
-  on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}
-  on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}
-  on_sst=$(nvpanel-ppp online sstp 2>/dev/null); on_sst=${on_sst:-0}
+  on_l2=0;  [ "$l2"  -gt 0 ] && { on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}; }
+  on_pp=0;  [ "$pp"  -gt 0 ] && { on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}; }
+  on_sst=0; [ "$sst" -gt 0 ] && { on_sst=$(nvpanel-ppp online sstp 2>/dev/null); on_sst=${on_sst:-0}; }
   # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
   # exclu plutôt que d'afficher un faux chiffre.
   online=$(( on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_sst ))
@@ -276,7 +283,7 @@ stats() {
 # Tableau de bord d'un protocole précis (affiché en en-tête de son menu)
 #   $1 = fichier DB sous /etc/nvpanel/db/   ·   $2 = mode online : ssh | port:PORT | wg
 proto_dash() {
-  local dbf="$1" mode="$2" total online blocked hier auj mois
+  local dbf="$1" mode="$2" tag="$3" total online blocked hier auj mois
   total=$(grep -c '^### ' "/etc/nvpanel/db/$dbf" 2>/dev/null); total=${total:-0}
   online=0; blocked=0
   case "$mode" in
@@ -296,7 +303,8 @@ proto_dash() {
       fi ;;
     port:*)
       local p="${mode#port:}"
-      online=$(_online_uniq_port "$p")
+      online=0
+      [ "$total" -gt 0 ] && online=$(_online_uniq_port "$p")
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     xray)
       # Auparavant : un seul total de sockets partagé sur le port public
@@ -313,12 +321,22 @@ proto_dash() {
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;
     ppp:*)
       local pp="${mode#ppp:}"
-      online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}
+      online=0
+      # Sans ce garde-fou, un pppd résiduel ou un scan quelconque pouvait
+      # apparaître comme un client en ligne même sans aucun compte créé
+      # pour ce protocole précis (même bug déjà corrigé pour Xray/SS ci-dessus).
+      [ "$total" -gt 0 ] && { online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}; }
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
   esac
-  IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
+  IFS='|' read -r hier auj mois <<< "$(_conso_raw "$tag")"
   printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"
-  printf " ${GRY}📊 Trafic serveur — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+  if [ "$tag" = "ppp" ]; then
+    # L2TP, PPTP et SSTP partagent tous l'interface ppp+ : impossible de
+    # distinguer leur trafic au niveau noyau (limite technique, pas un bug).
+    printf " ${GRY}📊 Trafic PPP (L2TP+PPTP+SSTP) — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+  else
+    printf " ${GRY}📊 Trafic — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+  fi
 }
 
 # compat : ancien nom
