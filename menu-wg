@@ -95,7 +95,7 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 
-  clear; header; ok "Client WireGuard créé (expire $exp)"
+  clear; header; ok "Client WireGuard créé (expire $(_fmtd "$exp"))"
   echo
   printf "${GRY}--- Config client (copie-la dans un fichier .conf) ---${NC}\n"
   cat "$conf"
@@ -134,7 +134,7 @@ pick_peer() {
   local i=1 row f
   for row in "${_pl[@]}"; do
     IFS='|' ask "" nm ip ex <<< "$row"
-    printf "   ${WHT}%2d${NC}) %-16s ${GRY}%-14s exp %s${NC}\n" "$i" "$nm" "$ip" "$ex"; i=$((i+1))
+    printf "   ${WHT}%2d${NC}) %-16s ${GRY}%-14s exp %s${NC}\n" "$i" "$nm" "$ip" "$(_fmtd "$ex")"; i=$((i+1))
   done
   echo; ask "   ➤ Numéro (0 = annuler) : " n
   [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
@@ -160,7 +160,7 @@ renew_peer() {
   [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
   local exp; exp=$(date -d "+$days days" +"%Y-%m-%d")
   sed -i "s|^### $name \([^ ]*\) \([^ ]*\) .*|### $name \1 \2 $exp|" "$DB"
-  ok "$name prolongé jusqu'au $exp"; pause
+  ok "$name prolongé jusqu'au $(_fmtd "$exp")"; pause
 }
 
 uninstall_wg(){

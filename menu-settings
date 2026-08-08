@@ -17,22 +17,29 @@ traffic_report(){
 
   local days week month all
   days=$(wc -l < "$DB" 2>/dev/null); days=${days:-0}
-  week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
-  all=$(awk -F'|' '{s+=$2} END{printf "%d", s+0}' "$DB" 2>/dev/null)
+  # "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu), "%d"
+  # convertit la somme via un entier 32 bits et déborde au-delà de 4 Go —
+  # exactement le bug déjà corrigé dans nvpanel-conso, mais cette fonction
+  # réimplémentait sa propre somme séparée, jamais mise à jour à l'époque.
+  # "%.0f" passe par le formatage flottant natif d'awk, sans cette limite.
+  week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+  month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+  all=$(awk -F'|' '{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
 
   echo
-  printf "   ${GRY}7 derniers jours         :${NC} ${WHT}%s${NC}\n" "$(_hr "${week:-0}")"
-  printf "   ${GRY}Ce mois-ci               :${NC} ${WHT}%s${NC}\n" "$(_hr "${month:-0}")"
-  printf "   ${GRY}Historique disponible ${WHT}(%s j)${GRY} :${NC} ${WHT}%s${NC}\n" "$days" "$(_hr "${all:-0}")"
+  printf "   ${GRY}┌────────────────────────────────────┐${NC}\n"
+  printf "   ${GRY}│${NC} %-19s ${WHT}%14s${NC} ${GRY}│${NC}\n" "7 derniers jours" "$(_hr "${week:-0}")"
+  printf "   ${GRY}│${NC} %-19s ${WHT}%14s${NC} ${GRY}│${NC}\n" "Ce mois-ci" "$(_hr "${month:-0}")"
+  printf "   ${GRY}│${NC} %-19s ${WHT}%14s${NC} ${GRY}│${NC}\n" "Historique ($days j)" "$(_hr "${all:-0}")"
+  printf "   ${GRY}└────────────────────────────────────┘${NC}\n"
   echo
-  printf "   ${GRY}Total client, tous protocoles confondus${NC}\n"
-  printf "   ${GRY}(SSH, SlowDNS, UDP, Vmess, Vless, Trojan,${NC}\n"
-  printf "   ${GRY}Shadowsocks, WireGuard, L2TP, PPTP, SSTP).${NC}\n"
+  printf "   ${GRY}Total client, tous protocoles confondus :${NC}\n"
+  printf "   ${CYN}SSH · SlowDNS · UDP · Vmess · Vless · Trojan${NC}\n"
+  printf "   ${CYN}Shadowsocks · WireGuard · L2TP · PPTP · SSTP${NC}\n"
   if [ "${days:-0}" -lt 365 ] 2>/dev/null; then
     echo
-    printf "   ${YLW}Historique conservé : 120 jours maximum.${NC}\n"
-    printf "   ${YLW}Une vue « 1 an » complète n'est pas encore possible.${NC}\n"
+    printf "   ${YLW}⚠ Historique conservé : 120 jours maximum.${NC}\n"
+    printf "   ${YLW}  Une vue « 1 an » complète n'est pas encore possible.${NC}\n"
   fi
   pause
 }

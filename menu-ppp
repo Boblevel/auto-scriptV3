@@ -103,7 +103,7 @@ renew(){
   header; pick || return
   ask " Ajouter (jours) : " d
   out=$(nvpanel-ppp renew "$PROTO" "$PICK" "$d")
-  echo "$out" | grep -q '^OK' && ok "Prolongé jusqu'au $(echo "$out"|awk '{print $3}')" || err "Échec"
+  echo "$out" | grep -q '^OK' && ok "Prolongé jusqu'au $(_fmtd "$(echo "$out"|awk '{print $3}')")" || err "Échec"
   pause
 }
 

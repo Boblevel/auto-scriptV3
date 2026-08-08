@@ -94,7 +94,7 @@ renew_client() {
   header; pick_client || return; name="$PICK"
   ask " Ajouter (jours) : " days
   r=$(nvpanel-cli xrenew "$PROTO" "$name" "$days")
-  echo "$r" | grep -q '^OK' && ok "Prolongé jusqu'au $(echo "$r"|awk '{print $3}')" || err "$r"; pause
+  echo "$r" | grep -q '^OK' && ok "Prolongé jusqu'au $(_fmtd "$(echo "$r"|awk '{print $3}')")" || err "$r"; pause
 }
 
 view_client() {

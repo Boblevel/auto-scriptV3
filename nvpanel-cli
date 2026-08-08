@@ -49,16 +49,22 @@ _xapi_ensure(){
 # Relève les compteurs de trafic de chaque compte et en déduit son activité.
 # Xray ne dit pas « qui est connecté » : il tient en revanche un compteur
 # d'octets par compte. Un compteur qui progresse = un compte en train de s'en
-# servir. On mémorise l'instant où cette activité a commencé ; après trois
-# minutes sans le moindre octet, le compte est considéré déconnecté.
+# servir. On mémorise l'instant où cette activité a commencé ; après cinq
+# minutes sans le moindre octet, le compte est considéré déconnecté (un
+# délai plus court déclarait à tort déconnectés des comptes en simple pause
+# de lecture/mise en mémoire tampon, sans réelle coupure de la connexion).
 xsample_run(){
   command -v xray >/dev/null 2>&1 || return 0
   command -v jq   >/dev/null 2>&1 || return 0
   local now snap tmp em tot prev first last row
   now=$(date +%s)
+  # "%.0f" et non "%d" : même correction que dans nvpanel-conso — sur mawk,
+  # "%d" passe par un entier 32 bits et déborde au-delà de 4 Go de cumul
+  # par compte, ce qui pouvait faire paraître "tot" plus petit que "prev"
+  # (retour en arrière apparent) et déclarer à tort un compte inactif.
   snap=$(xray api statsquery --server="$XAPI" -pattern "user>>>" 2>/dev/null \
     | jq -r '.stat[]? | "\(.name) \(.value // 0)"' 2>/dev/null \
-    | awk '{ split($1, p, ">>>"); if (p[2] != "") t[p[2]] += $2 } END { for (u in t) printf "%s %d\n", u, t[u] }')
+    | awk '{ split($1, p, ">>>"); if (p[2] != "") t[p[2]] += $2 } END { for (u in t) printf "%s %.0f\n", u, t[u] }')
   [ -z "$snap" ] && return 0
   touch "$XSTAT"
   tmp=$(mktemp) || return 0
@@ -78,7 +84,7 @@ xsample_run(){
     elif [ "$tot" -gt "$prev" ] 2>/dev/null; then
       [ "$first" -eq 0 ] && first=$now
       last=$now
-    elif [ "$first" -ne 0 ] && [ $(( now - last )) -ge 180 ]; then
+    elif [ "$first" -ne 0 ] && [ $(( now - last )) -ge 300 ]; then
       first=0
     fi
     printf '%s|%s|%s|%s\n' "$em" "$tot" "$first" "$last" >> "$tmp"
