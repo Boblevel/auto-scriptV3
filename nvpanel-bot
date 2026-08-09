@@ -145,8 +145,23 @@ def _int(s):
         return 0
 
 def ssh_online():
-    return _int(sh("ps -eo user,comm | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | "
-                   "while read u; do grep -q \"^### $u \" /etc/nvpanel/db/ssh 2>/dev/null && echo 1; done | wc -l"))
+    # Identique à _ssh_online() du panel : compte les couples (compte, IP)
+    # réellement établis sur les ports SSH/Dropbear (via ss, en retrouvant
+    # le propriétaire réel de chaque socket via ps), pas un simple "au
+    # moins un processus appartient à ce compte" qui ne comptait qu'une
+    # fois un compte utilisé depuis plusieurs appareils/IP différents.
+    return _int(sh(
+        "dp=$(grep -oP '^DROPBEAR_PORT=\\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1); dp=${dp:-143}\n"
+        "ss -tnp state established 2>/dev/null | awk -v dp=\"$dp\" "
+        "'{ n=split($4,l,\":\"); if (l[n]==22 || l[n]==dp) print }' | "
+        "while read -r line; do\n"
+        "  ip=$(printf '%s' \"$line\" | awk '{print $5}' | sed -E 's/:[0-9]+$//')\n"
+        "  pid=$(printf '%s' \"$line\" | grep -oP 'pid=\\K[0-9]+' | head -1)\n"
+        "  [ -z \"$pid\" ] && continue\n"
+        "  u=$(ps -o user= -p \"$pid\" 2>/dev/null | tr -d ' ')\n"
+        "  [ -n \"$u\" ] && grep -q \"^### $u \" /etc/nvpanel/db/ssh 2>/dev/null && printf '%s|%s\\n' \"$u\" \"$ip\"\n"
+        "done | sort -u | wc -l"
+    ))
 
 def ssh_blocked():
     return _int(sh("c=0; while read _ u _; do [ -z \"$u\" ] && continue; "

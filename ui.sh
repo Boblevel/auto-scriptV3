@@ -198,6 +198,28 @@ _online_uniq_port() {
     | awk '{print $4}' | sed -E 's/:[0-9]+$//' | sort -u | wc -l
 }
 
+# SSH / SlowDNS / UDP : contrairement au simple « au moins un processus sshd
+# appartient à ce compte » (qui ne compte qu'un compte, jamais ses connexions
+# multiples), on identifie ICI chaque session établie sur le port SSH ou
+# Dropbear via les sockets système (ss), on retrouve le compte réel qui la
+# détient (ps, le processus sshd/dropbear tourne sous l'UID du compte après
+# authentification), et on ne garde qu'un seul (compte, IP) par couple. Un
+# même compte connecté depuis 3 appareils différents compte donc pour 3, et
+# non plus pour 1 — comme le nombre réel de personnes connectées.
+_ssh_online() {
+  local dp
+  dp=$(grep -oP '^DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1); dp=${dp:-143}
+  ss -tnp state established 2>/dev/null | awk -v dp="$dp" '
+    { n=split($4,l,":"); if (l[n]==22 || l[n]==dp) print }
+  ' | while read -r line; do
+    ip=$(printf '%s' "$line" | awk '{print $5}' | sed -E 's/:[0-9]+$//')
+    pid=$(printf '%s' "$line" | grep -oP 'pid=\K[0-9]+' | head -1)
+    [ -z "$pid" ] && continue
+    u=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -n "$u" ] && grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null && printf '%s|%s\n' "$u" "$ip"
+  done | sort -u | wc -l
+}
+
 # Xray (Vmess/Vless/Trojan) : les trois partagent la MÊME façade nginx (un
 # seul port TLS, routage par chemin /vmess /vless /trojan). Xray ne reçoit
 # ces connexions QUE via la boucle locale : l'adresse vue côté Xray est
@@ -222,10 +244,7 @@ stats() {
   local online blocked total hier auj mois
   local ssh on_ssh bl_ssh
   ssh=$(grep -c '^### ' /etc/nvpanel/db/ssh 2>/dev/null); ssh=${ssh:-0}
-  on_ssh=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
-             # Ne compte que les comptes réellement créés par le panel.
-             grep -q "^### $pu " /etc/nvpanel/db/ssh 2>/dev/null && echo 1
-           done | wc -l)
+  on_ssh=$(_ssh_online)
   bl_ssh=0
   if [ -f /etc/nvpanel/db/ssh ]; then
     while read -r _ u _; do
@@ -288,12 +307,7 @@ proto_dash() {
   online=0; blocked=0
   case "$mode" in
     ssh)
-      online=$(ps -eo user,comm 2>/dev/null | awk '$2 ~ /sshd|dropbear/{print $1}' | sort -u | while read -r pu; do
-                 # Ne compte que les comptes réellement créés par le panel :
-                 # un utilisateur système/admin connecté en SSH avec un UID
-                 # dans la même plage ne doit jamais apparaître comme client VPN.
-                 grep -q "^### $pu " "/etc/nvpanel/db/$dbf" 2>/dev/null && echo 1
-               done | wc -l)
+      online=$(_ssh_online)
       if [ -f "/etc/nvpanel/db/$dbf" ]; then
         while read -r _ u _; do
           [ -z "$u" ] && continue

@@ -10,13 +10,14 @@ BKDIR=/root
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
 
 traffic_report(){
-  header; center " 📊  BILAN DU TRAFIC (TOUS PROTOCOLES) " "${BOLD}${WHT}"; line
+  local LC_ALL=C.UTF-8
+  header; center " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES " "${BOLD}${WHT}"; line
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
   local DB=/etc/nvpanel/db/conso
   [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
 
-  local days week month all
-  days=$(wc -l < "$DB" 2>/dev/null); days=${days:-0}
+  local year week month yearsum
+  year=$(date +%Y)
   # "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu), "%d"
   # convertit la somme via un entier 32 bits et déborde au-delà de 4 Go —
   # exactement le bug déjà corrigé dans nvpanel-conso, mais cette fonction
@@ -24,14 +25,23 @@ traffic_report(){
   # "%.0f" passe par le formatage flottant natif d'awk, sans cette limite.
   week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
-  all=$(awk -F'|' '{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+  yearsum=$(awk -F'|' -v p="$year" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+
+  # Padding calculé à la main (et non via printf "%-Ns") : "%-Ns" compte des
+  # OCTETS, pas des caractères — un accent comme le "é" d'« année » occupe
+  # 2 octets en UTF-8 pour 1 seul caractère affiché, ce qui décalait cette
+  # ligne d'une colonne par rapport aux autres. ${#s} sous LC_ALL=C.UTF-8
+  # compte, lui, le vrai nombre de caractères, donc l'alignement reste
+  # correct quel que soit le contenu.
+  local w=20 lbl1 lbl2 lbl3
+  lbl1="7 derniers jours"; lbl2="Ce mois-ci"; lbl3="Cette année ($year)"
 
   echo
-  printf "   ${GRY}┌────────────────────────────────────┐${NC}\n"
-  printf "   ${GRY}│${NC} %-19s ${WHT}%14s${NC} ${GRY}│${NC}\n" "7 derniers jours" "$(_hr "${week:-0}")"
-  printf "   ${GRY}│${NC} %-19s ${WHT}%14s${NC} ${GRY}│${NC}\n" "Ce mois-ci" "$(_hr "${month:-0}")"
-  printf "   ${GRY}│${NC} %-19s ${WHT}%14s${NC} ${GRY}│${NC}\n" "Historique ($days j)" "$(_hr "${all:-0}")"
-  printf "   ${GRY}└────────────────────────────────────┘${NC}\n"
+  printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
+  printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
   pause
 }
 
