@@ -75,12 +75,22 @@ list_accounts() {
   header
   printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  local u exp st ct
+  local u exp st ct sessions n
+  # Un seul balayage réseau pour tous les comptes de l'écran (au lieu d'un
+  # par compte) : plus rapide, et permet d'afficher combien d'IP distinctes
+  # utilisent chaque compte en ce moment, pour repérer d'un coup d'œil
+  # d'où vient le total « En ligne » de l'accueil.
+  sessions=$(_ssh_sessions)
   while read -r _ u exp; do
     [ -z "$u" ] && continue
     if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="verrou"; else st="actif"; fi
     ct=$(_conn_time "$u")
-    printf " %-16s %-12s %-8s %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+    n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
+    if [ "$n" -gt 1 ]; then
+      printf " %-16s %-12s %-8s %s ${CYN}(%s IP)${NC}\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"
+    else
+      printf " %-16s %-12s %-8s %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+    fi
   done < "$DB"
   pause
 }

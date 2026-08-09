@@ -206,7 +206,7 @@ _online_uniq_port() {
 # authentification), et on ne garde qu'un seul (compte, IP) par couple. Un
 # même compte connecté depuis 3 appareils différents compte donc pour 3, et
 # non plus pour 1 — comme le nombre réel de personnes connectées.
-_ssh_online() {
+_ssh_sessions() {
   # On part des PROCESSUS (comme l'ancienne méthode, fiable et déjà éprouvée),
   # jamais de la position des colonnes de « ss » : leur nombre et leur ordre
   # varient selon la version d'iproute2 installée (colonne « Netid » présente
@@ -217,6 +217,8 @@ _ssh_online() {
   # l'IP distante de chaque session — et si elle reste introuvable pour une
   # raison quelconque, le compte est quand même compté une fois : jamais
   # moins fiable que l'ancienne méthode, plus précis quand c'est possible.
+  # Renvoie une ligne "compte|ip" par session distincte (dédupliquée) : un
+  # seul balayage réseau, réutilisable pour le total ET le détail par compte.
   local ss_raw
   ss_raw=$(ss -tnp state established 2>/dev/null)
   ps -eo pid=,user=,comm= 2>/dev/null | awk '$3 ~ /sshd|dropbear/{print $1"|"$2}' \
@@ -227,8 +229,10 @@ _ssh_online() {
              | grep -oP '[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+' \
              | tail -1 | sed -E 's/:[0-9]+$//')
         printf '%s|%s\n' "$u" "${ip:-pid$pid}"
-      done | sort -u | wc -l
+      done | sort -u
 }
+
+_ssh_online() { _ssh_sessions | wc -l; }
 
 # Xray (Vmess/Vless/Trojan) : les trois partagent la MÊME façade nginx (un
 # seul port TLS, routage par chemin /vmess /vless /trojan). Xray ne reçoit
