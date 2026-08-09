@@ -73,7 +73,7 @@ pick_client() {
   echo; printf "   ${GRY}Clients ${PROTO^^} :${NC}\n"
   local i=1 row
   for row in "${_cl[@]}"; do
-    printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "${row##*|}"
+    printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "$(_fmtd "${row##*|}")"
     i=$((i+1))
   done
   echo; ask "   ➤ Numéro (0 = annuler) : " n
