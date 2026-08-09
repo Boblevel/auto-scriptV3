@@ -207,17 +207,27 @@ _online_uniq_port() {
 # même compte connecté depuis 3 appareils différents compte donc pour 3, et
 # non plus pour 1 — comme le nombre réel de personnes connectées.
 _ssh_online() {
-  local dp
-  dp=$(grep -oP '^DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1); dp=${dp:-143}
-  ss -tnp state established 2>/dev/null | awk -v dp="$dp" '
-    { n=split($4,l,":"); if (l[n]==22 || l[n]==dp) print }
-  ' | while read -r line; do
-    ip=$(printf '%s' "$line" | awk '{print $5}' | sed -E 's/:[0-9]+$//')
-    pid=$(printf '%s' "$line" | grep -oP 'pid=\K[0-9]+' | head -1)
-    [ -z "$pid" ] && continue
-    u=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
-    [ -n "$u" ] && grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null && printf '%s|%s\n' "$u" "$ip"
-  done | sort -u | wc -l
+  # On part des PROCESSUS (comme l'ancienne méthode, fiable et déjà éprouvée),
+  # jamais de la position des colonnes de « ss » : leur nombre et leur ordre
+  # varient selon la version d'iproute2 installée (colonne « Netid » présente
+  # ou non), ce qui avait totalement cassé une précédente tentative basée sur
+  # $4/$5 (0 connexion détectée alors qu'un compte était bien en ligne).
+  # Ici, on ne cherche dans la sortie de « ss » qu'un motif IP:port par
+  # expression régulière (jamais une position de colonne) pour retrouver
+  # l'IP distante de chaque session — et si elle reste introuvable pour une
+  # raison quelconque, le compte est quand même compté une fois : jamais
+  # moins fiable que l'ancienne méthode, plus précis quand c'est possible.
+  local ss_raw
+  ss_raw=$(ss -tnp state established 2>/dev/null)
+  ps -eo pid=,user=,comm= 2>/dev/null | awk '$3 ~ /sshd|dropbear/{print $1"|"$2}' \
+    | while IFS='|' read -r pid u; do
+        [ -z "$pid" ] || [ -z "$u" ] && continue
+        grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null || continue
+        ip=$(printf '%s\n' "$ss_raw" | grep "pid=$pid," \
+             | grep -oP '[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+' \
+             | tail -1 | sed -E 's/:[0-9]+$//')
+        printf '%s|%s\n' "$u" "${ip:-pid$pid}"
+      done | sort -u | wc -l
 }
 
 # Xray (Vmess/Vless/Trojan) : les trois partagent la MÊME façade nginx (un
