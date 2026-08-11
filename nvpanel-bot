@@ -457,7 +457,12 @@ def do_list(chat):
     blocks = []
     for p in rows:
         user, exp, dev, quota, etat = p[0], p[1], p[2], p[3], p[4]
-        badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
+        if etat.startswith("verrou"):
+            badge = "\U0001F534"
+        elif etat.startswith("expir"):
+            badge = "\U0001F7E0"
+        else:
+            badge = "\U0001F7E2"
         q = "illimit\u00e9" if quota in ("0", "") else quota + " Go"
         ct = conn_time(user)
         lignes = [

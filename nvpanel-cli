@@ -405,11 +405,23 @@ case "$cmd" in
         id "$u" &>/dev/null || sed -i "/^### $u /d" "$DB" 2>/dev/null
       done < "$DB"
     fi
-    awk '/^### /{print $2}' "$DB" 2>/dev/null | while read -r u; do
-      e=$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | xargs)
+    today=$(date +%F)
+    awk '/^### /{print $2"|"$3}' "$DB" 2>/dev/null | while IFS='|' read -r u e; do
+      # La date vient directement de la base du panel (déjà en AAAA-MM-JJ),
+      # jamais de « chage -l » : ce texte dépend de la langue du serveur, et
+      # tout format inattendu cassait silencieusement l'affichage JJ-MM-AAAA
+      # côté bot (fmt_date attend du AAAA-MM-JJ strict en entrée).
       l=$(awk -v u="$u" '$1==u{print $2}' "$LIMDB"); l=${l:-0}
       q=$(awk -v u="$u" '$1==u{printf "%d",$2/1073741824}' "$QDB"); q=${q:-0}
-      if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then s="verrou"; else s="actif"; fi
+      if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
+        s="verrou"
+      elif [ -n "$e" ] && [ "$e" \< "$today" ]; then
+        # Un compte expiré n'est plus purgé automatiquement (nvpanel-clean) :
+        # sans cette vérification, il continuait de s'afficher « actif ».
+        s="expiré"
+      else
+        s="actif"
+      fi
       echo "$u|${e:-jamais}|$l|$q|$s"
     done ;;
   status)

@@ -23,10 +23,19 @@ pick_user() {
   mapfile -t _users < <(awk '/^### /{print $2}' "$DB" 2>/dev/null)
   if [ "${#_users[@]}" -eq 0 ]; then err "Aucun compte SSH."; pause; return 1; fi
   echo; printf "   ${GRY}Comptes disponibles :${NC}\n"
-  local i=1 u exp st
+  local i=1 u exp st today
+  today=$(date +%F)
   for u in "${_users[@]}"; do
     exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
-    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="${RED}verrou${NC}"; else st="${GRN}actif${NC}"; fi
+    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
+      st="${RED}verrou${NC}"
+    elif [ -n "$exp" ] && [ "$exp" \< "$today" ]; then
+      # Voir list_accounts : un compte expiré n'est plus purgé automatiquement,
+      # il doit donc être signalé comme tel plutôt que faussement « actif ».
+      st="${YLW}expiré${NC}"
+    else
+      st="${GRN}actif${NC}"
+    fi
     local _ct; _ct=$(_conn_time "$u")
     printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b  ${CYN}%s${NC}\n" "$i" "$u" "$(_fmtd "${exp:-?}")" "$st" "${_ct:+⏱ $_ct}"
     i=$((i+1))
@@ -75,15 +84,25 @@ list_accounts() {
   header
   printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  local u exp st ct sessions n
+  local u exp st ct sessions n today
   # Un seul balayage réseau pour tous les comptes de l'écran (au lieu d'un
   # par compte) : plus rapide, et permet d'afficher combien d'IP distinctes
   # utilisent chaque compte en ce moment, pour repérer d'un coup d'œil
   # d'où vient le total « En ligne » de l'accueil.
   sessions=$(_ssh_sessions)
+  today=$(date +%F)
   while read -r _ u exp; do
     [ -z "$u" ] && continue
-    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then st="verrou"; else st="actif"; fi
+    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
+      st="verrou"
+    elif [ -n "$exp" ] && [ "$exp" \< "$today" ]; then
+      # Un compte expiré n'est plus purgé automatiquement (voir nvpanel-clean) :
+      # sans cette vérification, il continuait de s'afficher « actif » alors
+      # que le système refuse déjà toute connexion pour lui.
+      st="expiré"
+    else
+      st="actif"
+    fi
     ct=$(_conn_time "$u")
     n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
     if [ "$n" -gt 1 ]; then

@@ -8,37 +8,33 @@ XCONF=/usr/local/etc/xray/config.json
 changed=0
 
 # --- Comptes SSH --------------------------------------------
-# On délègue à « nvpanel-cli purge ssh expired » plutôt que de garder une
-# logique maison ici. Deux raisons :
-#   1) Cette version-ci lisait la date via `chage -l` (texte dépendant de la
-#      langue du serveur) puis `date -d` : toute variation de format faisait
-#      échouer silencieusement le parsing (compte alors jamais purgé).
-#   2) Elle supprimait la fiche du panel (sed) JUSTE APRÈS `userdel`, SANS
-#      vérifier que userdel avait réussi. Si userdel échouait pour une
-#      raison quelconque (compte système bloqué, verrou...), la fiche
-#      disparaissait quand même du panel — mais le compte Linux, lui,
-#      restait bien réel, bloquant à jamais la recréation du même nom
-#      (« Existe déjà » sans que le compte soit visible nulle part).
-# nvpanel-cli purge ssh (déjà utilisée par le nettoyage manuel du menu)
-# tue d'abord les sessions actives, vérifie réellement la suppression
-# avant de toucher la fiche, et nettoie aussi META/LIMDB/QDB au passage.
-[ -x /usr/local/bin/nvpanel-cli ] && /usr/local/bin/nvpanel-cli purge ssh expired >/dev/null 2>&1
+# Un compte SSH expiré (date passée sur "useradd -e") est DÉJÀ bloqué par le
+# système lui-même : aucune connexion possible, sans le moindre code de
+# notre part. Il n'y a donc plus de raison de le supprimer automatiquement.
+# On laisse la fiche visible dans le panel : l'admin voit le compte, son
+# état, et choisit lui-même de le prolonger ou de le supprimer — plus de
+# disparition silencieuse d'un compte qu'il n'a pas explicitement retiré.
+# La purge reste disponible à la demande via le menu « Nettoyage des
+# comptes » (nvpanel-cli purge ssh expired), simplement plus en automatique.
 
 # --- Clients Xray / Shadowsocks -----------------------------
+# À la différence de SSH, Xray n'a aucun mécanisme natif d'expiration : sans
+# action de notre part, un client expiré continuerait de se connecter
+# normalement. On ne supprime donc plus la fiche — on la VERROUILLE (retrait
+# du client de la config Xray active + marquage "L" en base), exactement
+# comme le fait déjà le verrouillage manuel (menu Verrouiller). Le client ne
+# peut plus se connecter, mais la fiche reste visible : l'admin la prolonge
+# ou la supprime lui-même, plus de disparition automatique.
 purge_proto() {
   local db="$1" tag="$2" today
   [ -f "$db" ] || return
   today=$(date +%F)
-  while read -r _ name uuid exp; do
+  while read -r _ name uuid exp fl; do
     [ -z "$name" ] && continue
+    [ "$fl" = "L" ] && continue
     # Comparaison de DATES, pas d'horodatages. Avec « date -d "$exp" +%s » on
-    # obtenait minuit du jour d'expiration : le compte était donc supprimé dès
-    # 00h00 CE jour-là, alors qu'il devait rester valable jusqu'à sa fin. Un
-    # compte créé pour 1 jour mourait ainsi la nuit suivante, et le client
-    # recevait « invalid request user id » alors que sa fiche semblait bonne.
-    # nvpanel-cli et nvpanel-ppp utilisent déjà cette comparaison stricte :
-    # les trois purges se comportent désormais à l'identique.
-    # Un champ non conforme (compte verrouillé : « date L ») est ignoré.
+    # obtenait minuit du jour d'expiration : le compte était donc verrouillé
+    # dès 00h00 CE jour-là, alors qu'il devait rester valable jusqu'à sa fin.
     case "$exp" in ''|*[!0-9-]*) continue ;; esac
     if [ "$exp" \< "$today" ]; then
       local ok=1
@@ -48,11 +44,10 @@ purge_proto() {
           "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF" && ok=1
         [ "$ok" = 1 ] && changed=1
       fi
-      # On ne retire la fiche du panel que si la config Xray a bien été mise
-      # à jour (ou n'existe pas encore) : sinon un échec silencieux de jq
-      # laisserait un client fantôme dans config.json tout en faisant
-      # disparaître la fiche du panel, sans doublon détecté à la recréation.
-      [ "$ok" = 1 ] && sed -i "/^### $name /d" "$db"
+      # On ne marque le verrou que si la config Xray a bien été mise à jour
+      # (ou n'existe pas encore) : sinon un échec silencieux de jq laisserait
+      # un client fantôme actif dans config.json tout en l'affichant verrouillé.
+      [ "$ok" = 1 ] && sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2 L|" "$db"
     fi
   done < "$db"
 }
@@ -63,11 +58,23 @@ purge_proto /etc/nvpanel/db/trojan      trojan-in
 purge_proto /etc/nvpanel/db/shadowsocks ss-in
 
 # --- Comptes L2TP / PPTP / SSTP -----------------------------
-# Sans cela, un compte expiré continuerait de fonctionner :
-# le fichier chap-secrets ne gère aucune date d'expiration.
+# Comme Xray, chap-secrets ne gère aucune expiration native : sans action de
+# notre part, un compte expiré continuerait de fonctionner. On verrouille
+# donc chaque compte expiré individuellement (commente sa ligne dans
+# chap-secrets + marque "L" en base, exactement comme le verrouillage
+# manuel) au lieu de purger — la fiche reste visible, l'admin décide lui-même
+# de prolonger ou de supprimer.
+today=$(date +%F)
 for p in l2tp pptp sstp; do
-  [ -f "/etc/nvpanel/db/$p" ] || continue
-  [ -x /usr/local/bin/nvpanel-ppp ] && /usr/local/bin/nvpanel-ppp purge "$p" expired >/dev/null 2>&1
+  db="/etc/nvpanel/db/$p"
+  [ -f "$db" ] || continue
+  [ -x /usr/local/bin/nvpanel-ppp ] || continue
+  while read -r _ user pass exp fl; do
+    [ -z "$user" ] && continue
+    [ "$fl" = "L" ] && continue
+    case "$exp" in ''|*[!0-9-]*) continue ;; esac
+    [ "$exp" \< "$today" ] && /usr/local/bin/nvpanel-ppp lock "$p" "$user" >/dev/null 2>&1
+  done < "$db"
 done
 
 [ "$changed" = "1" ] && systemctl restart xray >/dev/null 2>&1
