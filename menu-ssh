@@ -84,7 +84,7 @@ list_accounts() {
   header
   printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  local u exp st ct sessions n today
+  local u exp st st_color ct sessions n today
   # Un seul balayage réseau pour tous les comptes de l'écran (au lieu d'un
   # par compte) : plus rapide, et permet d'afficher combien d'IP distinctes
   # utilisent chaque compte en ce moment, pour repérer d'un coup d'œil
@@ -94,21 +94,21 @@ list_accounts() {
   while read -r _ u exp; do
     [ -z "$u" ] && continue
     if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
-      st="verrou"
+      st="verrou"; st_color="$RED"
     elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
       # Un compte expiré n'est plus purgé automatiquement (voir nvpanel-clean) :
       # sans cette vérification, il continuait de s'afficher « actif » alors
       # que le système refuse déjà toute connexion pour lui.
-      st="expiré"
+      st="expiré"; st_color="$RED"
     else
-      st="actif"
+      st="actif"; st_color="$GRN"
     fi
     ct=$(_conn_time "$u")
     n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
     if [ "$n" -gt 1 ]; then
-      printf " %-16s %-12s %-8s %s ${CYN}(%s IP)${NC}\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"
+      printf " %-16s %-12s ${st_color}%-8s${NC} %s ${CYN}(%s IP)${NC}\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"
     else
-      printf " %-16s %-12s %-8s %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+      printf " %-16s %-12s ${st_color}%-8s${NC} %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
     fi
   done < "$DB"
   pause
