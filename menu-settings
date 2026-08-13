@@ -16,16 +16,20 @@ traffic_report(){
   local DB=/etc/nvpanel/db/conso
   [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
 
-  local year week month yearsum
-  year=$(date +%Y)
+  local year today_str week month yearsum days_tracked start_date
+  year=$(date +%Y); today_str=$(date +%F)
   # "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu), "%d"
   # convertit la somme via un entier 32 bits et déborde au-delà de 4 Go —
   # exactement le bug déjà corrigé dans nvpanel-conso, mais cette fonction
   # réimplémentait sa propre somme séparée, jamais mise à jour à l'époque.
   # "%.0f" passe par le formatage flottant natif d'awk, sans cette limite.
+  local todaysum
+  todaysum=$(awk -F'|' -v d="$today_str" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   yearsum=$(awk -F'|' -v p="$year" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
+  days_tracked=$(wc -l < "$DB" 2>/dev/null); days_tracked=${days_tracked:-0}
+  start_date=$(head -1 "$DB" 2>/dev/null | cut -d'|' -f1)
 
   # Padding calculé à la main (et non via printf "%-Ns") : "%-Ns" compte des
   # OCTETS, pas des caractères — un accent comme le "é" d'« année » occupe
@@ -33,15 +37,24 @@ traffic_report(){
   # ligne d'une colonne par rapport aux autres. ${#s} sous LC_ALL=C.UTF-8
   # compte, lui, le vrai nombre de caractères, donc l'alignement reste
   # correct quel que soit le contenu.
-  local w=20 lbl1 lbl2 lbl3
-  lbl1="7 derniers jours"; lbl2="Ce mois-ci"; lbl3="Cette année ($year)"
+  local w=20 lbl0 lbl1 lbl2 lbl3
+  lbl0="Aujourd'hui"; lbl1="7 derniers jours"; lbl2="Ce mois-ci"; lbl3="Cette année ($year)"
 
   echo
   printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl0" $((w-${#lbl0})) "" "$(_hr "${todaysum:-0}")"
   printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
   printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
   printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
   printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
+  echo
+  # Explique pourquoi semaine/mois/année peuvent afficher le même chiffre :
+  # tant que le suivi n'a pas plus de 7 jours d'historique, c'est normal et
+  # mathématique — plutôt que de laisser un chiffre identique sans
+  # explication, la période réellement couverte est maintenant affichée.
+  if [ -n "$start_date" ]; then
+    printf "   ${GRY}Suivi depuis le %s · %s jour(s) d'historique${NC}\n" "$(_fmtd "$start_date")" "$days_tracked"
+  fi
   pause
 }
 

@@ -36,7 +36,7 @@ purge_proto() {
     # obtenait minuit du jour d'expiration : le compte était donc verrouillé
     # dès 00h00 CE jour-là, alors qu'il devait rester valable jusqu'à sa fin.
     case "$exp" in ''|*[!0-9-]*) continue ;; esac
-    if [ "$exp" \< "$today" ]; then
+    if [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; then
       local ok=1
       if [ -f "$XCONF" ]; then
         ok=0
@@ -73,7 +73,7 @@ for p in l2tp pptp sstp; do
     [ -z "$user" ] && continue
     [ "$fl" = "L" ] && continue
     case "$exp" in ''|*[!0-9-]*) continue ;; esac
-    [ "$exp" \< "$today" ] && /usr/local/bin/nvpanel-ppp lock "$p" "$user" >/dev/null 2>&1
+    { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; } && /usr/local/bin/nvpanel-ppp lock "$p" "$user" >/dev/null 2>&1
   done < "$db"
 done
 

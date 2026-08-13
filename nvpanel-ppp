@@ -100,7 +100,7 @@ case "$cmd" in
   purge)
     proto=$(_clean "$1"); mode=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
     db=$(_db "$proto"); today=$(date +%F); n=0
-    list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$db" 2>/dev/null)
+    list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<=d)) print $2 }' "$db" 2>/dev/null)
     for u in $list; do
       [ -z "$u" ] && continue
       sed -i "/^$u[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"

@@ -115,7 +115,7 @@ case "$cmd" in
     echo "OK $user $exp" ;;
   purge)
     mode=$(_clean "$1"); today=$(date +%F); n=0
-    list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$DB" 2>/dev/null)
+    list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<=d)) print $2 }' "$DB" 2>/dev/null)
     for u in $list; do
       [ -z "$u" ] && continue
       sed -i "/^### $u /d" "$DB"; n=$((n+1))

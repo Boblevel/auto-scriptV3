@@ -334,7 +334,13 @@ case "$cmd" in
     id "$user" &>/dev/null && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
-    useradd -e "$exp" -s /bin/false -M "$user" &>/dev/null
+    # /etc/shadow ne désactive un compte que le LENDEMAIN de la date donnée à
+    # useradd -e (comportement documenté du système, pas de nvpanel) : sans ce
+    # décalage d'un jour, un compte affiché « expiré » dans le panel restait en
+    # réalité connectable jusqu'à minuit. On donne donc exp-1 jour au système,
+    # pour que le blocage réel démarre PILE le jour affiché.
+    sys_exp=$(date -d "$exp -1 day" +"%Y-%m-%d")
+    useradd -e "$sys_exp" -s /bin/false -M "$user" &>/dev/null
     # méthode identique au compte de test qui fonctionnait : on fournit le
     # mot de passe deux fois à passwd (printf = aucune interprétation d'échappement)
     printf '%s\n%s\n' "$pass" "$pass" | passwd "$user" &>/dev/null
@@ -359,7 +365,10 @@ case "$cmd" in
     id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
-    chage -E "$exp" "$user"; passwd -u "$user" &>/dev/null
+    # Même correction que dans create : le système ne bloque le compte que le
+    # lendemain de la date donnée à chage -E, d'où le -1 jour ici aussi.
+    sys_exp=$(date -d "$exp -1 day" +"%Y-%m-%d")
+    chage -E "$sys_exp" "$user"; passwd -u "$user" &>/dev/null
     sed -i "s/^### $user .*/### $user $exp/" "$DB"
     sed -i "s/^\($user|[^|]*|[^|]*\)|.*/\1|$exp/" "$META" 2>/dev/null
     sed -i "/^$user /d" /etc/nvpanel/db/quota_used 2>/dev/null
@@ -415,7 +424,7 @@ case "$cmd" in
       q=$(awk -v u="$u" '$1==u{printf "%d",$2/1073741824}' "$QDB"); q=${q:-0}
       if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
         s="verrou"
-      elif [ -n "$e" ] && [ "$e" \< "$today" ]; then
+      elif [ -n "$e" ] && { [ "$e" \< "$today" ] || [ "$e" = "$today" ]; }; then
         # Un compte expiré n'est plus purgé automatiquement (nvpanel-clean) :
         # sans cette vérification, il continuait de s'afficher « actif ».
         s="expiré"
@@ -541,7 +550,7 @@ case "$cmd" in
     today=$(date +%F); n=0
     case "$proto" in
       ssh)
-        list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($3!="" && $3<d)) print $2 }' "$DB" 2>/dev/null)
+        list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($3!="" && $3<=d)) print $2 }' "$DB" 2>/dev/null)
         for u in $list; do
           [ -z "$u" ] && continue
           pkill -KILL -u "$u" 2>/dev/null
@@ -556,7 +565,7 @@ case "$cmd" in
         echo "OK $n" ;;
       vmess|vless|trojan|ss)
         xmeta "$proto" || { echo "ERR proto"; exit 1; }
-        list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<d)) print $2 }' "$XDB" 2>/dev/null)
+        list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<=d)) print $2 }' "$XDB" 2>/dev/null)
         for nm in $list; do
           [ -z "$nm" ] && continue
           jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"

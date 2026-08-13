@@ -122,7 +122,7 @@ cleanup_menu(){
     local tot exp today c r out
     today=$(date +%F)
     tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
-    exp=$(awk -v d="$today" '/^### /{ if ($4!="" && $4<d) c++ } END{print c+0}' "$DB" 2>/dev/null)
+    exp=$(awk -v d="$today" '/^### /{ if ($4!="" && $4<=d) c++ } END{print c+0}' "$DB" 2>/dev/null)
     printf "   ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
     entry "1" "🧽" "Supprimer les comptes expirés"
     entry "2" "💥" "Supprimer TOUS les comptes"
