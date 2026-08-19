@@ -55,6 +55,7 @@ length bit = yes
 EOF
 
 cat > /etc/ppp/options.xl2tpd <<'EOF'
+ipparam l2tp
 ipcp-accept-local
 ipcp-accept-remote
 ms-dns 1.1.1.1

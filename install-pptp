@@ -23,6 +23,7 @@ EOF
 
 cat > /etc/ppp/pptpd-options <<'EOF'
 name pptpd
+ipparam pptp
 refuse-pap
 refuse-chap
 refuse-mschap

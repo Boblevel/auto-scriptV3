@@ -16,6 +16,11 @@ mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 # ---- helpers -----------------------------------------------
 XAPI=127.0.0.1:10085
 XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_activite
+GUARD=/usr/local/bin/nvpanel-guard
+
+_guard_xray_ready(){
+  [ -x "$GUARD" ] && "$GUARD" xray-ready >/dev/null 2>&1
+}
 
 # Active le service de statistiques dans une configuration qui ne l'a pas
 # encore (serveurs installés avant cette version).
@@ -24,6 +29,9 @@ XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_ac
 # clients est rigoureusement identique avant et après.
 _xapi_ensure(){
   [ -f "$XCONF" ] || return 1
+  # La garde récente ajoute RoutingService, la vraie IP transmise par nginx
+  # et le webhook de contrôle sans modifier les clients existants.
+  [ -x "$GUARD" ] && systemctl is-active --quiet nvpanel-guard 2>/dev/null && { "$GUARD" xray-ensure >/dev/null 2>&1; return $?; }
   command -v jq >/dev/null 2>&1 || return 1
   jq -e '(.api.tag=="api") and ([.inbounds[]?.tag?]|index("api")) and ([.outbounds[]?.tag?]|index("api"))' \
     "$XCONF" >/dev/null 2>&1 && return 0
@@ -94,6 +102,16 @@ xsample_run(){
 }
 
 # Durée d'activité d'un compte, prête à afficher.
+_guard_since(){
+  local first="$1" now d
+  case "$first" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
+  now=$(date +%s); d=$(( now - first )); [ "$d" -lt 0 ] && d=0
+  if   [ "$d" -lt 60 ];    then printf '< 1 min'
+  elif [ "$d" -lt 3600 ];  then printf '%d min' "$(( d / 60 ))"
+  elif [ "$d" -lt 86400 ]; then printf '%d h %02d' "$(( d / 3600 ))" "$(( (d % 3600) / 60 ))"
+  else printf '%d j %02d h' "$(( d / 86400 ))" "$(( (d % 86400) / 3600 ))"; fi
+}
+
 _conn_since(){
   local row first now d
   row=$(grep "^$1|" "$XSTAT" 2>/dev/null | head -1)
@@ -256,7 +274,9 @@ _client_json(){ # proto id name
 
 xray_box(){ # proto name id created exp
   local proto="$1" name="$2" id="$3" cr="$4" ex="$5"
-  local host path label ltls lnotls ip tlsp plainp
+  local host path label ltls lnotls ip tlsp plainp lim
+  lim=$(_guard_xray_ready && "$GUARD" limit-get "$proto" "$name" 2>/dev/null); lim=${lim:-0}
+  [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   host=$(_host); ip=$(_ip); tlsp=$(_xport); plainp=80
   case "$proto" in
     vmess)  path="/vmess";  label="VMESS";  ltls=$(_vmess_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vmess_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
@@ -277,6 +297,7 @@ xray_box(){ # proto name id created exp
 🔒 Port TLS    : $tlsp
 🔓 Port No TLS : $plainp
 🆔 User ID     : $id
+🌐 IP simultanées: $lim
 🔐 Encryption  : none
 🌐 Network     : ws
 📁 Path        : $path
@@ -296,8 +317,10 @@ EOF
 
 # ---- encadré Shadowsocks -----------------------------------
 ss_box(){ # name ckey created exp
-  local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link
+  local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link lim
   host=$(_host); skey=$(cat "$NDIR/ss_key" 2>/dev/null)
+  lim=$(_guard_xray_ready && "$GUARD" limit-get ss "$name" 2>/dev/null); lim=${lim:-0}
+  [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   ui=$(printf '%s' "2022-blake3-aes-256-gcm:$skey:$ck" | base64 -w0)
   link="ss://$ui@$host:8388#$(_remark_url SS "$name")"
   cat <<EOF
@@ -306,6 +329,7 @@ ss_box(){ # name ckey created exp
 🖥️ IP/Host : $(_ip)
 🌐 Address : $host
 🔒 Port    : 8388
+🌐 IP simultanées: $lim
 🧪 Method  : 2022-blake3-aes-256-gcm
 📅 Created : $(_fmtd "$cr")
 ⏳ Expired : $(_fmtd "$ex")
@@ -446,11 +470,17 @@ case "$cmd" in
 
   # ---------- Xray / Shadowsocks ----------
   xadd)
-    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"; lim="${4:-0}"
     xmeta "$proto" || { echo "ERR proto"; exit 1; }
     [ -f "$XCONF" ] || { echo "ERR noxray"; exit 1; }
     touch "$XDB"; grep -q "^### $name " "$XDB" && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    if [ "$lim" -gt 0 ] 2>/dev/null; then
+      [ -x "$GUARD" ] || { echo "ERR guard"; exit 1; }
+      _guard_xray_ready || { _xapi_ensure >/dev/null 2>&1; }
+      _guard_xray_ready || { echo "ERR guard"; exit 1; }
+    fi
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     if [ "$proto" = ss ]; then id=$(openssl rand -base64 32); client="{\"password\":\"$id\",\"email\":\"$name\"}"
     else
@@ -473,15 +503,19 @@ case "$cmd" in
       "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
     mv "$XCONF.tmp" "$XCONF"
     echo "### $name $id $exp" >> "$XDB"
+    [ -x "$GUARD" ] && "$GUARD" limit-set "$proto" "$name" "$lim" >/dev/null 2>&1
     systemctl restart xray >/dev/null 2>&1
+    [ -x "$GUARD" ] && "$GUARD" xray-clear "$proto" "$name" >/dev/null 2>&1
     echo "OK $name $exp"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
   xonline)
-    # Compte les clients de CE protocole précis dont l'activité (échantillonnée
-    # via l'API stats Xray, identique à _conn_since) est en cours — jamais un
-    # comptage de sockets sur le port public, qui ne peut pas distinguer
-    # Vmess/Vless/Trojan/Shadowsocks entre eux (tous en 127.0.0.1 côté Xray).
     proto="$1"; xmeta "$proto" || { echo 0; exit 0; }
+    if _guard_xray_ready; then
+      "$GUARD" xray-online "$proto" 2>/dev/null || echo 0
+      exit 0
+    fi
+    # Compatibilité avec les anciennes installations ou avec une garde
+    # momentanément indisponible : on conserve le relevé par activité.
     _xapi_ensure; xsample_run
     n=0
     while read -r nm; do
@@ -492,11 +526,26 @@ case "$cmd" in
     echo "$n" ;;
   xlist)
     proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    _xapi_ensure; xsample_run
+    guard_ok=0
+    _guard_xray_ready && guard_ok=1
+    [ "$guard_ok" -eq 1 ] || { _xapi_ensure >/dev/null 2>&1; _guard_xray_ready && guard_ok=1; }
+    [ "$guard_ok" -eq 1 ] || xsample_run
     while read -r _ nm _ ex fl; do
       [ -z "$nm" ] && continue
-      if [ "$fl" = "L" ]; then st="verrou"; ct="—"; else st="actif"; ct=$(_conn_since "$nm"); fi
-      printf '%s|%s|%s|%s\n' "$nm" "$ex" "$st" "$ct"
+      if [ "$fl" = "L" ]; then
+        st="verrou"; ct="—"; dev=0
+      elif [ "$guard_ok" -eq 1 ]; then
+        IFS='|' read -r dev first <<< "$("$GUARD" xray-user "$proto" "$nm" 2>/dev/null)"
+        dev=${dev:-0}; st="actif"; ct=$(_guard_since "$first")
+      else
+        dev=0; st="actif"; ct=$(_conn_since "$nm")
+      fi
+      if [ "$guard_ok" -eq 1 ]; then
+        lim=$("$GUARD" limit-get "$proto" "$nm" 2>/dev/null); lim=${lim:-0}
+      else
+        lim=0
+      fi
+      printf '%s|%s|%s|%s|%s|%s\n' "$nm" "$ex" "$st" "$ct" "$dev" "$lim"
     done < <(grep '^### ' "$XDB" 2>/dev/null) ;;
   xsample)
     # relevé périodique appelé par cron (aucune sortie)
@@ -509,6 +558,7 @@ case "$cmd" in
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
     jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
     sed -i "/^### $name /d" "$XDB"; systemctl restart xray >/dev/null 2>&1
+    [ -x "$GUARD" ] && { "$GUARD" xray-clear "$proto" "$name" >/dev/null 2>&1; "$GUARD" limit-del "$proto" "$name" >/dev/null 2>&1; }
     echo "OK deleted" ;;
   xrenew)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
@@ -525,6 +575,7 @@ case "$cmd" in
     jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
     sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2 L|" "$XDB"
     systemctl restart xray >/dev/null 2>&1
+    [ -x "$GUARD" ] && "$GUARD" xray-clear "$proto" "$name" >/dev/null 2>&1
     echo "OK locked" ;;
   xunlock)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
@@ -535,6 +586,7 @@ case "$cmd" in
     jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) += [$cj]" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
     sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2|" "$XDB"
     systemctl restart xray >/dev/null 2>&1
+    [ -x "$GUARD" ] && "$GUARD" xray-clear "$proto" "$name" >/dev/null 2>&1
     echo "OK unlocked" ;;
   xinfo)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
@@ -570,6 +622,7 @@ case "$cmd" in
           [ -z "$nm" ] && continue
           jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"
           sed -i "/^### $nm /d" "$XDB" 2>/dev/null
+          [ -x "$GUARD" ] && { "$GUARD" xray-clear "$proto" "$nm" >/dev/null 2>&1; "$GUARD" limit-del "$proto" "$nm" >/dev/null 2>&1; }
           n=$((n+1))
         done
         [ "$n" -gt 0 ] && systemctl restart xray >/dev/null 2>&1

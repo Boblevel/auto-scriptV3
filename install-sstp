@@ -32,6 +32,7 @@ fi
 
 cat > /etc/ppp/options.sstpd <<'EOF'
 name sstpd
+ipparam sstp
 require-mschap-v2
 refuse-pap
 refuse-chap

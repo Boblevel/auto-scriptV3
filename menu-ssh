@@ -84,7 +84,7 @@ list_accounts() {
   header
   printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  local u exp st st_color ct sessions n today
+  local u exp st st_color ct sessions n today lim sip pip kind usage
   # Un seul balayage réseau pour tous les comptes de l'écran (au lieu d'un
   # par compte) : plus rapide, et permet d'afficher combien d'IP distinctes
   # utilisent chaque compte en ce moment, pour repérer d'un coup d'œil
@@ -105,11 +105,21 @@ list_accounts() {
     fi
     ct=$(_conn_time "$u")
     n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
-    if [ "$n" -gt 1 ]; then
-      printf " %-16s %-12s ${st_color}%-8s${NC} %s ${CYN}(%s IP)${NC}\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"
-    else
-      printf " %-16s %-12s ${st_color}%-8s${NC} %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+    lim=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null); lim=${lim:-0}
+    sip=$(printf '%s\n' "$sessions" | grep "^$u|session:" | wc -l)
+    pip=$(( n - sip ))
+    kind="IP"
+    [ "$sip" -gt 0 ] && kind="session"
+    [ "$sip" -gt 0 ] && [ "$pip" -gt 0 ] && kind="connexion"
+    usage=""
+    if [ "$n" -gt 0 ]; then
+      if [ "$lim" -gt 0 ] 2>/dev/null; then usage="$n/$lim $kind"; else usage="$n $kind"; fi
+      [ "$n" -gt 1 ] && usage="${usage}s"
     fi
+    printf " %-16s %-12s ${st_color}%-8s${NC} %s" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
+    printf "\n"
+    account_sep
   done < "$DB"
   pause
 }
@@ -292,10 +302,11 @@ cleanup_menu() {
 hysteria_menu() {
   while true; do
     header; center " ⚡ HYSTERIA2 " "${BOLD}${WHT}"; line
+    proto_dash hysteria hysteria hysteria; line
     if systemctl is-active --quiet hysteria-server 2>/dev/null; then
       ok "Hysteria2 actif (UDP 443)"
     elif [ -f /etc/hysteria/config.yaml ]; then
-      warn "Installé, en attente d'un premier compte (option 1)."
+      warn "Hysteria2 installé mais service arrêté."
     else
       warn "Hysteria2 non installé."
     fi
@@ -331,10 +342,12 @@ hy_create(){
   ask " Mot de passe (vide = généré) : " p
   [ -z "$p" ] && p=$(openssl rand -hex 6)
   ask " Durée en jours [30] : " d; d=${d:-30}
+  ask " Limite d'appareils simultanés (0 = illimité) : " lim
+  [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   if [ ! -x /usr/local/bin/nvpanel-hysteria ]; then
     err "Hysteria2 n'est pas installé sur ce serveur (option 4)."; pause; return
   fi
-  local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" 2>&1)
+  local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" "$lim" 2>&1)
   if echo "$out" | grep -q "^OK"; then
     echo "$out" | tail -n +2
     ok "Compte créé."
@@ -346,6 +359,8 @@ hy_create(){
       *"ERR exists"*) err "Ce nom d'utilisateur est déjà pris." ;;
       *"ERR notls"*)  err "Domaine ou certificat TLS absent (Paramètres → 1 puis 2)." ;;
       *"ERR args"*)   err "Nom d'utilisateur ou mot de passe vide." ;;
+      *"ERR guard"*)  err "Contrôleur d'appareils indisponible. Tape « update » puis réessaie." ;;
+      *"ERR service"*) err "Compte non créé : le service Hysteria2 n'a pas démarré." ;;
       *)              err "Création impossible pour l'instant." ;;
     esac
   fi
@@ -356,8 +371,16 @@ hy_list(){
   header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line
   local rows; rows=$(/usr/local/bin/nvpanel-hysteria list)
   [ -z "$rows" ] && { warn "Aucun compte."; pause; return; }
-  printf "   ${WHT}%-16s %-12s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT"
-  echo "$rows" | while IFS='|' read -r u e s; do printf "   %-16s %-12s %s\n" "$u" "$(_fmtd "$e")" "$s"; done
+  printf "   ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+  echo "$rows" | while IFS='|' read -r u e st ct dev lim; do
+    usage=""
+    if [ "${dev:-0}" -gt 0 ] 2>/dev/null; then
+      if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then usage="${dev}/${lim} appareils"; else usage="${dev} appareils"; fi
+    fi
+    printf "   %-16s %-12s %-8s %s" "$u" "$(_fmtd "$e")" "$st" "${ct:-—}"
+    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
+    printf "\n"; account_sep
+  done
   pause
 }
 
@@ -371,9 +394,11 @@ hy_delete(){
 
 hy_uninstall(){
   header; center " 🗑️ DÉSINSTALLER HYSTERIA2 " "${BOLD}${WHT}"; line
-  confirm " Supprimer Hysteria2 et tous ses comptes ?" || { pause; return; }
+  printf "   ${RED}➤ Supprimer Hysteria2 et tous ses comptes ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { pause; return; }
+  [ -x /usr/local/bin/nvpanel-hysteria ] && /usr/local/bin/nvpanel-hysteria purge all >/dev/null 2>&1
   systemctl disable --now hysteria-server >/dev/null 2>&1
-  rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml
+  rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml /etc/nvpanel/hysteria_stats_secret
   ok "Hysteria2 désinstallé."
   pause
 }

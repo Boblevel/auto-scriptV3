@@ -107,11 +107,16 @@ list_peers() {
   header
   printf " ${WHT}%-16s %-14s %-12s %-8s %s${NC}\n" "COMPTE" "IP" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  local nm pub ip exp ct
+  local nm pub ip exp ct st today usage
+  today=$(date +%F)
   while read -r _ nm pub ip exp; do
     [ -z "$nm" ] && continue
-    ct=$(_wg_time "$pub")
-    printf " %-16s %-14s %-12s %-8s %s\n" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "actif" "${ct:-—}"
+    ct=$(_wg_time "$pub"); st="actif"; usage=""
+    [ -n "$exp" ] && [ "$exp" -le "$today" ] && st="expiré"
+    [ -n "$ct" ] && usage="1 peer"
+    printf " %-16s %-14s %-12s %-8s %s" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
+    printf "\n"; account_sep
   done < "$DB"
   pause
 }
@@ -133,7 +138,7 @@ pick_peer() {
   echo; printf "   ${GRY}Clients WireGuard :${NC}\n"
   local i=1 row f
   for row in "${_pl[@]}"; do
-    IFS='|' ask "" nm ip ex <<< "$row"
+    IFS='|' read -r nm ip ex <<< "$row"
     printf "   ${WHT}%2d${NC}) %-16s ${GRY}%-14s exp %s${NC}\n" "$i" "$nm" "$ip" "$(_fmtd "$ex")"; i=$((i+1))
   done
   echo; ask "   ➤ Numéro (0 = annuler) : " n

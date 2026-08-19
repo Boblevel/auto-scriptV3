@@ -43,7 +43,7 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial(){
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un compte $LABEL valable 24 heures…${NC}\n"
-  create "$(_rand_name)" "$(_rand_pass)" 1
+  create "$(_rand_name)" "$(_rand_pass)" 1 1
 }
 
 pick(){
@@ -63,30 +63,47 @@ pick(){
 }
 
 create(){
-  local u p d out
+  local u p d lim out
   if [ -n "$1" ]; then
-    u="$1"; p="$2"; d="${3:-1}"
+    u="$1"; p="$2"; d="${3:-1}"; lim="${4:-1}"
   else
   header; ask " Nom d'utilisateur : " u
   [ -z "$u" ] && { err "Nom vide"; pause; return; }
   ask " Mot de passe : " p
   [ -z "$p" ] && { err "Mot de passe vide"; pause; return; }
   ask " Durée (jours) : " d; [[ "$d" =~ ^[0-9]+$ ]] || d=30
+  ask " Limite de sessions simultanées (0 = illimité) : " lim
+  [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-ppp add "$PROTO" "$u" "$p" "$d")
+  out=$(nvpanel-ppp add "$PROTO" "$u" "$p" "$d" "$lim")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
   else
-    case "$out" in *exists*) err "Ce nom existe déjà." ;; *) err "Échec : $out" ;; esac
+    case "$out" in
+      *exists*) err "Ce nom existe déjà." ;;
+      *"ERR guard"*) err "Contrôleur de sessions indisponible. Tape « update » puis réessaie." ;;
+      *) err "Échec : $out" ;;
+    esac
   fi
   pause
 }
 
 list_all(){
   header
-  printf " ${WHT}%-20s %s${NC}\n" "COMPTE" "EXPIRE"
-  nvpanel-ppp list "$PROTO" | while IFS='|' read -r n e s; do printf " %-20s %s\n" "$n" "$(_fmtd "$e")"; done
+  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+  line
+  nvpanel-ppp list "$PROTO" | while IFS='|' read -r n e st ct dev lim; do
+    [ -z "$n" ] && continue
+    usage=""
+    if [ "${dev:-0}" -gt 0 ] 2>/dev/null; then
+      if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then usage="${dev}/${lim} sessions"; else usage="${dev} sessions"; fi
+    fi
+    printf " %-16s %-12s %-8s %s" "$n" "$(_fmtd "$e")" "${st:-actif}" "${ct:-—}"
+    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
+    printf "\n"
+    account_sep
+  done
   pause
 }
 

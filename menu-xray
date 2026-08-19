@@ -21,15 +21,17 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days out
+  local name days lim out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"
+    name="$1"; days="${2:-1}"; lim="${3:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
+  ask " Limite d'IP simultanées (0 = illimité) : " lim
+  [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days")
+  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days" "$lim")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     ok "Client ${PROTO^^} créé"
@@ -44,13 +46,17 @@ list_clients() {
   header
   printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
   line
-  # « xlist » renvoie quatre champs (nom|expiration|état|activité) ; seuls les
-  # deux premiers étaient lus, l'état des comptes verrouillés n'apparaissait
-  # donc nulle part dans la liste.
-  local n e s c
-  while IFS='|' read -r n e s c; do
+  local n e s c dev lim usage
+  while IFS='|' read -r n e s c dev lim; do
     [ -z "$n" ] && continue
-    printf " %-16s %-12s %-8s %s\n" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+    usage=""
+    if [ "${dev:-0}" -gt 0 ] 2>/dev/null; then
+      if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then usage="${dev}/${lim} IP"; else usage="${dev} IP"; fi
+    fi
+    printf " %-16s %-12s %-8s %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
+    printf "\n"
+    account_sep
   done < <(nvpanel-cli xlist "$PROTO")
   pause
 }
@@ -63,7 +69,7 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial_client() {
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un client ${PROTO^^} valable 24 heures…${NC}\n"
-  add_client "$(_rand_name)" 1
+  add_client "$(_rand_name)" 1 1
 }
 
 pick_client() {
