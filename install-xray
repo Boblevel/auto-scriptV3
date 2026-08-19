@@ -111,7 +111,7 @@ rm -f /etc/nginx/conf.d/rhaff-http.conf /etc/nginx/conf.d/rhaff-tls.conf 2>/dev/
 cat > /etc/nginx/conf.d/rhaff.conf <<EOF
 server {
     listen 80;
-    server_name _;
+    server_name ${DOMAIN:-_};
     location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; default_type "text/plain"; }
     location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }
     location /vless  { proxy_pass http://127.0.0.1:8081; include /etc/nginx/nvpanel-ws.conf; }
@@ -120,7 +120,7 @@ server {
 }
 server {
     listen $XPORT ssl;
-    server_name _;
+    server_name ${DOMAIN:-_};
     ssl_certificate     $CRT;
     ssl_certificate_key $KEY;
     location /vmess  { proxy_pass http://127.0.0.1:8080; include /etc/nginx/nvpanel-ws.conf; }

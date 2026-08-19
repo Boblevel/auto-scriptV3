@@ -265,8 +265,9 @@ poll(){
   command -v iptables >/dev/null 2>&1 || return 0
   (
   flock -w 5 201 || return 0
-  # IMPORTANT : setup_chains() ne doit être appelé QUE si la chaîne est
-  # absente — il fait un FLUSH complet (-F) avant de reconstruire, ce qui
+  # IMPORTANT : setup_chains() n'est appelé que si la chaîne est absente
+  # ou si un ancien format sans étiquettes par protocole est encore actif.
+  # Il fait un FLUSH complet (-F) avant de reconstruire, ce qui
   # remet TOUS les compteurs à zéro. L'appeler à chaque relevé (erreur
   # commise puis corrigée le jour même) mesurait alors un `raw` toujours
   # proche de zéro juste après son propre flush : le vrai trafic accumulé
@@ -276,7 +277,13 @@ poll(){
   # Pour ajouter les comptes créés après coup SANS perdre l'historique des
   # compteurs, on utilise ensure_accounts() (ci-dessus), qui n'AJOUTE que
   # les règles manquantes et ne flushe jamais rien.
-  iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || setup_chains
+  if ! iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || \
+     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vmess' || \
+     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vless' || \
+     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment trojan' || \
+     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment shadowsocks'; then
+    setup_chains
+  fi
   ensure_accounts
   # Réaffirme la position du renvoi À CHAQUE relevé, pas seulement à la
   # création des chaînes. Motif : les installateurs de protocoles (ex.
