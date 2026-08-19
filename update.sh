@@ -60,7 +60,7 @@ for pair in \
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
-  "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
+  "nvpanel-conso:/usr/local/bin/nvpanel-conso" "nvpanel-guard:/usr/local/bin/nvpanel-guard" \
   "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp" \
   "install-l2tp:/usr/local/bin/install-l2tp" "install-pptp:/usr/local/bin/install-pptp" \
   "install-sstp:/usr/local/bin/install-sstp" \
@@ -74,6 +74,17 @@ done
 
 fill 78 "Mise en place…"
 command -v qrencode >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1
+# Les anciennes installations n'avaient pas encore d'horodatage dédié. On le
+# reconstruit une seule fois depuis la date de création du panel, sans remplacer
+# la date d'une installation qui possède déjà son marqueur.
+if [ ! -s /etc/nvpanel/install_date ]; then
+  _born=$(stat -c '%w' /etc/nvpanel 2>/dev/null)
+  [ -z "$_born" ] || [ "$_born" = "-" ] && _born=$(stat -c '%w' /usr/local/bin/menu 2>/dev/null)
+  [ -z "$_born" ] || [ "$_born" = "-" ] && _born=$(stat -c '%y' /etc/nvpanel 2>/dev/null)
+  if _stamp=$(date -d "$_born" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null); then
+    printf '%s\n' "$_stamp" > /etc/nvpanel/install_date
+  fi
+fi
 ln -sf /usr/local/bin/menu /usr/local/bin/acc 2>/dev/null
 ln -sf /usr/local/bin/menu /usr/local/bin/dgh 2>/dev/null
 ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
@@ -109,6 +120,9 @@ grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shel
 # Le bot Telegram n'est PAS redémarré ici : c'est à toi de le faire
 # depuis le menu (Bot Telegram → « Redémarrer le bot »).
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
+# Installe/met à niveau le garde avant les protocoles qui s'appuient dessus.
+# La commande est idempotente et migre aussi les hooks PPP existants.
+[ -x /usr/local/bin/nvpanel-guard ] && /usr/local/bin/nvpanel-guard install >/dev/null 2>&1
 
 fill 96 "Application de la configuration…"
 
@@ -124,6 +138,11 @@ touch /root/.hushlogin 2>/dev/null
 
 if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto >/dev/null 2>&1
+fi
+# Hysteria2 : convertit aussi les anciennes configurations userpass (qui
+# plantaient avec une base vide) vers l'authentification locale + stats réelles.
+if command -v hysteria >/dev/null 2>&1 && [ -f /etc/hysteria/config.yaml ] && [ -x /usr/local/bin/nvpanel-hysteria ]; then
+  /usr/local/bin/nvpanel-hysteria rebuild >/dev/null 2>&1
 fi
 # compteur de consommation CLIENTS (exclut le trafic propre du serveur)
 if [ -x /usr/local/bin/nvpanel-conso ]; then

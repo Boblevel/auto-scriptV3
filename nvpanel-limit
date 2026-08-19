@@ -44,7 +44,13 @@ sessions_of() {
       }
     }' | sort -n | while read -r pid ip; do
       owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
-      [ "$owner" = "$1" ] && printf '%s %s\n' "$pid" "$ip"
+      [ "$owner" = "$1" ] || continue
+      # SlowDNS termine son tunnel sur SSH en localhost : dans ce cas l'IP
+      # publique du téléphone n'est plus visible au niveau SSH. On limite donc
+      # honnêtement le nombre de SESSIONS authentifiées (une identité par PID)
+      # au lieu de considérer 127.0.0.1 comme un faux appareil unique.
+      case "$ip" in 127.0.0.1|::1|\[::1\]) ip="session:$pid" ;; esac
+      printf '%s %s\n' "$pid" "${ip:-session:$pid}"
     done
 }
 

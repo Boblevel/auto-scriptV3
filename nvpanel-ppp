@@ -8,6 +8,7 @@
 # ============================================================
 SECRETS=/etc/ppp/chap-secrets
 DBDIR=/etc/nvpanel/db
+GUARD=/usr/local/bin/nvpanel-guard
 mkdir -p "$DBDIR" /etc/ppp; touch "$SECRETS"; chmod 600 "$SECRETS"
 
 _srv(){ case "$1" in l2tp) echo l2tpd ;; pptp) echo pptpd ;; sstp) echo sstpd ;; *) return 1 ;; esac; }
@@ -16,9 +17,21 @@ _clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
 # Affichage uniquement (JJ-MM-AAAA) — les dates restent stockées en AAAA-MM-JJ
 # partout ailleurs, les comparaisons de tri en dépendent.
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
+_guard_ok(){ [ -x "$GUARD" ] && systemctl is-active --quiet nvpanel-guard 2>/dev/null; }
+_since(){
+  local first="$1" now d
+  case "$first" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
+  now=$(date +%s); d=$((now-first)); [ "$d" -lt 0 ] && d=0
+  if [ "$d" -lt 60 ]; then printf '< 1 min'
+  elif [ "$d" -lt 3600 ]; then printf '%d min' "$((d/60))"
+  elif [ "$d" -lt 86400 ]; then printf '%d h %02d' "$((d/3600))" "$(((d%3600)/60))"
+  else printf '%d j %02d h' "$((d/86400))" "$(((d%86400)/3600))"; fi
+}
 
 _box(){ # proto user pass created exp
-  local proto="$1" u="$2" p="$3" cr="$4" ex="$5" ip host port
+  local proto="$1" u="$2" p="$3" cr="$4" ex="$5" ip host port lim
+  lim=$(_guard_ok && "$GUARD" limit-get "$proto" "$u" 2>/dev/null); lim=${lim:-0}
+  [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   ip=$(cat /etc/nvpanel/ip 2>/dev/null)
   host=$(cat /etc/nvpanel/domain 2>/dev/null); [ -z "$host" ] && host="$ip"
   case "$proto" in
@@ -33,6 +46,7 @@ _box(){ # proto user pass created exp
 👤 Utilisateur : $u
 🔑 Mot de passe: $p
 🔌 Ports       : $port
+👥 Sessions max: $lim
 EOF
   [ "$proto" = l2tp ] && printf '🗝️ Clé partagée: %s\n' "$(cat /etc/nvpanel/l2tp_psk 2>/dev/null)"
   cat <<EOF
@@ -45,20 +59,33 @@ EOF
 cmd="$1"; shift 2>/dev/null
 case "$cmd" in
   add)
-    proto=$(_clean "$1"); user=$(_clean "$2"); pass=$(_clean "$3"); days="$4"
+    proto=$(_clean "$1"); user=$(_clean "$2"); pass=$(_clean "$3"); days="$4"; lim="${5:-0}"
     srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
     [ -z "$user" ] || [ -z "$pass" ] && { echo "ERR args"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    [ "$lim" -le 0 ] 2>/dev/null || _guard_ok || { echo "ERR guard"; exit 1; }
     db=$(_db "$proto"); touch "$db"
     grep -q "^### $user " "$db" && { echo "ERR exists"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
     printf '%s %s %s *\n' "$user" "$srv" "$pass" >> "$SECRETS"
     echo "### $user $pass $exp" >> "$db"
+    _guard_ok && "$GUARD" limit-set "$proto" "$user" "$lim" >/dev/null 2>&1
     echo "OK $user $exp"
     _box "$proto" "$user" "$pass" "$cr" "$exp" ;;
   list)
     proto=$(_clean "$1"); db=$(_db "$proto")
-    awk '/^### /{ st=($5=="L")?"verrou":"actif"; print $2"|"$4"|"st }' "$db" 2>/dev/null ;;
+    while read -r _ user _ exp fl; do
+      [ -z "$user" ] && continue
+      if [ "$fl" = "L" ]; then st="verrou"; n=0; lim=0; ct="—"
+      elif _guard_ok; then
+        IFS='|' read -r n lim first <<< "$("$GUARD" ppp-user "$proto" "$user" 2>/dev/null)"
+        n=${n:-0}; lim=${lim:-0}; st="actif"; ct=$(_since "$first")
+      else
+        st="actif"; n=0; lim=0; ct="—"
+      fi
+      printf '%s|%s|%s|%s|%s|%s\n' "$user" "$exp" "$st" "$ct" "$n" "$lim"
+    done < "$db" ;;
   lock)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
     db=$(_db "$proto")
@@ -67,7 +94,7 @@ case "$cmd" in
     # plus se connecter, mais ses identifiants sont conservés.
     sed -i "s|^$user[[:space:]]\+$srv[[:space:]]|#RHAFFLOCK $user $srv |" "$SECRETS"
     sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$db"
-    pkill -f "pppd.*$user" 2>/dev/null
+    if _guard_ok; then "$GUARD" ppp-kick "$proto" "$user" >/dev/null 2>&1; else pkill -f "pppd.*$user" 2>/dev/null; fi
     echo "OK locked" ;;
   unlock)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
@@ -75,6 +102,7 @@ case "$cmd" in
     grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
     sed -i "s|^#RHAFFLOCK $user $srv |$user $srv |" "$SECRETS"
     sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2|" "$db"
+    _guard_ok && "$GUARD" ppp-clear "$proto" "$user" >/dev/null 2>&1
     echo "OK unlocked" ;;
   info)
     proto=$(_clean "$1"); user=$(_clean "$2"); db=$(_db "$proto")
@@ -88,7 +116,12 @@ case "$cmd" in
     grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
     sed -i "/^$user[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
     sed -i "/^### $user /d" "$db"
-    pkill -f "pppd.*$user" 2>/dev/null
+    if _guard_ok; then
+      "$GUARD" ppp-kick "$proto" "$user" >/dev/null 2>&1
+      "$GUARD" limit-del "$proto" "$user" >/dev/null 2>&1
+    else
+      pkill -f "pppd.*$user" 2>/dev/null
+    fi
     echo "OK deleted" ;;
   renew)
     proto=$(_clean "$1"); user=$(_clean "$2"); days="$3"; db=$(_db "$proto")
@@ -105,15 +138,23 @@ case "$cmd" in
       [ -z "$u" ] && continue
       sed -i "/^$u[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
       sed -i "/^### $u /d" "$db"
-      pkill -f "pppd.*$u" 2>/dev/null
+      if _guard_ok; then
+        "$GUARD" ppp-kick "$proto" "$u" >/dev/null 2>&1
+        "$GUARD" limit-del "$proto" "$u" >/dev/null 2>&1
+      else
+        pkill -f "pppd.*$u" 2>/dev/null
+      fi
       n=$((n+1))
     done
     echo "OK $n" ;;
   online)
-    # Sessions PPP réellement connectées. On identifie chaque session par le
-    # fichier d'options que pppd utilise : cela évite de compter le service
-    # lui-même (xl2tpd, pptpd...) comme un client connecté.
     proto=$(_clean "$1")
+    if _guard_ok; then
+      "$GUARD" ppp-online "$proto" 2>/dev/null || echo 0
+      exit 0
+    fi
+    # Repli pour une ancienne installation sans Guard : sessions PPP réelles
+    # repérées par le fichier d'options pppd, sans inventer d'utilisateur.
     case "$proto" in
       l2tp) n=$(pgrep -fc 'pppd.*options\.xl2tpd' 2>/dev/null) ;;
       pptp) n=$(pgrep -fc 'pppd.*pptpd-options' 2>/dev/null) ;;

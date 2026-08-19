@@ -88,6 +88,9 @@ _small(){ [ "$(ui_level)" != 1 ]; }
 # cohérent. (Il a été rouge un temps, à la demande de l'auteur, puis remis
 # en bleu.) `line()` fait exactement le même trait.
 sep(){ line; }
+# Séparateur léger entre deux comptes : facilite la lecture des listes sans
+# alourdir les cadres principaux.
+account_sep(){ printf "${GRY}"; printf '─%.0s' $(seq 1 $W); printf "${NC}\n"; }
 
 
 # ---- Encadré d'accueil -------------------------------------------------
@@ -228,7 +231,11 @@ _ssh_sessions() {
         ip=$(printf '%s\n' "$ss_raw" | grep "pid=$pid," \
              | grep -oP '[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+' \
              | tail -1 | sed -E 's/:[0-9]+$//')
-        printf '%s|%s\n' "$u" "${ip:-pid$pid}"
+        # Via SlowDNS, SSH voit localhost. Ne jamais présenter 127.0.0.1
+        # comme IP cliente : la session authentifiée reste réelle, mais son
+        # IP publique n'est pas attribuable honnêtement à ce niveau.
+        case "$ip" in 127.0.0.1|::1|\[::1\]) ip="session:$pid" ;; esac
+        printf '%s|%s\n' "$u" "${ip:-session:$pid}"
       done | sort -u
 }
 
@@ -275,7 +282,7 @@ stats() {
   hy=$(_count_db hysteria)
   total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
 
-  local on_xray on_ss on_wg on_l2 on_pp on_sst
+  local on_xray on_ss on_wg on_l2 on_pp on_sst on_hy
   # Ne compte « en ligne » que si des comptes existent pour ce protocole :
   # sinon une connexion quelconque sur le port public (scan internet, très
   # courant sur tout VPS exposé) peut apparaître comme un faux client alors
@@ -288,16 +295,16 @@ stats() {
   [ "$vm" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline vmess 2>/dev/null || echo 0) ))
   [ "$vl" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline vless 2>/dev/null || echo 0) ))
   [ "$tr" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline trojan 2>/dev/null || echo 0) ))
-  on_ss=0;   [ "$ss" -gt 0 ] && on_ss=$(_online_uniq_port 8388)
+  on_ss=0;   [ "$ss" -gt 0 ] && { on_ss=$(nvpanel-cli xonline ss 2>/dev/null); on_ss=${on_ss:-0}; }
   on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
   on_l2=0;  [ "$l2"  -gt 0 ] && { on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}; }
   on_pp=0;  [ "$pp"  -gt 0 ] && { on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}; }
   on_sst=0; [ "$sst" -gt 0 ] && { on_sst=$(nvpanel-ppp online sstp 2>/dev/null); on_sst=${on_sst:-0}; }
-  # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
-  # exclu plutôt que d'afficher un faux chiffre.
-  online=$(( on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_sst ))
+  # Hysteria2 expose nativement le nombre d'instances clientes par compte.
+  on_hy=0; [ "$hy" -gt 0 ] && { on_hy=$(nvpanel-hysteria online 2>/dev/null); on_hy=${on_hy:-0}; }
+  online=$(( on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_sst + on_hy ))
 
-  local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst
+  local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_hy
   bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
   bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
   bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
@@ -305,7 +312,8 @@ stats() {
   bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
   bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
   bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
-  blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst ))
+  bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
+  blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_hy ))
 
   IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
 
@@ -343,7 +351,8 @@ proto_dash() {
       # (même échantillonnage que « connecté depuis »), donc chaque menu
       # affiche enfin son propre chiffre.
       online=0
-      [ "$total" -gt 0 ] && online=$(nvpanel-cli xonline "$dbf" 2>/dev/null); online=${online:-0}
+      local xp="$dbf"; [ "$xp" = "shadowsocks" ] && xp="ss"
+      [ "$total" -gt 0 ] && online=$(nvpanel-cli xonline "$xp" 2>/dev/null); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;

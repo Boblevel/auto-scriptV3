@@ -19,13 +19,18 @@ RAM_TOT=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')
 clear
 printf "${CYN}"
 cat <<'ART'
-   ┌────────────────────────────────────────────────────┐
-   │        R H A F F   S E R V I C E                     │
-   │        Installation                                  │
-   └────────────────────────────────────────────────────┘
+   ╭──────────────────────────────────────────────────────╮
+   │                                                      │
+   │          R H A F F   S E R V I C E                   │
+   │          MULTI PROTOCOLES · VPS EDITION              │
+   │                                                      │
+   ╰──────────────────────────────────────────────────────╯
 ART
-printf "${NC}\n"
-[ -n "$RAM_TOT" ] && [ "$RAM_TOT" -lt 900 ] && printf "${YLW}! RAM %s Mo — 1 Go minimum recommandé.${NC}\n\n" "$RAM_TOT"
+printf "${NC}"
+printf "   ${MAG}◆${NC} ${WHT}Installation intelligente${NC}  ${GRY}•${NC}  ${CYN}%s${NC}  ${GRY}•${NC}  ${CYN}%s${NC}\n" "${PRETTY_NAME:-Debian/Ubuntu}" "$(uname -m)"
+printf "   ${GRY}────────────────────────────────────────────────────────${NC}\n"
+printf "   ${GRN}●${NC} Détection système     ${GRN}●${NC} Déploiement sécurisé     ${GRN}●${NC} Contrôles automatiques\n\n"
+[ -n "$RAM_TOT" ] && [ "$RAM_TOT" -lt 900 ] && printf "   ${YLW}⚠ RAM %s Mo — 1 Go minimum recommandé.${NC}\n\n" "$RAM_TOT"
 
 # --- Saisies -------------------------------------------------
 read -rp "   🌐 Nom de domaine (laisser vide si aucun) : " NVDOMAIN
@@ -112,6 +117,11 @@ grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shel
 
 fill 40 "Déploiement du panel…"
 mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
+# Horodatage immuable de la toute première installation. Les mises à jour ne le
+# remplacent jamais : le bilan du trafic peut ainsi afficher la vraie date du VPS.
+if [ ! -s /etc/nvpanel/install_date ]; then
+  date '+%Y-%m-%dT%H:%M:%S%z' > /etc/nvpanel/install_date
+fi
 curl -s ipv4.icanhazip.com > /etc/nvpanel/ip 2>/dev/null || curl -s ifconfig.me > /etc/nvpanel/ip 2>/dev/null
 [ -n "$NVDOMAIN" ] && echo "$NVDOMAIN" > /etc/nvpanel/domain
 echo "$NVPORT" > /etc/nvpanel/xport
@@ -134,7 +144,7 @@ for pair in \
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
-  "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
+  "nvpanel-conso:/usr/local/bin/nvpanel-conso" "nvpanel-guard:/usr/local/bin/nvpanel-guard" \
   "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp" \
   "install-l2tp:/usr/local/bin/install-l2tp" "install-pptp:/usr/local/bin/install-pptp" \
   "install-sstp:/usr/local/bin/install-sstp" \
@@ -162,6 +172,9 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload 2>/dev/null
 systemctl enable --now nvpanel-limit >/dev/null 2>&1
+# Garde multi-protocoles : service local uniquement, utilisé par Xray, PPP et
+# Hysteria2 pour les limites réelles d'IP/sessions/appareils.
+[ -x /usr/local/bin/nvpanel-guard ] && /usr/local/bin/nvpanel-guard install >/dev/null 2>&1
 ( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null
 # compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
@@ -210,19 +223,24 @@ sleep 0.3
 
 # --- Écran final --------------------------------------------
 IPADDR=$(cat /etc/nvpanel/ip 2>/dev/null)
+INSTALLED=$(date -d "$(cat /etc/nvpanel/install_date 2>/dev/null)" '+%d/%m/%Y à %H:%M:%S %Z' 2>/dev/null)
 clear
 printf "${GRN}"
 cat <<'DONE'
-   ┌──────────────────────────────────────────────────┐
-   │                                                    │
-   │      ✔   R H A F F   S E R V I C E   installé      │
-   │                                                    │
-   └──────────────────────────────────────────────────┘
+   ╭──────────────────────────────────────────────────────╮
+   │                                                      │
+   │             ✔  INSTALLATION TERMINÉE                 │
+   │               RHAFF SERVICE                          │
+   │                                                      │
+   ╰──────────────────────────────────────────────────────╯
 DONE
-printf "${NC}\n"
-printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\n"
-printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
-printf "   ${GRY}🌐 IP du serveur : %s${NC}\n\n" "$IPADDR"
+printf "${NC}"
+printf "   ${GRN}●${NC} Panel déployé       ${GRN}●${NC} Services préparés       ${GRN}●${NC} Surveillance active\n"
+printf "   ${GRY}────────────────────────────────────────────────────────${NC}\n"
+printf "   ${CYN}🌐 VPS${NC}          : ${WHT}%s${NC}\n" "$IPADDR"
+printf "   ${CYN}🗓 Installation${NC} : ${WHT}%s${NC}\n" "${INSTALLED:-date enregistrée}"
+printf "   ${CYN}⌨ Panel${NC}        : ${WHT}menu${NC}  ${GRY}•${NC}  ${WHT}acc${NC}  ${GRY}•${NC}  ${WHT}dgh${NC}\n"
+printf "   ${GRY}────────────────────────────────────────────────────────${NC}\n\n"
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion puis tape : update${NC}\n\n"
