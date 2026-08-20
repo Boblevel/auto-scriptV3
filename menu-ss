@@ -35,7 +35,7 @@ add_client() {
   pause
 }
 list_clients() {
-  local page=0 size=6 total pages start end i n e s c color choice
+  local page=0 size=4 total pages start end i n e s c color choice
   mapfile -t _rows_ss < <(nvpanel-cli xlist ss)
   total=${#_rows_ss[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client Shadowsocks."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -47,9 +47,10 @@ list_clients() {
     for ((i=start; i<end; i++)); do
       IFS='|' read -r n e s c <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
       printf " %-16s %-12s ${color}%-8s${NC} %s\n" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+      [ "$i" -lt $((end-1)) ] && table_sep
     done
     if [ "$pages" -le 1 ]; then pause; return; fi
-    echo; ask "   ➤ n suivante | p précédente | 0 retour : " choice
+    ask "   ➤ n suivante | p précédente | 0 retour : " choice
     case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
   done
 }
@@ -183,13 +184,17 @@ setup_menu(){
 ensure_xray || exit 0
 while true; do
   header
-  entry "1" "➕" "Ajouter un client"; entry "2" "📋" "Lister les clients"
-  entry "3" "🔍" "Revoir un client"; entry "4" "♻️" "Prolonger un client"
-  entry "5" "🗑️" "Supprimer un client"; entry "6" "🧹" "Nettoyage des comptes"
-  entry "7" "🎁" "Compte test 24 h"
-  entry "8" "⚙️" "Installer / désinstaller"
-  entry "0" "⬅️" "Retour"
-  line
+  menu_box_top
+  menu_box_entry "1" "➕" "Ajouter un client"
+  menu_box_entry "2" "📋" "Lister les clients"
+  menu_box_entry "3" "🔍" "Revoir un client"
+  menu_box_entry "4" "♻️" "Prolonger un client"
+  menu_box_entry "5" "🗑️" "Supprimer un client"
+  menu_box_entry "6" "🧹" "Nettoyage des comptes"
+  menu_box_entry "7" "🎁" "Compte test 24 h"
+  menu_box_entry "8" "⚙️" "Installer / désinstaller"
+  menu_box_entry "0" "⬅️" "Retour"
+  menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) trial_client ;; 8) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
 done

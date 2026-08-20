@@ -89,7 +89,7 @@ create(){
 }
 
 list_all(){
-  local page=0 size=6 total pages start end i n e s color choice
+  local page=0 size=4 total pages start end i n e s color choice
   mapfile -t _rows_ppp < <(nvpanel-ppp list "$PROTO")
   total=${#_rows_ppp[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun compte $LABEL."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -101,9 +101,10 @@ list_all(){
     for ((i=start; i<end; i++)); do
       IFS='|' read -r n e s <<< "${_rows_ppp[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
       printf " %-16s %-12s ${color}%-8s${NC} %s\n" "$n" "$(_fmtd "$e")" "$s" "—"
+      [ "$i" -lt $((end-1)) ] && table_sep
     done
     if [ "$pages" -le 1 ]; then pause; return; fi
-    echo; ask "   ➤ n suivante | p précédente | 0 retour : " choice
+    ask "   ➤ n suivante | p précédente | 0 retour : " choice
     case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
   done
 }
@@ -239,16 +240,17 @@ setup_menu(){
 ensure || true
 while true; do
   header
-  entry "1" "➕" "Créer un compte"
-  entry "2" "📋" "Lister les comptes"
-  entry "3" "🔍" "Revoir un compte"
-  entry "4" "♻️" "Prolonger un compte"
-  entry "5" "🗑️" "Supprimer un compte"
-  entry "6" "🧹" "Nettoyage des comptes"
-  entry "7" "🎁" "Compte test 24 h"
-  entry "8" "⚙️" "Installer / désinstaller"
-  entry "0" "⬅️" "Retour"
-  line
+  menu_box_top
+  menu_box_entry "1" "➕" "Créer un compte"
+  menu_box_entry "2" "📋" "Lister les comptes"
+  menu_box_entry "3" "🔍" "Revoir un compte"
+  menu_box_entry "4" "♻️" "Prolonger un compte"
+  menu_box_entry "5" "🗑️" "Supprimer un compte"
+  menu_box_entry "6" "🧹" "Nettoyage des comptes"
+  menu_box_entry "7" "🎁" "Compte test 24 h"
+  menu_box_entry "8" "⚙️" "Installer / désinstaller"
+  menu_box_entry "0" "⬅️" "Retour"
+  menu_box_bot
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" o || break
   case "$o" in
     1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) del ;;

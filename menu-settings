@@ -11,66 +11,50 @@ header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line;
 
 traffic_report(){
   local LC_ALL=C.UTF-8
-  header; center " 📈  BILAN DU TRAFIC — TOUS PROTOCOLES " "${BOLD}${WHT}"; line
+  header; center " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES " "${BOLD}${WHT}"; line
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
   local DB=/etc/nvpanel/db/conso
+  [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
 
-  local year today_str week month yearsum days_tracked start_date todaysum
+  local year today_str week month yearsum days_tracked start_date
   year=$(date +%Y); today_str=$(date +%F)
+  # "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu), "%d"
+  # convertit la somme via un entier 32 bits et déborde au-delà de 4 Go —
+  # exactement le bug déjà corrigé dans nvpanel-conso, mais cette fonction
+  # réimplémentait sa propre somme séparée, jamais mise à jour à l'époque.
+  # "%.0f" passe par le formatage flottant natif d'awk, sans cette limite.
+  local todaysum
   todaysum=$(awk -F'|' -v d="$today_str" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   yearsum=$(awk -F'|' -v p="$year" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
-  days_tracked=$(grep -c '^[0-9][0-9][0-9][0-9]-' "$DB" 2>/dev/null); days_tracked=${days_tracked:-0}
+  days_tracked=$(wc -l < "$DB" 2>/dev/null); days_tracked=${days_tracked:-0}
   start_date=$(head -1 "$DB" 2>/dev/null | cut -d'|' -f1)
 
-  # Date d'installation : les nouvelles installations l'enregistrent une seule
-  # fois. Pour un VPS déjà équipé, on utilise la date de création réelle du
-  # dossier du panel (ou celle du menu si le FS ne fournit pas birth time).
-  local installed raw
-  raw=$(cat /etc/nvpanel/install_date 2>/dev/null)
-  if [ -z "$raw" ]; then
-    raw=$(stat -c '%w' /etc/nvpanel 2>/dev/null)
-    [ -z "$raw" ] || [ "$raw" = "-" ] && raw=$(stat -c '%w' /usr/local/bin/menu 2>/dev/null)
-    [ -z "$raw" ] || [ "$raw" = "-" ] && raw=$(stat -c '%y' /etc/nvpanel 2>/dev/null)
-  fi
-  installed=$(date -d "$raw" '+%d/%m/%Y à %H:%M:%S %Z' 2>/dev/null)
-  [ -n "$installed" ] || installed="date indisponible"
+  # Padding calculé à la main (et non via printf "%-Ns") : "%-Ns" compte des
+  # OCTETS, pas des caractères — un accent comme le "é" d'« année » occupe
+  # 2 octets en UTF-8 pour 1 seul caractère affiché, ce qui décalait cette
+  # ligne d'une colonne par rapport aux autres. ${#s} sous LC_ALL=C.UTF-8
+  # compte, lui, le vrai nombre de caractères, donc l'alignement reste
+  # correct quel que soit le contenu.
+  local w=20 lbl0 lbl1 lbl2 lbl3
+  lbl0="Aujourd'hui"; lbl1="7 derniers jours"; lbl2="Ce mois-ci"; lbl3="Cette année ($year)"
 
   echo
-  printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
-  printf "   ${CYN}┃${NC} ${BOLD}${WHT}RHAFF SERVICE · TRAFIC CLIENTS${NC}%*s${CYN}┃${NC}\n" 22 ""
-  printf "   ${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"
-  printf "   ${CYN}┃${NC} ${MAG}🗓${NC}  Installé : ${WHT}%-38s${NC}${CYN}┃${NC}\n" "$installed"
+  printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl0" $((w-${#lbl0})) "" "$(_hr "${todaysum:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
+  printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
+  echo
+  # Explique pourquoi semaine/mois/année peuvent afficher le même chiffre :
+  # tant que le suivi n'a pas plus de 7 jours d'historique, c'est normal et
+  # mathématique — plutôt que de laisser un chiffre identique sans
+  # explication, la période réellement couverte est maintenant affichée.
   if [ -n "$start_date" ]; then
-    printf "   ${CYN}┃${NC} ${CYN}◷${NC}  Suivi    : ${WHT}%-38s${NC}${CYN}┃${NC}\n" "depuis $(_fmtd "$start_date") · ${days_tracked} jour(s)"
-  else
-    printf "   ${CYN}┃${NC} ${CYN}◷${NC}  Suivi    : ${GRY}%-38s${NC}${CYN}┃${NC}\n" "en attente des premières données"
+    printf "   ${GRY}Suivi depuis le %s · %s jour(s) d'historique${NC}\n" "$(_fmtd "$start_date")" "$days_tracked"
   fi
-  printf "   ${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"
-  printf "   ${CYN}┃${NC} ${GRY}Aujourd'hui${NC}       ${BOLD}${WHT}%12s${NC}   ${GRY}7 jours${NC} ${BOLD}${WHT}%12s${NC} ${CYN}┃${NC}\n" "$(_hr "${todaysum:-0}")" "$(_hr "${week:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}Ce mois${NC}           ${BOLD}${WHT}%12s${NC}   ${GRY}Année${NC}    ${BOLD}${WHT}%12s${NC} ${CYN}┃${NC}\n" "$(_hr "${month:-0}")" "$(_hr "${yearsum:-0}")"
-  printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
-
-  echo
-  printf "   ${WHT}%-24s %13s %13s${NC}\n" "PROTOCOLE" "AUJOURD'HUI" "CE MOIS"
-  printf "   ${GRY}──────────────────────────────────────────────────────${NC}\n"
-  local spec tag label dbf pt pm
-  for spec in \
-    'ssh_bundle|SSH · SlowDNS · UDP' \
-    'vmess|VMess' \
-    'vless|VLESS' \
-    'trojan|Trojan' \
-    'shadowsocks|Shadowsocks' \
-    'wg|WireGuard' \
-    'ppp|L2TP · PPTP · SSTP' \
-    'hysteria|Hysteria2'; do
-    tag=${spec%%|*}; label=${spec#*|}; dbf="/etc/nvpanel/db/conso_$tag"
-    pt=$(awk -F'|' -v d="$today_str" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
-    pm=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
-    printf "   ${CYN}%-24s${NC} ${WHT}%13s %13s${NC}\n" "$label" "$(_hr "${pt:-0}")" "$(_hr "${pm:-0}")"
-    printf "   ${GRY}──────────────────────────────────────────────────────${NC}\n"
-  done
   pause
 }
 
@@ -375,26 +359,33 @@ reset_traffic(){
   pause
 }
 
+settings_row(){
+  local n1="$1" t1="$2" n2="$3" t2="$4"
+  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-21.21s ${CYN}│${NC} ${GRN}[%02d]${NC} %-21.21s${CYN}┃${NC}\n" "$n1" "$t1" "$n2" "$t2"
+}
+settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
+
 while true; do
-  header
-  entry "1"  "🌐" "Ajouter / changer le domaine"
-  entry "2"  "🔒" "Activer le TLS (HTTPS)"
-  entry "3"  "⚙️" "Changer le port Dropbear"
-  entry "4"  "📈" "Bilan du trafic (tous protocoles)"
-  entry "5"  "📦" "Sauvegarder maintenant"
-  entry "6"  "🔄" "Restaurer une sauvegarde"
-  entry "7"  "📊" "Utilisation RAM / trafic"
-  entry "8"  "🧠" "Créer un SwapRAM"
-  entry "9"  "⚡" "Activer BBR"
-  entry "10" "🚀" "Test de vitesse du serveur"
-  entry "11" "♻️" "Redémarrer les services"
-  entry "12" "📜" "Renouveler les certificats"
-  entry "13" "📝" "Ajouter une bannière SSH"
-  entry "14" "ℹ️" "Info du script"
-  entry "15" "🧹" "Réinitialiser la consommation"
-  entry "16" "🔄" "Mettre à jour le script"
-  entry "17" "🗑️" "Désinstaller le script"
-  entry "0"  "⬅️" "Retour"
+  flush_in; printf '\033[H\033[2J'
+  _edge "┏" "┓" "PARAMÈTRES DU PANEL"
+  settings_row 1  "DOMAINE"               10 "TEST DE VITESSE"
+  settings_sep
+  settings_row 2  "TLS / HTTPS"           11 "REDÉMARRER SERVICES"
+  settings_sep
+  settings_row 3  "PORT DROPBEAR"         12 "CERTIFICATS SSL"
+  settings_sep
+  settings_row 4  "BILAN DU TRAFIC"       13 "BANNIÈRE SSH"
+  settings_sep
+  settings_row 5  "SAUVEGARDER"           14 "INFO DU SCRIPT"
+  settings_sep
+  settings_row 6  "RESTAURER"             15 "RÉINITIALISER CONSO"
+  settings_sep
+  settings_row 7  "RAM / TRAFIC"          16 "METTRE À JOUR"
+  settings_sep
+  settings_row 8  "CRÉER SWAPRAM"         17 "DÉSINSTALLER SCRIPT"
+  settings_sep
+  settings_row 9  "ACTIVER BBR"            0 "RETOUR"
+  _edge "┗" "┛" "$CONTACT"
   ask "$(printf " ${WHT}➤ Choix [0-17] :${NC} ")" o || break
   case "$o" in
     1) set_domain ;; 2) [ -s /etc/nvpanel/domain ] && install-tls || { err "Définis d'abord un domaine (option 1)."; pause; } ;;
