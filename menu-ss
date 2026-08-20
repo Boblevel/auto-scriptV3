@@ -41,14 +41,16 @@ list_clients() {
   pages=$(( (total + size - 1) / size ))
   while true; do
     header
-    printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
-    line
+    table_top
+    printf "${CYN}┃${NC} ${WHT}%-16s %-12s %-8s %s${NC}" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r n e s c <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      printf " %-16s %-12s ${color}%-8s${NC} %s\n" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
+    table_bot
     if [ "$pages" -le 1 ]; then pause; return; fi
     ask "   ➤ n suivante | p précédente | 0 retour : " choice
     case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac

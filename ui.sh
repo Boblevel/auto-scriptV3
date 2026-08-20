@@ -67,8 +67,15 @@ menu_box_entry(){
   printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
 
-# Séparateur léger entre deux comptes d'un tableau.
-table_sep(){ printf "${GRY}"; printf '─%.0s' $(seq 1 $W); printf "${NC}\n"; }
+# Tableau fermé : bord cyan, séparateurs internes gris comme sur la maquette.
+table_top(){ top; }
+table_bot(){ bot; }
+table_sep(){
+  printf "${CYN}┣${GRY}"; printf '─%.0s' $(seq 1 $W); printf "${CYN}┫${NC}\n"
+}
+box_sep(){
+  printf "${CYN}┣${GRY}"; printf '─%.0s' $(seq 1 $W); printf "${CYN}┫${NC}\n"
+}
 
 # Vide les touches restées en attente dans le terminal.
 # Sans ça, les touches tapées pendant une opération longue (mise à jour,
@@ -129,6 +136,8 @@ infobox(){
   flush_in
   printf '\033[H\033[2J\033[3J'
   _edge "┏" "┓" "R H A F F   S E R V I C E"
+  center "panel de gestion & contrôle · $CONTACT" "${GRY}"
+  box_sep
   sysinfo
   stats
   _edge "┗" "┛" "$CONTACT"
@@ -195,9 +204,9 @@ sysinfo() {
   ip=$(cat /etc/nvpanel/ip 2>/dev/null || echo "-")
   domain=$(cat /etc/nvpanel/domain 2>/dev/null || echo "non configuré")
   up=$(uptime -p 2>/dev/null | sed 's/up //; s/ hours\?/h/; s/ minutes\?/m/; s/,//g')
-  printf " ${GRY}🖥️  OS   :${NC} %-20s ${GRY}💾 RAM :${NC} %s/%s Mo\n" "${os:0:20}" "$ram_used" "$ram_tot"
-  printf " ${GRY}🌐 IP   :${NC} %-20s ${GRY}⚙️  Core:${NC} %s\n" "$ip" "$cores"
-  printf " ${GRY}🔗 Dom. :${NC} %-20s ${GRY}⏱️  Up  :${NC} %s\n" "${domain:0:20}" "${up:-.}"
+  printf "${CYN}┃${NC} ${GRY}🖥️  OS   :${NC} %-20s ${GRY}💾 RAM :${NC} %s/%s Mo" "${os:0:20}" "$ram_used" "$ram_tot"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  printf "${CYN}┃${NC} ${GRY}🌐 IP   :${NC} %-20s ${GRY}⚙️  Core:${NC} %s" "$ip" "$cores"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  printf "${CYN}┃${NC} ${GRY}🔗 Dom. :${NC} %-20s ${GRY}⏱️  Up  :${NC} %s" "${domain:0:20}" "${up:-.}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
 
 # Compte les CLIENTS RÉELS distincts (par IP source), jamais le nombre brut
@@ -323,8 +332,8 @@ stats() {
 
   IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
 
-  printf " ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}📦 Total:${NC} ${WHT}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$online" "$total" "$blocked"
-  printf " ${GRY}📊 Conso — hier:${NC} %s ${GRY}· auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$hier")" "$(_hr "$auj")" "$(_hr "$mois")"
+  printf "${CYN}┃${NC} ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}📦 Total:${NC} ${WHT}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$online" "$total" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  printf "${CYN}┃${NC} ${GRY}📊 Conso — hier:${NC} %s ${GRY}· auj.:${NC} %s ${GRY}· mois:${NC} %s" "$(_hr "$hier")" "$(_hr "$auj")" "$(_hr "$mois")"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
 
 # Tableau de bord d'un protocole précis (affiché en en-tête de son menu)

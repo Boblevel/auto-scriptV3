@@ -94,8 +94,9 @@ list_accounts() {
   pages=$(( (total + size - 1) / size )); sessions=$(_ssh_sessions); today=$(date +%F)
   while true; do
     header
-    printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
-    line
+    table_top
+    printf "${CYN}┃${NC} ${WHT}%-16s %-12s %-8s %s${NC}" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r u exp <<< "${_rows_ssh[$i]}"
@@ -108,12 +109,13 @@ list_accounts() {
       fi
       ct=$(_conn_time "$u"); n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
       if [ "$n" -gt 1 ]; then
-        printf " %-16s %-12s ${st_color}%-8s${NC} %s ${CYN}(%s IP)${NC}\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"
+        printf "${CYN}┃${NC} %-16s %-12s ${st_color}%-8s${NC} %s ${CYN}(%s IP)${NC}" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       else
-        printf " %-16s %-12s ${st_color}%-8s${NC} %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+        printf "${CYN}┃${NC} %-16s %-12s ${st_color}%-8s${NC} %s" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       fi
       [ "$i" -lt $((end-1)) ] && table_sep
     done
+    table_bot
     if [ "$pages" -le 1 ]; then pause; return; fi
     ask "   ➤ n suivante | p précédente | 0 retour : " n
     case "${n,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
