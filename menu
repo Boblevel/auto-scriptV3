@@ -13,8 +13,8 @@ run() {
 # Encadrement du menu d'accueil uniquement. Les trois anciennes lignes de
 # séparation sont réutilisées comme haut / milieu / bas du cadre : aucune
 # ligne supplémentaire, afin de respecter la hauteur des terminaux mobiles.
-home_top(){ _edge "┏" "┓" "PROTOCOLES & SERVICES"; }
-home_mid(){ _edge "┣" "┫" "OUTILS & ADMINISTRATION"; }
+home_top(){ _edge "┏" "┓" "PROTOCOLES & SERVICES" "$YLW"; }
+home_mid(){ _edge "┣" "┫" "OUTILS & ADMINISTRATION" "$YLW"; }
 home_bot(){ bot; }
 home_entry(){
   local n="$1" e="$2" t="$3"

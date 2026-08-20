@@ -35,7 +35,7 @@ add_client() {
   pause
 }
 list_clients() {
-  local page=0 size=4 total pages start end i n e s c color choice
+  local page=0 size=4 total pages start end i n e s c color choice ips
   mapfile -t _rows_ss < <(nvpanel-cli xlist ss)
   total=${#_rows_ss[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client Shadowsocks."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -47,7 +47,13 @@ list_clients() {
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r n e s c <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      ips=0; [ "$s" = "actif" ] && ips=$(nvpanel-cli xipcount ss "$n" 2>/dev/null); ips=${ips:-0}
+      if [ "$ips" -gt 0 ] 2>/dev/null; then
+        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s ${CYN}(%s IP%s)${NC}" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}" "$ips" "$([ "$ips" -gt 1 ] && printf s)"
+      else
+        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+      fi
+      printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot

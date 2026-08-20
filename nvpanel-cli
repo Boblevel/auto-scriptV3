@@ -105,6 +105,35 @@ _conn_since(){
   else printf '%d h %02d' "$(( d / 3600 ))" "$(( (d % 3600) / 60 ))"; fi
 }
 
+
+# Shadowsocks arrive directement dans Xray (port 8388) : contrairement aux
+# WebSockets VMess/VLESS/Trojan placés derrière nginx, le journal Xray conserve
+# ici l'IP source publique avec l'email du compte. On compte uniquement les IP
+# distinctes réellement vues pendant les 5 dernières minutes.
+_ss_ip_count(){
+  local name="$1" log=/var/log/xray/access.log pats i
+  [ -r "$log" ] || { printf '0'; return; }
+  pats=$(for i in 0 1 2 3 4; do date -d "-$i min" '+%Y/%m/%d %H:%M' 2>/dev/null; done)
+  [ -n "$pats" ] || { printf '0'; return; }
+  tail -n 6000 "$log" 2>/dev/null \
+    | grep -F -f <(printf '%s\n' "$pats") 2>/dev/null \
+    | awk -v n="$name" '
+        {
+          ok=0; src=""
+          for(i=1;i<=NF;i++) {
+            if($i=="email:" && $(i+1)==n) ok=1
+            if($i=="from" && i<NF) src=$(i+1)
+          }
+          if(ok && src!="") {
+            sub(/^tcp:/,"",src)
+            sub(/:[0-9]+$/,"",src)
+            gsub(/^\[/,"",src); gsub(/\]$/,"",src)
+            if(src!="127.0.0.1" && src!="::1") print src
+          }
+        }' \
+    | sort -u | awk 'NF{c++} END{print c+0}'
+}
+
 _today(){ date +%Y-%m-%d; }
 
 # udp-custom (mode « passwords ») ne lit pas /etc/shadow : il cherche les
@@ -492,6 +521,12 @@ case "$cmd" in
       case "$first" in ''|0|*[!0-9]*) ;; *) n=$((n+1)) ;; esac
     done < <(grep '^### ' "$XDB" 2>/dev/null)
     echo "$n" ;;
+  xipcount)
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t ')
+    case "$proto" in
+      ss) _ss_ip_count "$name" ;;
+      *)  printf '0\n' ;;  # nginx masque l’IP par compte pour VMess/VLESS/Trojan
+    esac ;;
   xlist)
     proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
     _xapi_ensure; xsample_run
@@ -586,5 +621,5 @@ case "$cmd" in
       *) echo "ERR proto"; exit 1 ;;
     esac ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xonline|xdel|xrenew|xinfo|xlock|xunlock|xsample|xapi|purge"; exit 1 ;;
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xonline|xipcount|xdel|xrenew|xinfo|xlock|xunlock|xsample|xapi|purge"; exit 1 ;;
 esac

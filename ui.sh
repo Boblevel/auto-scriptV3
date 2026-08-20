@@ -119,13 +119,13 @@ sep(){ line; }
 # Remplace la bannière séparée du menu d'accueil : deux lignes gagnées et
 # un rendu plus net. Les bordures ne portent que du texte simple (pas
 # d'emoji), leur largeur est donc calculée de façon fiable.
-_edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
-  local t=" $3 " n l r
+_edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré, $4 = couleur texte (optionnel)
+  local t=" $3 " n l r tc="${4:-$CYN}"
   n=${#t}
   [ "$n" -ge "$W" ] && { t=""; n=0; }
   l=$(( (W - n) / 2 ))          # tirets à gauche du texte
   r=$(( W - n - l ))            # tirets à droite : le texte est centré
-  printf "${CYN}%s%s%s%s%s${NC}\n" \
+  printf "${CYN}%s%s${tc}%s${CYN}%s%s${NC}\n" \
     "$1" \
     "$(printf '━%.0s' $(seq 1 "$l" 2>/dev/null))" \
     "$t" \
@@ -141,10 +141,10 @@ infobox(){
   # cet encadré de 4 colonnes pour garder une marge si le trafic atteint 100 To.
   local _home_w="$W"
   W=$((W + 4))
-  _edge "┏" "┓" "R H A F F   S E R V I C E"
+  _edge "┏" "┓" "R H A F F   S E R V I C E" "$YLW"
   sysinfo
   stats
-  _edge "┗" "┛" "$CONTACT"
+  _edge "┗" "┛" "$CONTACT" "$YLW"
   W="$_home_w"
 }
 

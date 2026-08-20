@@ -8,22 +8,26 @@ ui_enter; trap ui_leave EXIT INT TERM HUP
 BKDIR=/root
 
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
+param_box_line(){
+  printf "${CYN}┃${NC} %s" "$1"
+  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+}
 
 traffic_report(){
   local LC_ALL=C.UTF-8
-  header; center " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES " "${BOLD}${WHT}"; line
+  header
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
   local DB=/etc/nvpanel/db/conso
-  [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
+  if [ ! -s "$DB" ]; then
+    _edge "┏" "┓" "BILAN DU TRAFIC — TOUS PROTOCOLES"
+    param_box_line "${YLW}Aucune donnée de consommation pour l'instant.${NC}"
+    bot
+    pause
+    return
+  fi
 
-  local year today_str week month yearsum days_tracked start_date
+  local year today_str week month yearsum days_tracked start_date todaysum
   year=$(date +%Y); today_str=$(date +%F)
-  # "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu), "%d"
-  # convertit la somme via un entier 32 bits et déborde au-delà de 4 Go —
-  # exactement le bug déjà corrigé dans nvpanel-conso, mais cette fonction
-  # réimplémentait sa propre somme séparée, jamais mise à jour à l'époque.
-  # "%.0f" passe par le formatage flottant natif d'awk, sans cette limite.
-  local todaysum
   todaysum=$(awk -F'|' -v d="$today_str" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
@@ -31,30 +35,19 @@ traffic_report(){
   days_tracked=$(wc -l < "$DB" 2>/dev/null); days_tracked=${days_tracked:-0}
   start_date=$(head -1 "$DB" 2>/dev/null | cut -d'|' -f1)
 
-  # Padding calculé à la main (et non via printf "%-Ns") : "%-Ns" compte des
-  # OCTETS, pas des caractères — un accent comme le "é" d'« année » occupe
-  # 2 octets en UTF-8 pour 1 seul caractère affiché, ce qui décalait cette
-  # ligne d'une colonne par rapport aux autres. ${#s} sous LC_ALL=C.UTF-8
-  # compte, lui, le vrai nombre de caractères, donc l'alignement reste
-  # correct quel que soit le contenu.
-  local w=20 lbl0 lbl1 lbl2 lbl3
-  lbl0="Aujourd'hui"; lbl1="7 derniers jours"; lbl2="Ce mois-ci"; lbl3="Cette année ($year)"
-
-  echo
-  printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl0" $((w-${#lbl0})) "" "$(_hr "${todaysum:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
-  printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
-  echo
-  # Explique pourquoi semaine/mois/année peuvent afficher le même chiffre :
-  # tant que le suivi n'a pas plus de 7 jours d'historique, c'est normal et
-  # mathématique — plutôt que de laisser un chiffre identique sans
-  # explication, la période réellement couverte est maintenant affichée.
+  _edge "┏" "┓" "BILAN DU TRAFIC — TOUS PROTOCOLES"
+  param_box_line "${GRN}▸ Aujourd'hui${NC}                  ${WHT}$(_hr "${todaysum:-0}")${NC}"
+  box_sep
+  param_box_line "${GRN}▸ 7 derniers jours${NC}            ${WHT}$(_hr "${week:-0}")${NC}"
+  box_sep
+  param_box_line "${GRN}▸ Ce mois-ci${NC}                  ${WHT}$(_hr "${month:-0}")${NC}"
+  box_sep
+  param_box_line "${GRN}▸ Cette année ($year)${NC}          ${WHT}$(_hr "${yearsum:-0}")${NC}"
   if [ -n "$start_date" ]; then
-    printf "   ${GRY}Suivi depuis le %s · %s jour(s) d'historique${NC}\n" "$(_fmtd "$start_date")" "$days_tracked"
+    box_sep
+    param_box_line "${GRY}Suivi depuis le $(_fmtd "$start_date") · ${days_tracked} jour(s)${NC}"
   fi
+  bot
   pause
 }
 
@@ -135,13 +128,13 @@ enable_bbr(){
   pause
 }
 speedtest(){
-  header; center " 📶  TEST DE VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
+  header
   local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
-  printf "   ${GRY}⬇  Mesure de la vitesse en cours…${NC}\n\n"
+  _edge "┏" "┓" "TEST DE VITESSE DU SERVEUR"
+  param_box_line "${GRY}⬇  Mesure de la vitesse en cours…${NC}"
+  box_sep
 
   local tmp; tmp=$(mktemp)
-  # Mesure sur une DURÉE FIXE (8 s) : bien plus fiable qu'un petit fichier,
-  # qui se termine en une fraction de seconde et gonfle le résultat.
   (
     for url in \
       "https://speed.cloudflare.com/__down?bytes=1000000000" \
@@ -155,26 +148,21 @@ speedtest(){
       if awk -v b="${sp:-0}" 'BEGIN{exit !(b>50000)}'; then echo "$sp" > "$tmp"; break; fi
     done
   ) &
-  local pid=$! i=0
-  local frames=( "▰▱▱▱▱▱" "▱▰▱▱▱▱" "▱▱▰▱▱▱" "▱▱▱▰▱▱" "▱▱▱▱▰▱" "▱▱▱▱▱▰" "▱▱▱▱▰▱" "▱▱▱▰▱▱" "▱▱▰▱▱▱" "▱▰▱▱▱▱" )
-  while kill -0 "$pid" 2>/dev/null; do
-    printf "\r   ${CYN}[${GRN}%s${CYN}]${NC}  ${GRY}analyse du réseau…${NC}   " "${frames[i % ${#frames[@]}]}"
-    i=$((i+1)); sleep 0.12
-  done
+  local pid=$!
   wait "$pid" 2>/dev/null
   local sp; sp=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
-  printf "\r%-52s\r" " "
   if [ -n "$sp" ] && awk -v b="$sp" 'BEGIN{exit !(b>50000)}'; then
-    local mbps mbs; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
-    mbs=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b/1048576}')
-    line
-    printf "   ${GRN}✔ Vitesse du serveur :${NC} ${WHT}%s Mbps${NC}\n\n" "$mbps"
+    local mbps; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
+    param_box_line "${GRN}✔ Vitesse du serveur :${NC} ${WHT}${mbps} Mbps${NC}"
   else
-    err "Aucune source de test n'a répondu (réseau du serveur restreint ou pare-feu)."
-    printf "   ${GRY}Latence mesurée : %s ms${NC}\n" "${lat:-n/a}"
+    param_box_line "${RED}✘ Aucune source de test n'a répondu.${NC}"
+    box_sep
+    param_box_line "${GRY}Latence mesurée : ${lat:-n/a} ms${NC}"
   fi
+  bot
   pause
 }
+
 restart_services(){
   header; center " ♻️  REDÉMARRAGE DES SERVICES " "${BOLD}${WHT}"; line
   echo
