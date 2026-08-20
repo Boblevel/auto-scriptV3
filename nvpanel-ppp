@@ -8,7 +8,9 @@
 # ============================================================
 SECRETS=/etc/ppp/chap-secrets
 DBDIR=/etc/nvpanel/db
-mkdir -p "$DBDIR" /etc/ppp; touch "$SECRETS"; chmod 600 "$SECRETS"
+PLIM="$DBDIR/ppp_limit"
+PSTATE=/run/nvpanel-ppp-sessions
+mkdir -p "$DBDIR" /etc/ppp; touch "$SECRETS" "$PLIM"; chmod 600 "$SECRETS"
 
 _srv(){ case "$1" in l2tp) echo l2tpd ;; pptp) echo pptpd ;; sstp) echo sstpd ;; *) return 1 ;; esac; }
 _db(){ echo "$DBDIR/$1"; }
@@ -17,9 +19,110 @@ _clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
 # partout ailleurs, les comparaisons de tri en dépendent.
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
 
+
+_limit_get(){ awk -F'|' -v p="$1" -v u="$2" '$1==p&&$2==u{v=$3} END{print v+0}' "$PLIM" 2>/dev/null; }
+_limit_set(){
+  local p="$1" u="$2" l="$3" t
+  case "$l" in ''|*[!0-9]*) l=0 ;; esac
+  t=$(mktemp) || return 1
+  awk -F'|' -v p="$p" -v u="$u" '!($1==p&&$2==u)' "$PLIM" 2>/dev/null > "$t"
+  printf '%s|%s|%s\n' "$p" "$u" "$l" >> "$t"; mv "$t" "$PLIM"
+}
+_limit_del(){ local p="$1" u="$2" t; t=$(mktemp) || return 0; awk -F'|' -v p="$p" -v u="$u" '!($1==p&&$2==u)' "$PLIM" 2>/dev/null > "$t"; mv "$t" "$PLIM"; }
+
+# PPP appelle automatiquement ip-up/ip-down à chaque vraie session. Ces deux
+# hooks enregistrent compte + interface + IP distante et coupent uniquement la
+# nouvelle session qui dépasserait la limite configurée pour CE compte.
+_ensure_hooks(){
+  local up=/etc/ppp/ip-up.d/90-nvpanel-device-limit down=/etc/ppp/ip-down.d/90-nvpanel-device-limit
+  mkdir -p /etc/ppp/ip-up.d /etc/ppp/ip-down.d
+  if ! grep -q 'RHAFF_PPP_LIMIT_V2' "$up" 2>/dev/null; then
+    cat > "$up" <<'EOF'
+#!/bin/sh
+# RHAFF_PPP_LIMIT_V2
+LIM=/etc/nvpanel/db/ppp_limit
+STATE=/run/nvpanel-ppp-sessions
+user=${PEERNAME:-}
+iface=${IFNAME:-$1}
+ip=${IPREMOTE:-$5}
+pid=${PPPD_PID:-$PPID}
+[ -n "$user" ] && [ -n "$iface" ] || exit 0
+proto=""
+args=$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+case "$args $PPP_IPPARAM $6" in
+  *options.xl2tpd*|*l2tp*) proto=l2tp ;;
+  *pptpd-options*|*pptp*) proto=pptp ;;
+  *options.sstpd*|*sstp*) proto=sstp ;;
+esac
+if [ -z "$proto" ]; then
+  c=0
+  for p in l2tp pptp sstp; do
+    if awk -v u="$user" '$1=="###"&&$2==u{f=1} END{exit !f}' "/etc/nvpanel/db/$p" 2>/dev/null; then proto=$p; c=$((c+1)); fi
+  done
+  [ "$c" -eq 1 ] || exit 0
+fi
+mkdir -p /run; touch "$STATE"
+tmp=$(mktemp /run/nvppp.XXXXXX) || exit 0
+while IFS='|' read -r p u f rip first rpid; do
+  [ -n "$f" ] && [ -d "/sys/class/net/$f" ] && printf '%s|%s|%s|%s|%s|%s\n' "$p" "$u" "$f" "$rip" "$first" "$rpid" >> "$tmp"
+done < "$STATE"
+mv "$tmp" "$STATE"
+lim=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{v=$3} END{print v+0}' "$LIM" 2>/dev/null)
+now=$(date +%s)
+# Une même IP compte pour un seul appareil même si elle ouvre plusieurs PPP.
+if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then
+  exists=$(awk -F'|' -v p="$proto" -v u="$user" -v i="$ip" '$1==p&&$2==u&&$4==i{f=1} END{print f+0}' "$STATE")
+  n=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{a[$4]=1} END{for(i in a)c++; print c+0}' "$STATE")
+  if [ "$exists" -eq 0 ] && [ "$n" -ge "$lim" ]; then
+    kill "$pid" 2>/dev/null
+    exit 0
+  fi
+fi
+# remplace l'éventuelle ancienne ligne de cette interface
+awk -F'|' -v f="$iface" '$3!=f' "$STATE" > "$STATE.tmp" 2>/dev/null
+printf '%s|%s|%s|%s|%s|%s\n' "$proto" "$user" "$iface" "${ip:--}" "$now" "$pid" >> "$STATE.tmp"
+mv "$STATE.tmp" "$STATE"
+exit 0
+EOF
+    chmod 755 "$up"
+  fi
+  if ! grep -q 'RHAFF_PPP_LIMIT_V2' "$down" 2>/dev/null; then
+    cat > "$down" <<'EOF'
+#!/bin/sh
+# RHAFF_PPP_LIMIT_V2
+STATE=/run/nvpanel-ppp-sessions
+iface=${IFNAME:-$1}
+[ -f "$STATE" ] || exit 0
+awk -F'|' -v f="$iface" '$3!=f' "$STATE" > "$STATE.tmp" 2>/dev/null && mv "$STATE.tmp" "$STATE"
+exit 0
+EOF
+    chmod 755 "$down"
+  fi
+}
+
+_prune_sessions(){
+  [ -f "$PSTATE" ] || { touch "$PSTATE" 2>/dev/null; return; }
+  local t p u f ip first pid
+  t=$(mktemp) || return
+  while IFS='|' read -r p u f ip first pid; do
+    [ -n "$f" ] && [ -d "/sys/class/net/$f" ] && printf '%s|%s|%s|%s|%s|%s\n' "$p" "$u" "$f" "$ip" "$first" "$pid" >> "$t"
+  done < "$PSTATE"
+  mv "$t" "$PSTATE"
+}
+_drop_user_sessions(){
+  local proto="$1" user="$2" p u f ip first pid
+  _prune_sessions
+  while IFS='|' read -r p u f ip first pid; do
+    [ "$p" = "$proto" ] && [ "$u" = "$user" ] || continue
+    kill "$pid" 2>/dev/null || ip link set "$f" down 2>/dev/null
+  done < "$PSTATE"
+  _prune_sessions
+}
+
 _box(){ # proto user pass created exp
-  local proto="$1" u="$2" p="$3" cr="$4" ex="$5" ip host port
+  local proto="$1" u="$2" p="$3" cr="$4" ex="$5" ip host port lim
   ip=$(cat /etc/nvpanel/ip 2>/dev/null)
+  lim=$(_limit_get "$proto" "$u"); [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   host=$(cat /etc/nvpanel/domain 2>/dev/null); [ -z "$host" ] && host="$ip"
   case "$proto" in
     l2tp) port="UDP 500 / 4500 / 1701" ;;
@@ -32,6 +135,7 @@ _box(){ # proto user pass created exp
 🌐 Hôte        : $host
 👤 Utilisateur : $u
 🔑 Mot de passe: $p
+📱 Appareils   : $lim
 🔌 Ports       : $port
 EOF
   [ "$proto" = l2tp ] && printf '🗝️ Clé partagée: %s\n' "$(cat /etc/nvpanel/l2tp_psk 2>/dev/null)"
@@ -45,15 +149,18 @@ EOF
 cmd="$1"; shift 2>/dev/null
 case "$cmd" in
   add)
-    proto=$(_clean "$1"); user=$(_clean "$2"); pass=$(_clean "$3"); days="$4"
+    proto=$(_clean "$1"); user=$(_clean "$2"); pass=$(_clean "$3"); days="$4"; lim="${5:-0}"
     srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
     [ -z "$user" ] || [ -z "$pass" ] && { echo "ERR args"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    _ensure_hooks
     db=$(_db "$proto"); touch "$db"
     grep -q "^### $user " "$db" && { echo "ERR exists"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
     printf '%s %s %s *\n' "$user" "$srv" "$pass" >> "$SECRETS"
     echo "### $user $pass $exp" >> "$db"
+    _limit_set "$proto" "$user" "$lim"
     echo "OK $user $exp"
     _box "$proto" "$user" "$pass" "$cr" "$exp" ;;
   list)
@@ -67,7 +174,7 @@ case "$cmd" in
     # plus se connecter, mais ses identifiants sont conservés.
     sed -i "s|^$user[[:space:]]\+$srv[[:space:]]|#RHAFFLOCK $user $srv |" "$SECRETS"
     sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$db"
-    pkill -f "pppd.*$user" 2>/dev/null
+    _drop_user_sessions "$proto" "$user"
     echo "OK locked" ;;
   unlock)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
@@ -88,7 +195,8 @@ case "$cmd" in
     grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
     sed -i "/^$user[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
     sed -i "/^### $user /d" "$db"
-    pkill -f "pppd.*$user" 2>/dev/null
+    _limit_del "$proto" "$user"
+    _drop_user_sessions "$proto" "$user"
     echo "OK deleted" ;;
   renew)
     proto=$(_clean "$1"); user=$(_clean "$2"); days="$3"; db=$(_db "$proto")
@@ -105,22 +213,20 @@ case "$cmd" in
       [ -z "$u" ] && continue
       sed -i "/^$u[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
       sed -i "/^### $u /d" "$db"
-      pkill -f "pppd.*$u" 2>/dev/null
+      _limit_del "$proto" "$u"
+      _drop_user_sessions "$proto" "$u"
       n=$((n+1))
     done
     echo "OK $n" ;;
+  sessions)
+    proto=$(_clean "$1"); user=$(_clean "$2"); _ensure_hooks; _prune_sessions
+    now=$(date +%s)
+    awk -F'|' -v p="$proto" -v u="$user" -v n="$now" '
+      $1==p&&$2==u{a[$4]=1; if(first==0||$5<first) first=$5}
+      END{for(i in a)c++; print c+0 "|" first+0}' "$PSTATE" 2>/dev/null ;;
   online)
-    # Sessions PPP réellement connectées. On identifie chaque session par le
-    # fichier d'options que pppd utilise : cela évite de compter le service
-    # lui-même (xl2tpd, pptpd...) comme un client connecté.
-    proto=$(_clean "$1")
-    case "$proto" in
-      l2tp) n=$(pgrep -fc 'pppd.*options\.xl2tpd' 2>/dev/null) ;;
-      pptp) n=$(pgrep -fc 'pppd.*pptpd-options' 2>/dev/null) ;;
-      sstp) n=$(pgrep -fc 'pppd.*options\.sstpd' 2>/dev/null) ;;
-      *)    n=0 ;;
-    esac
-    printf '%s\n' "${n:-0}" ;;
-  *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|online <proto> ..."; exit 1 ;;
+    proto=$(_clean "$1"); _ensure_hooks; _prune_sessions
+    awk -F'|' -v p="$proto" '$1==p{a[$2 SUBSEP $4]=1} END{for(i in a)c++; print c+0}' "$PSTATE" 2>/dev/null ;;
+  *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|sessions|online <proto> ..."; exit 1 ;;
 esac
 exit 0

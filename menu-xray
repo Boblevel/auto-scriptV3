@@ -21,15 +21,16 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days out
+  local name days lim out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"
+    name="$1"; days="${2:-1}"; lim="${3:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
+  ask " Limite d'appareils (0 = illimité) : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days")
+  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days" "$lim")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     ok "Client ${PROTO^^} créé"
@@ -41,7 +42,7 @@ add_client() {
 }
 
 list_clients() {
-  local page=0 size=4 total pages start end i n e s c color choice
+  local page=0 size=4 total pages start end i n e s c ips lim color choice
   mapfile -t _rows_x < <(nvpanel-cli xlist "$PROTO")
   total=${#_rows_x[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client ${PROTO^^}."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -52,9 +53,14 @@ list_clients() {
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r n e s c <<< "${_rows_x[$i]}"
+      IFS='|' read -r n e s c ips lim <<< "${_rows_x[$i]}"
       case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      if [ "${ips:-0}" -gt 0 ] 2>/dev/null; then
+        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s ${CYN}(%s IP%s)${NC}" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}" "$ips" "$([ "$ips" -gt 1 ] && printf s)"
+      else
+        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+      fi
+      printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot
@@ -72,7 +78,7 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial_client() {
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un client ${PROTO^^} valable 24 heures…${NC}\n"
-  add_client "$(_rand_name)" 1
+  add_client "$(_rand_name)" 1 1
 }
 
 pick_client() {

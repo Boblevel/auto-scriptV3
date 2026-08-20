@@ -56,12 +56,14 @@ next_ip() {
 
 add_peer() {
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"
+    name="$1"; days="${2:-1}"; lim=1
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   grep -q "^### $name " "$DB" && { err "Existe déjà"; pause; return; }
   ask " Durée (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || days=30
+  ask " Limite d'appareils (WireGuard = 1 par clé) : " lim
+  [ "${lim:-1}" = "1" ] || { warn "WireGuard utilise 1 peer/clé par appareil : limite fixée à 1."; lim=1; }
   fi
   grep -q "^### $name " "$DB" && { err "Existe déjà"; pause; return; }
   local ppriv ppub ip exp spub

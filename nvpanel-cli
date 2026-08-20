@@ -16,6 +16,10 @@ mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 # ---- helpers -----------------------------------------------
 XAPI=127.0.0.1:10085
 XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_activite
+XLIMDB=/etc/nvpanel/db/xlimit    # proto|compte|limite_appareils (0 = illimite)
+XIPSTATE=/etc/nvpanel/db/xips    # proto|compte|ip|premiere_vue|derniere_vue
+XBLOCKSTATE=/etc/nvpanel/db/xblocks # tag|proto|compte|ips_bloquees
+touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE"
 
 # Active le service de statistiques dans une configuration qui ne l'a pas
 # encore (serveurs installés avant cette version).
@@ -25,27 +29,56 @@ XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_ac
 _xapi_ensure(){
   [ -f "$XCONF" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
-  jq -e '(.api.tag=="api") and ([.inbounds[]?.tag?]|index("api")) and ([.outbounds[]?.tag?]|index("api"))' \
-    "$XCONF" >/dev/null 2>&1 && return 0
+  # StatsService donne l'activité par compte. RoutingService + l'outbound
+  # nvpanel-block permettent d'appliquer les limites IP à chaud, sans
+  # redémarrer Xray et sans couper les autres utilisateurs.
+  jq -e '
+       (.api.tag=="api")
+    and ((.api.services // []) | index("StatsService"))
+    and ((.api.services // []) | index("RoutingService"))
+    and ([.inbounds[]?.tag?] | index("api"))
+    and ([.outbounds[]?.tag?] | index("api"))
+    and ([.outbounds[]?.tag?] | index("nvpanel-block"))
+    and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))
+    and ([.inbounds[]? | select(.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in")
+          | (.streamSettings.sockopt.trustedXForwardedFor // []) | index("X-Real-IP")] | all)
+  ' "$XCONF" >/dev/null 2>&1 && return 0
   jq '
       .stats = (.stats // {})
-    | .api = { "tag":"api", "services":["StatsService"] }
-    | .policy = ((.policy // {}) * { "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } } })
+    | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService","RoutingService"]) | unique))
+    | .policy = (.policy // {})
+    | .policy.levels = (.policy.levels // {})
+    | .policy.levels."0" = ((.policy.levels."0" // {}) + { "statsUserUplink": true, "statsUserDownlink": true })
     | .inbounds = ( if ([.inbounds[]?.tag?]|index("api")) then .inbounds
         else [ { "tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"} } ] + .inbounds end )
     | .outbounds = ( if ([.outbounds[]?.tag?]|index("api")) then .outbounds
         else .outbounds + [ { "protocol":"freedom","tag":"api" } ] end )
-    | .routing = ((.routing // {}) | .rules = ((.rules // []) + [ {"type":"field","inboundTag":["api"],"outboundTag":"api"} ]))
+    | .outbounds = ( if ([.outbounds[]?.tag?]|index("nvpanel-block")) then .outbounds
+        else .outbounds + [ { "protocol":"blackhole","tag":"nvpanel-block" } ] end )
+    | .routing = ((.routing // {}) | .rules = ((.rules // []) +
+        (if ([.rules[]?.inboundTag? // [] | index("api")] | any) then []
+         else [ {"type":"field","inboundTag":["api"],"outboundTag":"api"} ] end)))
+    | .inbounds = [.inbounds[] |
+        if (.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") then
+          .streamSettings = (.streamSettings // {})
+          | .streamSettings.sockopt = (.streamSettings.sockopt // {})
+          | .streamSettings.sockopt.trustedXForwardedFor = ["X-Real-IP"]
+        else . end]
   ' "$XCONF" > "$XCONF.tmp" 2>/dev/null || { rm -f "$XCONF.tmp"; return 1; }
   local a b
   a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF"     2>/dev/null)
   b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF.tmp" 2>/dev/null)
   [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$XCONF.tmp"; return 1; }
+  # Valide la configuration avec le binaire réellement installé avant de
+  # remplacer le fichier actif. Une ancienne version Xray non compatible reste
+  # donc intacte au lieu d'être cassée par la mise à jour.
+  if command -v xray >/dev/null 2>&1; then
+    xray run -test -c "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; return 1; }
+  fi
   mv "$XCONF.tmp" "$XCONF"
   systemctl restart xray >/dev/null 2>&1
   return 0
 }
-
 # Relève les compteurs de trafic de chaque compte et en déduit son activité.
 # Xray ne dit pas « qui est connecté » : il tient en revanche un compteur
 # d'octets par compte. Un compteur qui progresse = un compte en train de s'en
@@ -106,32 +139,160 @@ _conn_since(){
 }
 
 
-# Shadowsocks arrive directement dans Xray (port 8388) : contrairement aux
-# WebSockets VMess/VLESS/Trojan placés derrière nginx, le journal Xray conserve
-# ici l'IP source publique avec l'email du compte. On compte uniquement les IP
-# distinctes réellement vues pendant les 5 dernières minutes.
-_ss_ip_count(){
-  local name="$1" log=/var/log/xray/access.log pats i
-  [ -r "$log" ] || { printf '0'; return; }
-  pats=$(for i in 0 1 2 3 4; do date -d "-$i min" '+%Y/%m/%d %H:%M' 2>/dev/null; done)
-  [ -n "$pats" ] || { printf '0'; return; }
-  tail -n 6000 "$log" 2>/dev/null \
-    | grep -F -f <(printf '%s\n' "$pats") 2>/dev/null \
-    | awk -v n="$name" '
-        {
-          ok=0; src=""
-          for(i=1;i<=NF;i++) {
-            if($i=="email:" && $(i+1)==n) ok=1
-            if($i=="from" && i<NF) src=$(i+1)
-          }
-          if(ok && src!="") {
-            sub(/^tcp:/,"",src)
-            sub(/:[0-9]+$/,"",src)
-            gsub(/^\[/,"",src); gsub(/\]$/,"",src)
-            if(src!="127.0.0.1" && src!="::1") print src
-          }
-        }' \
-    | sort -u | awk 'NF{c++} END{print c+0}'
+# IP sources Xray réellement observées.
+# nginx transmet maintenant X-Forwarded-For pour VMess/VLESS/Trojan ; Xray
+# remplace alors la source 127.0.0.1 par l'IP publique du client WebSocket.
+# Shadowsocks arrive directement et expose déjà sa source. On ne compte que
+# les IP vues durant les 5 dernières minutes, comme la fenêtre d'activité.
+_x_proto_for_name(){
+  local n="$1" p found="" c=0 db
+  for p in vmess vless trojan ss; do
+    case "$p" in
+      vmess|vless|trojan) db="/etc/nvpanel/db/$p" ;;
+      ss) db=/etc/nvpanel/db/shadowsocks ;;
+    esac
+    if awk -v n="$n" '$1=="###" && $2==n{f=1} END{exit !f}' "$db" 2>/dev/null; then
+      found="$p"; c=$((c+1))
+    fi
+  done
+  # Un même email dans deux inbounds est ambigu dans les logs. On refuse de
+  # deviner le protocole dans ce cas au lieu d'afficher une fausse IP.
+  [ "$c" -eq 1 ] && printf '%s' "$found"
+}
+
+_x_ip_refresh(){
+  command -v journalctl >/dev/null 2>&1 || return 0
+  local now cutoff seen tmp old name ip proto row first last
+  now=$(date +%s); cutoff=$((now-300))
+  seen=$(mktemp) || return 0
+  tmp=$(mktemp) || { rm -f "$seen"; return 0; }
+
+  # -o cat enlève le préfixe systemd : la ligne commence au timestamp Xray.
+  journalctl -u xray --since '5 minutes ago' --no-pager -o cat 2>/dev/null \
+    | awk '
+      /email:/ {
+        name=""; src=""
+        for(i=1;i<=NF;i++) {
+          if($i=="email:" && i<NF) name=$(i+1)
+          if($i=="from" && i<NF) src=$(i+1)
+        }
+        if(name!="" && src!="") {
+          sub(/^tcp:/,"",src)
+          if(src ~ /^\[/) { sub(/^\[/,"",src); sub(/\]:[0-9]+$/, "", src) }
+          else sub(/:[0-9]+$/, "", src)
+          if(src!="127.0.0.1" && src!="::1" && src!="") print name "|" src
+        }
+      }' | sort -u > "$seen"
+
+  while IFS='|' read -r name ip; do
+    [ -n "$name" ] && [ -n "$ip" ] || continue
+    proto=$(_x_proto_for_name "$name")
+    [ -n "$proto" ] || continue
+    row=$(awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{print;exit}' "$XIPSTATE" 2>/dev/null)
+    first=$(printf '%s' "$row" | cut -d'|' -f4)
+    case "$first" in ''|*[!0-9]*) first=$now ;; esac
+    printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$now" >> "$tmp"
+  done < "$seen"
+
+  # Conserve jusqu'à 5 minutes une IP qui vient juste de devenir silencieuse.
+  awk -F'|' -v c="$cutoff" 'NF>=5 && $5>=c{print}' "$XIPSTATE" 2>/dev/null \
+    | while IFS='|' read -r proto name ip first last; do
+        awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{f=1} END{exit !f}' "$tmp" 2>/dev/null \
+          || printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$last" >> "$tmp"
+      done
+  sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4n -u "$tmp" > "$XIPSTATE.tmp" 2>/dev/null && mv "$XIPSTATE.tmp" "$XIPSTATE"
+  rm -f "$seen" "$tmp"
+}
+
+_x_ip_count(){ # proto compte
+  local now cutoff
+  now=$(date +%s); cutoff=$((now-300))
+  awk -F'|' -v p="$1" -v n="$2" -v c="$cutoff" '$1==p&&$2==n&&$5>=c{a[$3]=1} END{for(i in a)x++; print x+0}' "$XIPSTATE" 2>/dev/null
+}
+
+_x_limit_get(){
+  awk -F'|' -v p="$1" -v n="$2" '$1==p&&$2==n{v=$3} END{print v+0}' "$XLIMDB" 2>/dev/null
+}
+_x_limit_set(){
+  local p="$1" n="$2" l="$3" t
+  case "$l" in ''|*[!0-9]*) l=0 ;; esac
+  t=$(mktemp) || return 1
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XLIMDB" 2>/dev/null > "$t"
+  printf '%s|%s|%s\n' "$p" "$n" "$l" >> "$t"
+  mv "$t" "$XLIMDB"
+}
+_x_limit_del(){
+  local p="$1" n="$2" t
+  t=$(mktemp) || return 0
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XLIMDB" 2>/dev/null > "$t"
+  mv "$t" "$XLIMDB"
+}
+
+# Applique les dépassements à chaud avec RoutingService : une règle combine
+# l'email Xray + l'inbound exact + l'IP excédentaire, donc elle ne bloque ni
+# les autres comptes derrière le même NAT ni les autres protocoles.
+xlimit_run(){
+  command -v xray >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  xray help api adrules >/dev/null 2>&1 || return 0
+  _xapi_ensure || return 0
+  _x_ip_refresh
+  local pid oldpid now cutoff desired old tag proto name lim db row ex fl TAG ips extras fp oldfp tmp ipsjson ok
+  pid=$(systemctl show -p MainPID --value xray 2>/dev/null); pid=${pid:-0}
+  oldpid=$(cat /run/nvpanel-xlimit.pid 2>/dev/null)
+  if [ "$pid" != "$oldpid" ]; then
+    : > "$XBLOCKSTATE"
+    printf '%s\n' "$pid" > /run/nvpanel-xlimit.pid 2>/dev/null
+  fi
+  now=$(date +%s); cutoff=$((now-300)); desired=$(mktemp) || return 0
+
+  while IFS='|' read -r proto name lim; do
+    [ -n "$proto" ] && [ -n "$name" ] || continue
+    case "$lim" in ''|*[!0-9]*) lim=0 ;; esac
+    xmeta "$proto" || continue
+    db="$XDB"; row=$(awk -v n="$name" '$1=="###"&&$2==n{print;exit}' "$db" 2>/dev/null)
+    [ -n "$row" ] || continue
+    ex=$(printf '%s\n' "$row" | awk '{print $4}'); fl=$(printf '%s\n' "$row" | awk '{print $5}')
+    [ "$fl" = L ] && lim=0
+    [ -n "$ex" ] && { [ "$ex" \< "$(date +%F)" ] || [ "$ex" = "$(date +%F)" ]; } && lim=0
+    tag="nvlim-$(printf '%s' "$proto|$name" | sha256sum | cut -c1-16)"
+    ips=$(awk -F'|' -v p="$proto" -v n="$name" -v c="$cutoff" '$1==p&&$2==n&&$5>=c{print $4"|"$3}' "$XIPSTATE" 2>/dev/null | sort -t'|' -k1,1n -k2,2 -u | cut -d'|' -f2-)
+    if [ "$lim" -gt 0 ] 2>/dev/null; then
+      extras=$(printf '%s\n' "$ips" | awk -v l="$lim" 'NF{c++; if(c>l) print}')
+    else
+      extras=""
+    fi
+    fp=$(printf '%s\n' "$extras" | awk 'NF' | sort -u | paste -sd, -)
+    printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$desired"
+  done < "$XLIMDB"
+
+  # Supprime les anciennes règles qui n'ont plus lieu d'être.
+  while IFS='|' read -r tag proto name oldfp; do
+    [ -n "$tag" ] || continue
+    fp=$(awk -F'|' -v t="$tag" '$1==t{print $4;exit}' "$desired" 2>/dev/null)
+    if [ "$fp" != "$oldfp" ]; then
+      xray api rmrules --server="$XAPI" "$tag" >/dev/null 2>&1 || true
+    fi
+  done < "$XBLOCKSTATE"
+
+  : > "$XBLOCKSTATE.tmp"
+  while IFS='|' read -r tag proto name fp; do
+    [ -n "$tag" ] || continue
+    oldfp=$(awk -F'|' -v t="$tag" '$1==t{print $4;exit}' "$XBLOCKSTATE" 2>/dev/null)
+    ok=1
+    if [ "$fp" != "$oldfp" ] && [ -n "$fp" ]; then
+      xmeta "$proto" || { ok=0; continue; }
+      ipsjson=$(printf '%s' "$fp" | tr ',' '\n' | jq -Rsc 'split("\n")|map(select(length>0))')
+      tmp=$(mktemp) || { ok=0; continue; }
+      jq -n --arg u "$name" --arg it "$TAG" --arg rt "$tag" --argjson src "$ipsjson" \
+        '{routing:{rules:[{type:"field",ruleTag:$rt,inboundTag:[$it],user:[$u],sourceIP:$src,outboundTag:"nvpanel-block"}]}}' > "$tmp"
+      xray api adrules --server="$XAPI" -append "$tmp" >/dev/null 2>&1 || ok=0
+      rm -f "$tmp"
+    fi
+    [ "$ok" -eq 1 ] && printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$XBLOCKSTATE.tmp"
+  done < "$desired"
+  mv "$XBLOCKSTATE.tmp" "$XBLOCKSTATE" 2>/dev/null
+  rm -f "$desired"
 }
 
 _today(){ date +%Y-%m-%d; }
@@ -285,8 +446,9 @@ _client_json(){ # proto id name
 
 xray_box(){ # proto name id created exp
   local proto="$1" name="$2" id="$3" cr="$4" ex="$5"
-  local host path label ltls lnotls ip tlsp plainp
+  local host path label ltls lnotls ip tlsp plainp lim
   host=$(_host); ip=$(_ip); tlsp=$(_xport); plainp=80
+  lim=$(_x_limit_get "$proto" "$name"); [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   case "$proto" in
     vmess)  path="/vmess";  label="VMESS";  ltls=$(_vmess_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vmess_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
     vless)  path="/vless";  label="VLESS";  ltls=$(_vless_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vless_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
@@ -306,6 +468,7 @@ xray_box(){ # proto name id created exp
 🔒 Port TLS    : $tlsp
 🔓 Port No TLS : $plainp
 🆔 User ID     : $id
+📱 Appareils   : $lim
 🔐 Encryption  : none
 🌐 Network     : ws
 📁 Path        : $path
@@ -325,8 +488,9 @@ EOF
 
 # ---- encadré Shadowsocks -----------------------------------
 ss_box(){ # name ckey created exp
-  local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link
+  local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link lim
   host=$(_host); skey=$(cat "$NDIR/ss_key" 2>/dev/null)
+  lim=$(_x_limit_get ss "$name"); [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   ui=$(printf '%s' "2022-blake3-aes-256-gcm:$skey:$ck" | base64 -w0)
   link="ss://$ui@$host:8388#$(_remark_url SS "$name")"
   cat <<EOF
@@ -336,6 +500,7 @@ ss_box(){ # name ckey created exp
 🌐 Address : $host
 🔒 Port    : 8388
 🧪 Method  : 2022-blake3-aes-256-gcm
+📱 Appareils: $lim
 📅 Created : $(_fmtd "$cr")
 ⏳ Expired : $(_fmtd "$ex")
 =========================================================
@@ -362,6 +527,7 @@ case "$cmd" in
     [ "${#pass}" -lt 4 ] && { echo "ERR shortpass"; exit 1; }
     id "$user" &>/dev/null && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     # /etc/shadow ne désactive un compte que le LENDEMAIN de la date donnée à
     # useradd -e (comportement documenté du système, pas de nvpanel) : sans ce
@@ -475,11 +641,13 @@ case "$cmd" in
 
   # ---------- Xray / Shadowsocks ----------
   xadd)
-    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"; lim="${4:-0}"
     xmeta "$proto" || { echo "ERR proto"; exit 1; }
     [ -f "$XCONF" ] || { echo "ERR noxray"; exit 1; }
     touch "$XDB"; grep -q "^### $name " "$XDB" && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
+    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    _xapi_ensure || { echo "ERR xapi"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     if [ "$proto" = ss ]; then id=$(openssl rand -base64 32); client="{\"password\":\"$id\",\"email\":\"$name\"}"
     else
@@ -502,6 +670,7 @@ case "$cmd" in
       "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
     mv "$XCONF.tmp" "$XCONF"
     echo "### $name $id $exp" >> "$XDB"
+    _x_limit_set "$proto" "$name" "$lim"
     systemctl restart xray >/dev/null 2>&1
     echo "OK $name $exp"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
@@ -522,14 +691,17 @@ case "$cmd" in
     done < <(grep '^### ' "$XDB" 2>/dev/null)
     echo "$n" ;;
   xipcount)
-    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t ')
-    case "$proto" in
-      ss) _ss_ip_count "$name" ;;
-      *)  printf '0\n' ;;  # nginx masque l’IP par compte pour VMess/VLESS/Trojan
-    esac ;;
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo 0; exit 0; }
+    _x_ip_refresh
+    _x_ip_count "$proto" "$name" ;;
+  xlimit)
+    proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); lim="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    grep -q "^### $name " "$XDB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    [[ "$lim" =~ ^[0-9]+$ ]] || { echo "ERR limit"; exit 1; }
+    _x_limit_set "$proto" "$name" "$lim"; xlimit_run; echo "OK $lim" ;;
   xlist)
     proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    _xapi_ensure; xsample_run
+    _xapi_ensure; xsample_run; _x_ip_refresh
     today=$(date +%F)
     while read -r _ nm _ ex fl; do
       [ -z "$nm" ] && continue
@@ -540,11 +712,13 @@ case "$cmd" in
       else
         st="actif"; ct=$(_conn_since "$nm")
       fi
-      printf '%s|%s|%s|%s\n' "$nm" "$ex" "$st" "$ct"
+      ips=0; [ "$st" = "actif" ] && ips=$(_x_ip_count "$proto" "$nm")
+      lim=$(_x_limit_get "$proto" "$nm")
+      printf '%s|%s|%s|%s|%s|%s\n' "$nm" "$ex" "$st" "$ct" "${ips:-0}" "${lim:-0}"
     done < <(grep '^### ' "$XDB" 2>/dev/null) ;;
   xsample)
-    # relevé périodique appelé par cron (aucune sortie)
-    xsample_run ;;
+    # relevé périodique + application des limites IP (aucune sortie)
+    xsample_run; xlimit_run ;;
   xapi)
     # activation du service de statistiques (appelé par la mise à jour)
     _xapi_ensure && echo "OK" || echo "ERR" ;;
@@ -552,7 +726,7 @@ case "$cmd" in
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
     jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
-    sed -i "/^### $name /d" "$XDB"; systemctl restart xray >/dev/null 2>&1
+    sed -i "/^### $name /d" "$XDB"; _x_limit_del "$proto" "$name"; systemctl restart xray >/dev/null 2>&1
     echo "OK deleted" ;;
   xrenew)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
@@ -614,6 +788,7 @@ case "$cmd" in
           [ -z "$nm" ] && continue
           jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"
           sed -i "/^### $nm /d" "$XDB" 2>/dev/null
+          _x_limit_del "$proto" "$nm"
           n=$((n+1))
         done
         [ "$n" -gt 0 ] && systemctl restart xray >/dev/null 2>&1
@@ -621,5 +796,5 @@ case "$cmd" in
       *) echo "ERR proto"; exit 1 ;;
     esac ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xonline|xipcount|xdel|xrenew|xinfo|xlock|xunlock|xsample|xapi|purge"; exit 1 ;;
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xonline|xipcount|xlimit|xdel|xrenew|xinfo|xlock|xunlock|xsample|xapi|purge"; exit 1 ;;
 esac

@@ -18,15 +18,16 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days out
+  local name days lim out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"
+    name="$1"; days="${2:-1}"; lim="${3:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
+  ask " Limite d'appareils (0 = illimité) : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd ss "$name" "$days")
+  out=$(nvpanel-cli xadd ss "$name" "$days" "$lim")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     ok "Client Shadowsocks créé"
@@ -35,7 +36,7 @@ add_client() {
   pause
 }
 list_clients() {
-  local page=0 size=4 total pages start end i n e s c color choice ips
+  local page=0 size=4 total pages start end i n e s c ips lim color choice
   mapfile -t _rows_ss < <(nvpanel-cli xlist ss)
   total=${#_rows_ss[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client Shadowsocks."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -46,8 +47,8 @@ list_clients() {
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r n e s c <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      ips=0; [ "$s" = "actif" ] && ips=$(nvpanel-cli xipcount ss "$n" 2>/dev/null); ips=${ips:-0}
+      IFS='|' read -r n e s c ips lim <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      ips=${ips:-0}
       if [ "$ips" -gt 0 ] 2>/dev/null; then
         printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s ${CYN}(%s IP%s)${NC}" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}" "$ips" "$([ "$ips" -gt 1 ] && printf s)"
       else
@@ -69,7 +70,7 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial_client() {
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un client Shadowsocks valable 24 heures…${NC}\n"
-  add_client "$(_rand_name)" 1
+  add_client "$(_rand_name)" 1 1
 }
 
 pick_client() {

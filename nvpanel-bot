@@ -488,6 +488,10 @@ def do_xlist(chat, proto):
         # possible même si Xray multiplexe tout en 127.0.0.1). "\u2014" si
         # le compte est verrouillé ou inactif, exactement comme le panel.
         ct = p[3] if len(p) > 3 else "\u2014"
+        ips = p[4] if len(p) > 4 else "0"
+        if ips.isdigit() and int(ips) > 0:
+            suffix = "%s IP%s" % (ips, "s" if int(ips) > 1 else "")
+            ct = ("%s (%s)" % (ct, suffix)) if ct and ct != "\u2014" else ("(%s)" % suffix)
         if etat.startswith(("verrou", "expir")):
             badge = "\U0001F534"
         else:
@@ -527,9 +531,9 @@ def handle_callback(chat, data):
             out = cli("create", n, pw, "1", "1", "0")
         elif p in ("l2tp", "pptp", "sstp"):
             n, pw = rand_name(), rand_pass()
-            out = ppp("add", p, n, pw, "1")
+            out = ppp("add", p, n, pw, "1", "1")
         else:
-            out = cli("xadd", p, rand_name(), "1")
+            out = cli("xadd", p, rand_name(), "1", "1")
         if out.startswith("OK"):
             _box, _key = split_dns_key("\n".join(out.split("\n")[1:]))
             send(chat, "<b>\u2705 Compte test 24 h cr\u00e9\u00e9</b>\n<pre>%s</pre>%s"
@@ -556,11 +560,14 @@ def handle_callback(chat, data):
             nm, ex = parts[:2]
             etat = parts[2] if len(parts) > 2 else "actif"
             badge = "🔴" if etat.startswith(("verrou", "expir")) else "🟢"
-            lignes.append("%-16s %-12s %s %s" % (nm, fmt_date(ex), badge, etat))
+            sess = ppp("sessions", p, nm).split("|", 1)
+            n_ip = sess[0] if sess and sess[0].isdigit() else "0"
+            conn = (" · %s IP%s" % (n_ip, "s" if n_ip != "1" else "")) if n_ip != "0" else ""
+            lignes.append("%-16s %-12s %s %s%s" % (nm, fmt_date(ex), badge, etat, conn))
         send(chat, "<b>\U0001F4CB %s</b>\n<pre>%s</pre>" % (p.upper(), esc("\n".join(lignes) or "aucun compte"))); return
     if data.startswith("pa2:"):
         STATE[chat] = {"action": "pppadd", "proto": data[4:]}
-        send(chat, "Envoie : <code>utilisateur motdepasse jours</code>", kb=cancel_kb()); return
+        send(chat, "Envoie : <code>utilisateur motdepasse jours appareils</code>\n<i>0 = illimité</i>", kb=cancel_kb()); return
     if data.startswith("pd2:"):
         STATE[chat] = {"action": "pppdel", "proto": data[4:]}
         send(chat, "Envoie le <b>nom</b> du compte \u00e0 supprimer :", kb=cancel_kb()); return
@@ -608,7 +615,7 @@ def handle_callback(chat, data):
         do_xlist(chat, data[3:]); return
     if data.startswith("pa:"):
         STATE[chat] = {"action": "xadd", "proto": data[3:]}
-        send(chat, "Envoie : <code>nom jours</code>  (ex : <code>client1 30</code>)", kb=cancel_kb()); return
+        send(chat, "Envoie : <code>nom jours appareils</code>  (ex : <code>client1 30 2</code>)\n<i>0 = illimité</i>", kb=cancel_kb()); return
     if data.startswith("pd:"):
         STATE[chat] = {"action": "xdel", "proto": data[3:]}
         send(chat, "Envoie le <b>nom</b> du client \u00e0 supprimer :", kb=cancel_kb()); return
@@ -704,9 +711,10 @@ def handle_text(chat, text):
     elif a == "pppadd":
         p = st["proto"]
         if len(parts) < 2:
-            send(chat, "Format : utilisateur motdepasse jours"); return
+            send(chat, "Format : utilisateur motdepasse jours appareils"); return
         days = parts[2] if len(parts) > 2 else "30"
-        r = ppp("add", p, parts[0], parts[1], days)
+        devices = parts[3] if len(parts) > 3 else "0"
+        r = ppp("add", p, parts[0], parts[1], days, devices)
         if r.startswith("OK"):
             send(chat, "\u2705 Compte %s cr\u00e9\u00e9\n<pre>%s</pre>" % (p.upper(), esc("\n".join(r.splitlines()[1:]))))
         else:
@@ -728,9 +736,10 @@ def handle_text(chat, text):
         send(chat, ("\u2705 %s supprim\u00e9" % esc(parts[0])) if r.startswith("OK") else ("\u274C %s" % esc(r)))
     elif a == "xadd":
         proto = st["proto"]
-        if len(parts) < 1: send(chat, "Format : nom jours"); return
+        if len(parts) < 1: send(chat, "Format : nom jours appareils"); return
         days = parts[1] if len(parts) > 1 else "30"
-        out = cli("xadd", proto, parts[0], days)
+        devices = parts[2] if len(parts) > 2 else "0"
+        out = cli("xadd", proto, parts[0], days, devices)
         first = out.splitlines()[0] if out else "ERR"
         if first.startswith("OK"):
             box = "\n".join(out.splitlines()[1:])
