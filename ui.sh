@@ -383,13 +383,13 @@ proto_dash() {
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
   esac
   IFS='|' read -r hier auj mois <<< "$(_conso_raw "$tag")"
-  printf " ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}\n" "$total" "$online" "$blocked"
+  printf "${CYN}┃${NC} ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$total" "$online" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   if [ "$tag" = "ppp" ]; then
     # L2TP, PPTP et SSTP partagent tous l'interface ppp+ : impossible de
     # distinguer leur trafic au niveau noyau (limite technique, pas un bug).
-    printf " ${GRY}📊 Trafic PPP (L2TP+PPTP+SSTP) — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+    printf "${CYN}┃${NC} ${GRY}📊 Trafic PPP — auj.:${NC} %s ${GRY}· mois:${NC} %s" "$(_hr "$auj")" "$(_hr "$mois")"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   else
-    printf " ${GRY}📊 Trafic — auj.:${NC} %s ${GRY}· mois:${NC} %s\n" "$(_hr "$auj")" "$(_hr "$mois")"
+    printf "${CYN}┃${NC} ${GRY}📊 Trafic — auj.:${NC} %s ${GRY}· mois:${NC} %s" "$(_hr "$auj")" "$(_hr "$mois")"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   fi
 }
 

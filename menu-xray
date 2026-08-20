@@ -10,7 +10,7 @@ PROTO="$1"
 case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac
 
 case "$PROTO" in vmess) LPORT=8080 ;; vless) LPORT=8081 ;; trojan) LPORT=8082 ;; esac
-header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; proto_dash "$PROTO" xray "$PROTO"; line; }
+header(){ banner; _edge "┏" "┓" "GESTION ${PROTO^^} (XRAY)"; proto_dash "$PROTO" xray "$PROTO"; bot; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then

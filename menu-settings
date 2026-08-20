@@ -361,9 +361,15 @@ reset_traffic(){
 
 settings_row(){
   local n1="$1" t1="$2" n2="$3" t2="$4"
-  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-21.21s ${CYN}│${NC} ${GRN}[%02d]${NC} %-21.21s${CYN}┃${NC}\n" "$n1" "$t1" "$n2" "$t2"
+  # Colonnes volontairement raccourcies d'un caractère : les accents UTF-8
+  # ne peuvent plus pousser la bordure droite sur la ligne suivante.
+  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-20.20s ${CYN}│${NC} ${GRN}[%02d]${NC} %-20.20s" "$n1" "$t1" "$n2" "$t2"
+  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
-settings_sep(){ printf "${CYN}┃${NC} ${GRY}──────────────────────────${NC} ${CYN}│${NC} ${GRY}──────────────────────────${NC} ${CYN}┃${NC}\n"; }
+settings_sep(){
+  printf "${CYN}┃${NC} ${GRY}────────────────────────${NC} ${CYN}│${NC} ${GRY}────────────────────────${NC}"
+  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+}
 
 while true; do
   flush_in; printf '\033[H\033[2J'

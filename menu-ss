@@ -7,7 +7,7 @@ source /etc/nvpanel/lib/ui.sh
 ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
-header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_dash shadowsocks port:8388 shadowsocks; line; }
+header(){ banner; _edge "┏" "┓" "GESTION SHADOWSOCKS"; proto_dash shadowsocks port:8388 shadowsocks; bot; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then

@@ -20,12 +20,12 @@ mkdir -p /etc/nvpanel/db; touch "$DB"
 dash(){
   proto_dash "$PROTO" "ppp:$PROTO" ppp
   if systemctl is-active --quiet "$SVC" 2>/dev/null; then
-    printf " ${GRY}⚙️  Service :${NC} ${GRN}actif${NC}\n"
+    printf "${CYN}┃${NC} ${GRY}⚙️  Service :${NC} ${GRN}actif${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   else
-    printf " ${GRY}⚙️  Service :${NC} ${RED}arrêté / non installé${NC}\n"
+    printf "${CYN}┃${NC} ${GRY}⚙️  Service :${NC} ${RED}arrêté / non installé${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   fi
 }
-header(){ banner; center " 🔐  $LABEL " "${BOLD}${WHT}"; line; dash; line; }
+header(){ banner; _edge "┏" "┓" "$LABEL"; dash; bot; }
 
 ensure(){
   systemctl is-active --quiet "$SVC" 2>/dev/null && return 0
