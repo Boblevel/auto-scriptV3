@@ -135,9 +135,10 @@ _edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
 infobox(){
   flush_in
   printf '\033[H\033[2J\033[3J'
+  # Accueil compact : marque dans la bordure haute, informations serveur
+  # directement dessous, contact dans la bordure basse. Ne pas ajouter de
+  # ligne ici : le menu principal doit rester dans la hauteur sûre Termius.
   _edge "┏" "┓" "R H A F F   S E R V I C E"
-  center "panel de gestion & contrôle · $CONTACT" "${GRY}"
-  box_sep
   sysinfo
   stats
   _edge "┗" "┛" "$CONTACT"
