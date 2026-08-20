@@ -43,68 +43,69 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial(){
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un compte $LABEL valable 24 heures…${NC}\n"
-  create "$(_rand_name)" "$(_rand_pass)" 1 1
+  create "$(_rand_name)" "$(_rand_pass)" 1
 }
 
 pick(){
   PICK=""
-  mapfile -t _l < <(awk '/^### /{print $2"|"$4}' "$DB" 2>/dev/null)
+  mapfile -t _l < <(nvpanel-ppp list "$PROTO")
   [ "${#_l[@]}" -eq 0 ] && { err "Aucun compte."; pause; return 1; }
-  echo; printf "   ${GRY}Comptes $LABEL :${NC}\n"
-  local i=1 row
-  for row in "${_l[@]}"; do
-    printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "$(_fmtd "${row##*|}")"; i=$((i+1))
+  local page=0 size=6 total=${#_l[@]} pages start end i nm ex st color n
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    header; printf "   ${GRY}Comptes $LABEL · page %d/%d :${NC}\n" "$((page+1))" "$pages"
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r nm ex st <<< "${_l[$i]}"; case "$st" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${color}%s${NC}\n" "$((i+1))" "$nm" "$(_fmtd "$ex")" "$st"
+    done
+    echo; if [ "$pages" -gt 1 ]; then ask "   ➤ N° | n suivante | p précédente | 0 retour : " n; else ask "   ➤ Numéro (0 = annuler) : " n; fi
+    case "${n,,}" in n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;; p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;; esac
+    [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; sleep 1; continue; }; [ "$n" -eq 0 ] && return 1
+    [ "$n" -ge 1 ] && [ "$n" -le "$total" ] || { err "Hors liste"; sleep 1; continue; }
+    PICK="${_l[$((n-1))]%%|*}"; return 0
   done
-  echo; ask "   ➤ Numéro (0 = annuler) : " n
-  [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
-  [ "$n" -eq 0 ] && return 1
-  [ "$n" -ge 1 ] && [ "$n" -le "${#_l[@]}" ] || { err "Hors liste"; pause; return 1; }
-  PICK="${_l[$((n-1))]%%|*}"; return 0
 }
 
 create(){
-  local u p d lim out
+  local u p d out
   if [ -n "$1" ]; then
-    u="$1"; p="$2"; d="${3:-1}"; lim="${4:-1}"
+    u="$1"; p="$2"; d="${3:-1}"
   else
   header; ask " Nom d'utilisateur : " u
   [ -z "$u" ] && { err "Nom vide"; pause; return; }
   ask " Mot de passe : " p
   [ -z "$p" ] && { err "Mot de passe vide"; pause; return; }
   ask " Durée (jours) : " d; [[ "$d" =~ ^[0-9]+$ ]] || d=30
-  ask " Limite de sessions simultanées (0 = illimité) : " lim
-  [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-ppp add "$PROTO" "$u" "$p" "$d" "$lim")
+  out=$(nvpanel-ppp add "$PROTO" "$u" "$p" "$d")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
   else
-    case "$out" in
-      *exists*) err "Ce nom existe déjà." ;;
-      *"ERR guard"*) err "Contrôleur de sessions indisponible. Tape « update » puis réessaie." ;;
-      *) err "Échec : $out" ;;
-    esac
+    case "$out" in *exists*) err "Ce nom existe déjà." ;; *) err "Échec : $out" ;; esac
   fi
   pause
 }
 
 list_all(){
-  header
-  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
-  line
-  nvpanel-ppp list "$PROTO" | while IFS='|' read -r n e st ct dev lim; do
-    [ -z "$n" ] && continue
-    usage=""
-    if [ "${dev:-0}" -gt 0 ] 2>/dev/null; then
-      if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then usage="${dev}/${lim} sessions"; else usage="${dev} sessions"; fi
-    fi
-    printf " %-16s %-12s %-8s %s" "$n" "$(_fmtd "$e")" "${st:-actif}" "${ct:-—}"
-    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
-    printf "\n"
-    account_sep
+  local page=0 size=6 total pages start end i n e s color choice
+  mapfile -t _rows_ppp < <(nvpanel-ppp list "$PROTO")
+  total=${#_rows_ppp[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun compte $LABEL."; pause; return; }
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    header
+    printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+    line
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r n e s <<< "${_rows_ppp[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf " %-16s %-12s ${color}%-8s${NC} %s\n" "$n" "$(_fmtd "$e")" "$s" "—"
+    done
+    if [ "$pages" -le 1 ]; then pause; return; fi
+    echo; ask "   ➤ n suivante | p précédente | 0 retour : " choice
+    case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
   done
-  pause
 }
 
 view(){

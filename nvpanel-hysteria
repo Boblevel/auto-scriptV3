@@ -10,82 +10,57 @@
 # ============================================================
 DB=/etc/nvpanel/db/hysteria
 CONF=/etc/hysteria/config.yaml
-GUARD=/usr/local/bin/nvpanel-guard
-SECRET=/etc/nvpanel/hysteria_stats_secret
 mkdir -p /etc/nvpanel/db; touch "$DB"
 
 _clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
 # Affichage uniquement (JJ-MM-AAAA) — les dates restent stockées en AAAA-MM-JJ
 # partout ailleurs, les comparaisons de tri en dépendent.
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
-_guard_ready(){ [ -x "$GUARD" ] && systemctl is-active --quiet nvpanel-guard 2>/dev/null; }
-_since(){
-  local ts="$1" now d
-  [[ "$ts" =~ ^[0-9]+$ ]] || { printf '—'; return; }
-  [ "$ts" -gt 0 ] 2>/dev/null || { printf '—'; return; }
-  now=$(date +%s); d=$((now-ts)); [ "$d" -lt 0 ] && d=0
-  if [ "$d" -lt 60 ]; then printf '< 1 min'
-  elif [ "$d" -lt 3600 ]; then printf '%d min' $((d/60))
-  elif [ "$d" -lt 86400 ]; then printf '%d h %02d' $((d/3600)) $(((d%3600)/60))
-  else printf '%d j %d h' $((d/86400)) $(((d%86400)/3600)); fi
-}
-_stats_secret(){
-  if [ ! -s "$SECRET" ]; then
-    umask 077
-    if command -v openssl >/dev/null 2>&1; then openssl rand -hex 24 > "$SECRET" 2>/dev/null
-    else printf '%s' "$(date +%s)-$$-$RANDOM" | sha256sum | awk '{print $1}' > "$SECRET"; fi
-  fi
-  chmod 600 "$SECRET" 2>/dev/null
-  cat "$SECRET" 2>/dev/null
-}
 
 _rebuild(){
-  local domain cert secret
+  local domain cert
   domain=$(cat /etc/nvpanel/domain 2>/dev/null)
   cert="/etc/letsencrypt/live/$domain"
   [ -f "$cert/fullchain.pem" ] || return 1
-  # Hysteria2 délègue l'authentification au garde local : c'est ce qui permet
-  # de compter ses vraies instances clientes et de refuser réellement une
-  # connexion supplémentaire quand la limite du compte est atteinte.
-  _guard_ready || return 3
-  secret=$(_stats_secret); [ -n "$secret" ] || return 3
   {
     echo "listen: :443"
     echo "tls:"
     echo "  cert: $cert/fullchain.pem"
     echo "  key: $cert/privkey.pem"
     echo "auth:"
-    echo "  type: http"
-    echo "  http:"
-    echo "    url: http://127.0.0.1:10086/hysteria/auth"
-    echo "    insecure: false"
-    echo "trafficStats:"
-    echo "  listen: 127.0.0.1:10087"
-    echo "  secret: $secret"
+    echo "  type: userpass"
+    echo "  userpass:"
+    awk '/^### /{ if ($5!="L") printf "    %s: %s\n", $2, $3 }' "$DB"
     echo "masquerade:"
     echo "  type: proxy"
     echo "  proxy:"
     echo "    url: https://news.ycombinator.com/"
     echo "    rewriteHost: true"
   } > "$CONF"
-  chmod 600 "$CONF" 2>/dev/null
+  # Le code de retour ne doit PAS dépendre du redémarrage du service : si
+  # hysteria-server refuse de démarrer (binaire absent, port occupé), la
+  # configuration reste correctement écrite et le compte doit être conservé.
+  # Avant, un simple échec de démarrage faisait supprimer le compte tout juste
+  # créé et renvoyait « ERR notls », que le menu traduisait par « utilisateur
+  # déjà pris » — d'où un compte annoncé comme existant alors qu'il n'existait
+  # pas.
+  #   0 = configuration écrite et service démarré
+  #   1 = certificat TLS absent (rien n'a été écrit)
+  #   2 = configuration écrite mais service non démarré
   systemctl restart hysteria-server >/dev/null 2>&1 || return 2
-  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
   return 0
 }
 
-_box(){ # user pass created exp limit
-  local u="$1" p="$2" cr="$3" ex="$4" lim="${5:-0}" host limtxt
+_box(){ # user pass created exp
+  local u="$1" p="$2" cr="$3" ex="$4" host
   host=$(cat /etc/nvpanel/domain 2>/dev/null)
   [ -z "$host" ] && host="$(cat /etc/nvpanel/ip 2>/dev/null)"
-  [ "$lim" -gt 0 ] 2>/dev/null && limtxt="$lim" || limtxt="illimité"
   cat <<EOF
 ========== 🔐 COMPTE HYSTERIA2 ==========
 🌐 Hôte        : $host
 🔌 Port        : 443 (UDP)
 👤 Utilisateur : $u
 🔑 Mot de passe: $p
-👥 Appareils max: $limtxt
 🔗 Lien        : hy2://$u:$p@$host:443/?sni=$host#$u
 📅 Créé le     : $(_fmtd "$cr")
 ⏳ Expire le   : $(_fmtd "$ex")
@@ -96,94 +71,64 @@ EOF
 cmd="$1"; shift 2>/dev/null
 case "$cmd" in
   add)
-    user=$(_clean "$1"); pass=$(_clean "$2"); days="$3"; lim="$4"
+    user=$(_clean "$1"); pass=$(_clean "$2"); days="$3"
     [ -z "$user" ] || [ -z "$pass" ] && { echo "ERR args"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
-    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
     grep -q "^### $user " "$DB" && { echo "ERR exists"; exit 1; }
-    _guard_ready || { echo "ERR guard"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
     echo "### $user $pass $exp" >> "$DB"
-    "$GUARD" limit-set hysteria "$user" "$lim" >/dev/null 2>&1
     _rebuild; rc=$?
-    if [ "$rc" -ne 0 ]; then
-      sed -i "/^### $user /d" "$DB"
-      "$GUARD" limit-del hysteria "$user" >/dev/null 2>&1
-      case "$rc" in
-        1) echo "ERR notls" ;;
-        2) echo "ERR service" ;;
-        *) echo "ERR guard" ;;
-      esac
-      exit 1
-    fi
+    # Seul le cas « certificat absent » annule la création : la configuration
+    # n'a alors pas pu être écrite du tout.
+    [ "$rc" = 1 ] && { sed -i "/^### $user /d" "$DB"; echo "ERR notls"; exit 1; }
     echo "OK $user $exp"
-    _box "$user" "$pass" "$cr" "$exp" "$lim" ;;
+    _box "$user" "$pass" "$cr" "$exp" ;;
   list)
     today=$(date +%F)
-    while read -r _ user pass exp flag; do
-      [ -n "$user" ] || continue
-      if [ "$flag" = "L" ]; then st="verrou"
-      elif [ -n "$exp" ] && [ "$exp" -le "$today" ]; then st="expiré"
-      else st="actif"; fi
-      info=$($GUARD hysteria-user "$user" 2>/dev/null || printf '0|0|0')
-      IFS='|' read -r dev lim first <<< "$info"
-      printf '%s|%s|%s|%s|%s|%s\n' "$user" "$exp" "$st" "$(_since "$first")" "${dev:-0}" "${lim:-0}"
-    done < "$DB" ;;
+    awk -v d="$today" '/^### /{ st=($5=="L")?"verrou":(($4!="" && $4<=d)?"expiré":"actif"); print $2"|"$4"|"st }' "$DB" 2>/dev/null ;;
   info)
     user=$(_clean "$1")
     row=$(grep "^### $user " "$DB" 2>/dev/null | head -1)
     [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
-    lim=$($GUARD limit-get hysteria "$user" 2>/dev/null); lim=${lim:-0}
     echo "OK $user"
-    _box "$user" "$(echo "$row" | awk '{print $3}')" "-" "$(echo "$row" | awk '{print $4}')" "$lim" ;;
+    _box "$user" "$(echo "$row" | awk '{print $3}')" "-" "$(echo "$row" | awk '{print $4}')" ;;
   lock)
     user=$(_clean "$1")
     grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    sed -i "s|^### $user \\([^ ]*\\) \\([^ ]*\\).*|### $user \\1 \\2 L|" "$DB"
-    _guard_ready && "$GUARD" hysteria-kick "$user" >/dev/null 2>&1
-    echo "OK locked" ;;
+    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$DB"
+    _rebuild; echo "OK locked" ;;
   unlock)
     user=$(_clean "$1")
     grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    sed -i "s|^### $user \\([^ ]*\\) \\([^ ]*\\).*|### $user \\1 \\2|" "$DB"
-    echo "OK unlocked" ;;
+    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2|" "$DB"
+    _rebuild; echo "OK unlocked" ;;
   del)
     user=$(_clean "$1")
     grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    _guard_ready && "$GUARD" hysteria-kick "$user" >/dev/null 2>&1
     sed -i "/^### $user /d" "$DB"
-    [ -x "$GUARD" ] && "$GUARD" limit-del hysteria "$user" >/dev/null 2>&1
-    [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
-    echo "OK deleted" ;;
+    _rebuild; echo "OK deleted" ;;
   renew)
     user=$(_clean "$1"); days="$2"
     grep -q "^### $user " "$DB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
-    sed -i "s|^### $user \\([^ ]*\\) .*|### $user \\1 $exp|" "$DB"
+    sed -i "s|^### $user \([^ ]*\) .*|### $user \1 $exp|" "$DB"
     echo "OK $user $exp" ;;
   purge)
     mode=$(_clean "$1"); today=$(date +%F); n=0
     list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<=d)) print $2 }' "$DB" 2>/dev/null)
     for u in $list; do
       [ -z "$u" ] && continue
-      _guard_ready && "$GUARD" hysteria-kick "$u" >/dev/null 2>&1
-      sed -i "/^### $u /d" "$DB"
-      [ -x "$GUARD" ] && "$GUARD" limit-del hysteria "$u" >/dev/null 2>&1
-      n=$((n+1))
+      sed -i "/^### $u /d" "$DB"; n=$((n+1))
     done
-    [ "$n" -gt 0 ] && [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
+    [ "$n" -gt 0 ] && _rebuild
     echo "OK $n" ;;
   online)
-    _guard_ready && "$GUARD" hysteria-online 2>/dev/null || echo 0 ;;
+    # QUIC multiplexe tout sur un seul socket UDP : impossible de compter
+    # les sessions par utilisateur avec ss/pgrep, contrairement à PPP.
+    systemctl is-active --quiet hysteria-server && echo 1 || echo 0 ;;
   rebuild)
-    _rebuild; rc=$?
-    case "$rc" in
-      0) echo "OK" ;;
-      1) echo "ERR notls" ;;
-      2) echo "ERR service" ;;
-      *) echo "ERR guard" ;;
-    esac ;;
+    _rebuild && echo "OK" || echo "ERR notls" ;;
   *) echo "usage: nvpanel-hysteria add|list|info|del|renew|lock|unlock|purge|rebuild|online ..."; exit 1 ;;
 esac
 exit 0

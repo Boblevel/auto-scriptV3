@@ -180,14 +180,11 @@ def port_online(p):
     return _int(sh("ss -tnH state established '( sport = :%s )' 2>/dev/null "
                    "| awk '{print $4}' | sed -E 's/:[0-9]+$//' | sort -u | wc -l" % p))
 
-def xray_online():
-    # Identique à _xray_online() du panel : Vmess/Vless/Trojan partagent la
-    # même façade nginx, et côté Xray toute connexion arrive en 127.0.0.1 —
-    # impossible de séparer par protocole à ce niveau. Le seul chiffre
-    # honnête est le nombre de clients uniques sur le port PUBLIC de nginx ;
-    # il est donc partagé pour les trois protocoles, comme dans le panel.
-    xport = read_file("/etc/nvpanel/xport") or "443"
-    return port_online(xport)
+def xray_online(proto):
+    # Même source de vérité que le panel : activité réelle échantillonnée
+    # par compte via l'API de statistiques Xray. Cela évite de compter les
+    # sockets nginx, impossibles à attribuer proprement à un protocole.
+    return _int(cli("xonline", proto))
 
 def blocked_count(name):
     # Comptes verrouillés (colonne 5 = L) pour un protocole donné. Le bot ne
@@ -382,13 +379,11 @@ def do_monitor(chat):
     total = ssh + vm + vl + tr + ss + wg + l2 + pp + st + hy_ct
 
     on_ssh = ssh_online()
-    # Vmess/Vless/Trojan partagent la même façade nginx (Xray ne voit que
-    # 127.0.0.1 en interne) : un seul total de clients uniques pour les
-    # trois, comme dans le panel. Compté seulement si des comptes existent,
-    # sinon un simple scan internet sur le port public compterait comme un
-    # faux client.
-    on_xray = xray_online() if (vm + vl + tr) > 0 else 0
-    on_ss = port_online(8388) if ss > 0 else 0
+    # Même comptage que les tableaux du panel, protocole par protocole.
+    on_xray = ((xray_online("vmess") if vm > 0 else 0)
+               + (xray_online("vless") if vl > 0 else 0)
+               + (xray_online("trojan") if tr > 0 else 0))
+    on_ss = xray_online("ss") if ss > 0 else 0
     on_wg = wg_online()
     # Même garde-fou que ci-dessus, manquant jusqu'ici : sans compte pour
     # ce protocole, un pppd résiduel ou un scan quelconque pouvait
@@ -493,7 +488,10 @@ def do_xlist(chat, proto):
         # possible même si Xray multiplexe tout en 127.0.0.1). "\u2014" si
         # le compte est verrouillé ou inactif, exactement comme le panel.
         ct = p[3] if len(p) > 3 else "\u2014"
-        badge = "\U0001F534" if etat.startswith("verrou") else "\U0001F7E2"
+        if etat.startswith(("verrou", "expir")):
+            badge = "\U0001F534"
+        else:
+            badge = "\U0001F7E2"
         lignes = ["\u251C Expire     %s" % esc(fmt_date(exp))]
         if ct and ct != "\u2014":
             lignes.append("\u251C \u00c9tat       %s %s" % (badge, etat))
@@ -554,8 +552,11 @@ def handle_callback(chat, data):
         for r in rows.split("\n"):
             if "|" not in r:
                 continue
-            nm, ex = r.split("|")[:2]
-            lignes.append("%-16s %s" % (nm, fmt_date(ex)))
+            parts = r.split("|")
+            nm, ex = parts[:2]
+            etat = parts[2] if len(parts) > 2 else "actif"
+            badge = "🔴" if etat.startswith(("verrou", "expir")) else "🟢"
+            lignes.append("%-16s %-12s %s %s" % (nm, fmt_date(ex), badge, etat))
         send(chat, "<b>\U0001F4CB %s</b>\n<pre>%s</pre>" % (p.upper(), esc("\n".join(lignes) or "aucun compte"))); return
     if data.startswith("pa2:"):
         STATE[chat] = {"action": "pppadd", "proto": data[4:]}
@@ -585,8 +586,11 @@ def handle_callback(chat, data):
         for r in rows.split("\n"):
             if "|" not in r:
                 continue
-            nm, ex = r.split("|")[:2]
-            lignes.append("%-16s %s" % (nm, fmt_date(ex)))
+            parts = r.split("|")
+            nm, ex = parts[:2]
+            etat = parts[2] if len(parts) > 2 else "actif"
+            badge = "🔴" if etat.startswith(("verrou", "expir")) else "🟢"
+            lignes.append("%-16s %-12s %s %s" % (nm, fmt_date(ex), badge, etat))
         send(chat, "<b>\U0001F4CB Hysteria2</b>\n<pre>%s</pre>" % esc("\n".join(lignes) or "aucun compte"), kb=hy_kb()); return
     if data == "hya":
         STATE[chat] = {"action": "hyadd"}

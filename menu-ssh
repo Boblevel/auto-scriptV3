@@ -22,29 +22,36 @@ pick_user() {
   PICK=""
   mapfile -t _users < <(awk '/^### /{print $2}' "$DB" 2>/dev/null)
   if [ "${#_users[@]}" -eq 0 ]; then err "Aucun compte SSH."; pause; return 1; fi
-  echo; printf "   ${GRY}Comptes disponibles :${NC}\n"
-  local i=1 u exp st today
-  today=$(date +%F)
-  for u in "${_users[@]}"; do
-    exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
-    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
-      st="${RED}verrou${NC}"
-    elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
-      # Voir list_accounts : un compte expiré n'est plus purgé automatiquement,
-      # il doit donc être signalé comme tel plutôt que faussement « actif ».
-      st="${YLW}expiré${NC}"
+  local page=0 size=6 total=${#_users[@]} pages start end i u exp st today _ct n
+  pages=$(( (total + size - 1) / size )); today=$(date +%F)
+  while true; do
+    header
+    printf "   ${GRY}Comptes disponibles · page %d/%d :${NC}\n" "$((page+1))" "$pages"
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      u="${_users[$i]}"; exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
+      if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
+        st="${RED}verrou${NC}"
+      elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
+        st="${RED}expiré${NC}"
+      else
+        st="${GRN}actif${NC}"
+      fi
+      _ct=$(_conn_time "$u")
+      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b  ${CYN}%s${NC}\n" "$((i+1))" "$u" "$(_fmtd "${exp:-?}")" "$st" "${_ct:+⏱ $_ct}"
+    done
+    echo
+    if [ "$pages" -gt 1 ]; then
+      ask "   ➤ N° | n suivante | p précédente | 0 retour : " n
+      case "${n,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;; p) [ "$page" -gt 0 ] && page=$((page-1)); continue ;; esac
     else
-      st="${GRN}actif${NC}"
+      ask "   ➤ Numéro (0 = annuler) : " n
     fi
-    local _ct; _ct=$(_conn_time "$u")
-    printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  %b  ${CYN}%s${NC}\n" "$i" "$u" "$(_fmtd "${exp:-?}")" "$st" "${_ct:+⏱ $_ct}"
-    i=$((i+1))
+    [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; sleep 1; continue; }
+    [ "$n" -eq 0 ] && return 1
+    [ "$n" -ge 1 ] && [ "$n" -le "$total" ] || { err "Hors liste"; sleep 1; continue; }
+    PICK="${_users[$((n-1))]}"; return 0
   done
-  echo; ask "   ➤ Numéro (0 = annuler) : " n
-  [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
-  [ "$n" -eq 0 ] && return 1
-  [ "$n" -ge 1 ] && [ "$n" -le "${#_users[@]}" ] || { err "Hors liste"; pause; return 1; }
-  PICK="${_users[$((n-1))]}"; return 0
 }
 
 create_account() {
@@ -81,47 +88,35 @@ create_account() {
 }
 
 list_accounts() {
-  header
-  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
-  line
-  local u exp st st_color ct sessions n today lim sip pip kind usage
-  # Un seul balayage réseau pour tous les comptes de l'écran (au lieu d'un
-  # par compte) : plus rapide, et permet d'afficher combien d'IP distinctes
-  # utilisent chaque compte en ce moment, pour repérer d'un coup d'œil
-  # d'où vient le total « En ligne » de l'accueil.
-  sessions=$(_ssh_sessions)
-  today=$(date +%F)
-  while read -r _ u exp; do
-    [ -z "$u" ] && continue
-    if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
-      st="verrou"; st_color="$RED"
-    elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
-      # Un compte expiré n'est plus purgé automatiquement (voir nvpanel-clean) :
-      # sans cette vérification, il continuait de s'afficher « actif » alors
-      # que le système refuse déjà toute connexion pour lui.
-      st="expiré"; st_color="$RED"
-    else
-      st="actif"; st_color="$GRN"
-    fi
-    ct=$(_conn_time "$u")
-    n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
-    lim=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null); lim=${lim:-0}
-    sip=$(printf '%s\n' "$sessions" | grep "^$u|session:" | wc -l)
-    pip=$(( n - sip ))
-    kind="IP"
-    [ "$sip" -gt 0 ] && kind="session"
-    [ "$sip" -gt 0 ] && [ "$pip" -gt 0 ] && kind="connexion"
-    usage=""
-    if [ "$n" -gt 0 ]; then
-      if [ "$lim" -gt 0 ] 2>/dev/null; then usage="$n/$lim $kind"; else usage="$n $kind"; fi
-      [ "$n" -gt 1 ] && usage="${usage}s"
-    fi
-    printf " %-16s %-12s ${st_color}%-8s${NC} %s" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
-    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
-    printf "\n"
-    account_sep
-  done < "$DB"
-  pause
+  local page=0 size=6 total pages start end i u exp st st_color ct sessions n today
+  mapfile -t _rows_ssh < <(awk '/^### /{print $2"|"$3}' "$DB" 2>/dev/null)
+  total=${#_rows_ssh[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun compte SSH."; pause; return; }
+  pages=$(( (total + size - 1) / size )); sessions=$(_ssh_sessions); today=$(date +%F)
+  while true; do
+    header
+    printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+    line
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r u exp <<< "${_rows_ssh[$i]}"
+      if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
+        st="verrou"; st_color="$RED"
+      elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
+        st="expiré"; st_color="$RED"
+      else
+        st="actif"; st_color="$GRN"
+      fi
+      ct=$(_conn_time "$u"); n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
+      if [ "$n" -gt 1 ]; then
+        printf " %-16s %-12s ${st_color}%-8s${NC} %s ${CYN}(%s IP)${NC}\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"
+      else
+        printf " %-16s %-12s ${st_color}%-8s${NC} %s\n" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+      fi
+    done
+    if [ "$pages" -le 1 ]; then pause; return; fi
+    echo; ask "   ➤ n suivante | p précédente | 0 retour : " n
+    case "${n,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
+  done
 }
 
 renew_account() {
@@ -302,11 +297,10 @@ cleanup_menu() {
 hysteria_menu() {
   while true; do
     header; center " ⚡ HYSTERIA2 " "${BOLD}${WHT}"; line
-    proto_dash hysteria hysteria hysteria; line
     if systemctl is-active --quiet hysteria-server 2>/dev/null; then
       ok "Hysteria2 actif (UDP 443)"
     elif [ -f /etc/hysteria/config.yaml ]; then
-      warn "Hysteria2 installé mais service arrêté."
+      warn "Installé, en attente d'un premier compte (option 1)."
     else
       warn "Hysteria2 non installé."
     fi
@@ -342,12 +336,10 @@ hy_create(){
   ask " Mot de passe (vide = généré) : " p
   [ -z "$p" ] && p=$(openssl rand -hex 6)
   ask " Durée en jours [30] : " d; d=${d:-30}
-  ask " Limite d'appareils simultanés (0 = illimité) : " lim
-  [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   if [ ! -x /usr/local/bin/nvpanel-hysteria ]; then
     err "Hysteria2 n'est pas installé sur ce serveur (option 4)."; pause; return
   fi
-  local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" "$lim" 2>&1)
+  local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" 2>&1)
   if echo "$out" | grep -q "^OK"; then
     echo "$out" | tail -n +2
     ok "Compte créé."
@@ -359,8 +351,6 @@ hy_create(){
       *"ERR exists"*) err "Ce nom d'utilisateur est déjà pris." ;;
       *"ERR notls"*)  err "Domaine ou certificat TLS absent (Paramètres → 1 puis 2)." ;;
       *"ERR args"*)   err "Nom d'utilisateur ou mot de passe vide." ;;
-      *"ERR guard"*)  err "Contrôleur d'appareils indisponible. Tape « update » puis réessaie." ;;
-      *"ERR service"*) err "Compte non créé : le service Hysteria2 n'a pas démarré." ;;
       *)              err "Création impossible pour l'instant." ;;
     esac
   fi
@@ -368,20 +358,22 @@ hy_create(){
 }
 
 hy_list(){
-  header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line
-  local rows; rows=$(/usr/local/bin/nvpanel-hysteria list)
-  [ -z "$rows" ] && { warn "Aucun compte."; pause; return; }
-  printf "   ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
-  echo "$rows" | while IFS='|' read -r u e st ct dev lim; do
-    usage=""
-    if [ "${dev:-0}" -gt 0 ] 2>/dev/null; then
-      if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then usage="${dev}/${lim} appareils"; else usage="${dev} appareils"; fi
-    fi
-    printf "   %-16s %-12s %-8s %s" "$u" "$(_fmtd "$e")" "$st" "${ct:-—}"
-    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
-    printf "\n"; account_sep
+  local page=0 size=6 total pages start end i u e s color choice
+  mapfile -t _rows_hy < <(/usr/local/bin/nvpanel-hysteria list)
+  total=${#_rows_hy[@]}; [ "$total" -eq 0 ] && { header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line; warn "Aucun compte."; pause; return; }
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line
+    printf "   ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r u e s <<< "${_rows_hy[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf "   %-16s %-12s ${color}%-8s${NC} %s\n" "$u" "$(_fmtd "$e")" "$s" "—"
+    done
+    if [ "$pages" -le 1 ]; then pause; return; fi
+    echo; ask "   ➤ n suivante | p précédente | 0 retour : " choice
+    case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
   done
-  pause
 }
 
 hy_delete(){
@@ -394,11 +386,9 @@ hy_delete(){
 
 hy_uninstall(){
   header; center " 🗑️ DÉSINSTALLER HYSTERIA2 " "${BOLD}${WHT}"; line
-  printf "   ${RED}➤ Supprimer Hysteria2 et tous ses comptes ? (o/n) : ${NC}"; ask "" r
-  confirm "$r" || { pause; return; }
-  [ -x /usr/local/bin/nvpanel-hysteria ] && /usr/local/bin/nvpanel-hysteria purge all >/dev/null 2>&1
+  confirm " Supprimer Hysteria2 et tous ses comptes ?" || { pause; return; }
   systemctl disable --now hysteria-server >/dev/null 2>&1
-  rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml /etc/nvpanel/hysteria_stats_secret
+  rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml
   ok "Hysteria2 désinstallé."
   pause
 }

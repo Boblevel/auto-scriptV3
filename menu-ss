@@ -7,7 +7,7 @@ source /etc/nvpanel/lib/ui.sh
 ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
-header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_dash shadowsocks xray shadowsocks; line; }
+header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_dash shadowsocks port:8388 shadowsocks; line; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -18,17 +18,15 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days lim out
+  local name days out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"; lim="${3:-1}"
+    name="$1"; days="${2:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
-  ask " Limite d'IP simultanées (0 = illimité) : " lim
-  [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd ss "$name" "$days" "$lim")
+  out=$(nvpanel-cli xadd ss "$name" "$days")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     ok "Client Shadowsocks créé"
@@ -37,22 +35,23 @@ add_client() {
   pause
 }
 list_clients() {
-  header
-  printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
-  line
-  local n e s c dev lim usage
-  while IFS='|' read -r n e s c dev lim; do
-    [ -z "$n" ] && continue
-    usage=""
-    if [ "${dev:-0}" -gt 0 ] 2>/dev/null; then
-      if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then usage="${dev}/${lim} IP"; else usage="${dev} IP"; fi
-    fi
-    printf " %-16s %-12s %-8s %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
-    [ -n "$usage" ] && printf " ${CYN}(%s)${NC}" "$usage"
-    printf "\n"
-    account_sep
-  done < <(nvpanel-cli xlist ss)
-  pause
+  local page=0 size=6 total pages start end i n e s c color choice
+  mapfile -t _rows_ss < <(nvpanel-cli xlist ss)
+  total=${#_rows_ss[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client Shadowsocks."; pause; return; }
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    header
+    printf " ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+    line
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r n e s c <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf " %-16s %-12s ${color}%-8s${NC} %s\n" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
+    done
+    if [ "$pages" -le 1 ]; then pause; return; fi
+    echo; ask "   ➤ n suivante | p précédente | 0 retour : " choice
+    case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac
+  done
 }
 
 _rand_name(){ printf 'test%s' "$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c4)"; }
@@ -61,23 +60,28 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial_client() {
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un client Shadowsocks valable 24 heures…${NC}\n"
-  add_client "$(_rand_name)" 1 1
+  add_client "$(_rand_name)" 1
 }
 
 pick_client() {
   PICK=""
-  mapfile -t _cl < <(nvpanel-cli xlist ss | awk -F'|' 'NF{print $1"|"$2}')
+  mapfile -t _cl < <(nvpanel-cli xlist ss | awk -F'|' 'NF{print $1"|"$2"|"$3}')
   if [ "${#_cl[@]}" -eq 0 ]; then err "Aucun client Shadowsocks."; pause; return 1; fi
-  echo; printf "   ${GRY}Clients Shadowsocks :${NC}\n"
-  local i=1 row
-  for row in "${_cl[@]}"; do
-    printf "   ${WHT}%2d${NC}) %-18s ${GRY}exp %s${NC}\n" "$i" "${row%%|*}" "$(_fmtd "${row##*|}")"; i=$((i+1))
+  local page=0 size=6 total=${#_cl[@]} pages start end i nm ex st color n
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    header; printf "   ${GRY}Clients Shadowsocks · page %d/%d :${NC}\n" "$((page+1))" "$pages"
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r nm ex st <<< "${_cl[$i]}"; case "$st" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${color}%s${NC}\n" "$((i+1))" "$nm" "$(_fmtd "$ex")" "$st"
+    done
+    echo; if [ "$pages" -gt 1 ]; then ask "   ➤ N° | n suivante | p précédente | 0 retour : " n; else ask "   ➤ Numéro (0 = annuler) : " n; fi
+    case "${n,,}" in n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;; p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;; esac
+    [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; sleep 1; continue; }; [ "$n" -eq 0 ] && return 1
+    [ "$n" -ge 1 ] && [ "$n" -le "$total" ] || { err "Hors liste"; sleep 1; continue; }
+    PICK="${_cl[$((n-1))]%%|*}"; return 0
   done
-  echo; ask "   ➤ Numéro (0 = annuler) : " n
-  [[ "$n" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return 1; }
-  [ "$n" -eq 0 ] && return 1
-  [ "$n" -ge 1 ] && [ "$n" -le "${#_cl[@]}" ] || { err "Hors liste"; pause; return 1; }
-  PICK="${_cl[$((n-1))]%%|*}"; return 0
 }
 del_client() {
   header; pick_client || return; name="$PICK"
