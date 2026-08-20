@@ -137,13 +137,15 @@ _edge(){ # $1 = coin gauche, $2 = coin droit, $3 = texte inséré
 infobox(){
   flush_in
   printf '\033[H\033[2J\033[3J'
-  # Accueil compact : marque dans la bordure haute, informations serveur
-  # directement dessous, contact dans la bordure basse. Ne pas ajouter de
-  # ligne ici : le menu principal doit rester dans la hauteur sûre Termius.
+  # Accueil compact : même contenu et même hauteur. On élargit uniquement
+  # cet encadré de 4 colonnes pour garder une marge si le trafic atteint 100 To.
+  local _home_w="$W"
+  W=$((W + 4))
   _edge "┏" "┓" "R H A F F   S E R V I C E"
   sysinfo
   stats
   _edge "┗" "┛" "$CONTACT"
+  W="$_home_w"
 }
 
 banner() {
