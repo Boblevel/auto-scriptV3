@@ -400,18 +400,18 @@ hy_uninstall(){
 while true; do
   header
   menu_box_top
-  menu_box_entry "1" "➕" "Créer un compte"
-  menu_box_entry "2" "📋" "Lister les comptes"
-  menu_box_entry "3" "🔍" "Revoir un compte"
-  menu_box_entry "4" "♻️" "Prolonger / réactiver"
-  menu_box_entry "5" "🔒" "Verrouiller / déverrouiller"
-  menu_box_entry "6" "🗑️" "Supprimer un compte"
-  menu_box_entry "7" "🌐" "SlowDNS"
-  menu_box_entry "8" "📡" "UDP (badvpn / udp-custom)"
-  menu_box_entry "9" "⚡" "Hysteria2"
-  menu_box_entry "10" "🧹" "Nettoyage des comptes"
-  menu_box_entry "11" "🎁" "Compte test 24 h"
-  menu_box_entry "0" "⬅️" "Retour"
+  compact_menu_entry "1" "➕" "Créer un compte"
+  compact_menu_entry "2" "📋" "Lister les comptes"
+  compact_menu_entry "3" "🔍" "Revoir un compte"
+  compact_menu_entry "4" "♻️" "Prolonger / réactiver"
+  compact_menu_entry "5" "🔒" "Verrouiller / déverrouiller"
+  compact_menu_entry "6" "🗑️" "Supprimer un compte"
+  compact_menu_entry "7" "🌐" "SlowDNS"
+  compact_menu_entry "8" "📡" "UDP (badvpn / udp-custom)"
+  compact_menu_entry "9" "⚡" "Hysteria2"
+  compact_menu_entry "10" "🧹" "Nettoyage des comptes"
+  compact_menu_entry "11" "🎁" "Compte test 24 h"
+  compact_menu_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in

@@ -363,7 +363,7 @@ settings_row(){
   local n1="$1" t1="$2" n2="$3" t2="$4"
   printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-21.21s ${CYN}│${NC} ${GRN}[%02d]${NC} %-21.21s${CYN}┃${NC}\n" "$n1" "$t1" "$n2" "$t2"
 }
-settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
+settings_sep(){ printf "${CYN}┃${NC} ${GRY}──────────────────────────${NC} ${CYN}│${NC} ${GRY}──────────────────────────${NC} ${CYN}┃${NC}\n"; }
 
 while true; do
   flush_in; printf '\033[H\033[2J'

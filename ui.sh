@@ -61,15 +61,13 @@ entry() {
 # chacune afin de rester sous la limite des terminaux mobiles.
 menu_box_top(){ top; }
 menu_box_bot(){ bot; }
-menu_box_entry(){
+compact_menu_entry(){
   local n="$1" e="$2" t="$3"
   printf "${CYN}┃${NC} ${GRN}[%s]${NC} %s ${WHT}%s${NC}" "$n" "$e" "$(_upper "$t")"
   printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
-  # Séparateur horizontal entre chaque commande, comme dans la présentation
-  # Option 2 validée. Centralisé ici pour garder exactement le même rendu
-  # dans SSH, Xray, Shadowsocks, WireGuard et les trois menus PPP.
-  box_sep
 }
+# Compatibilité avec les anciens menus : aucune ligne horizontale entre options.
+menu_box_entry(){ compact_menu_entry "$@"; }
 
 # Tableau fermé : bord cyan, séparateurs internes gris comme sur la maquette.
 table_top(){ top; }

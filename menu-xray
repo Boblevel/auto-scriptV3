@@ -202,15 +202,15 @@ ensure_xray || exit 0
 while true; do
   header
   menu_box_top
-  menu_box_entry "1" "➕" "Ajouter un client"
-  menu_box_entry "2" "📋" "Lister les clients"
-  menu_box_entry "3" "🔍" "Revoir un client"
-  menu_box_entry "4" "♻️" "Prolonger un client"
-  menu_box_entry "5" "🗑️" "Supprimer un client"
-  menu_box_entry "6" "🧹" "Nettoyage des comptes"
-  menu_box_entry "7" "🎁" "Compte test 24 h"
-  menu_box_entry "8" "⚙️" "Installer / désinstaller"
-  menu_box_entry "0" "⬅️" "Retour"
+  compact_menu_entry "1" "➕" "Ajouter un client"
+  compact_menu_entry "2" "📋" "Lister les clients"
+  compact_menu_entry "3" "🔍" "Revoir un client"
+  compact_menu_entry "4" "♻️" "Prolonger un client"
+  compact_menu_entry "5" "🗑️" "Supprimer un client"
+  compact_menu_entry "6" "🧹" "Nettoyage des comptes"
+  compact_menu_entry "7" "🎁" "Compte test 24 h"
+  compact_menu_entry "8" "⚙️" "Installer / désinstaller"
+  compact_menu_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in
