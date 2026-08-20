@@ -117,7 +117,12 @@ list_peers() {
     for ((i=start; i<end; i++)); do
       IFS='|' read -r nm pub ip exp <<< "${_rows_wg[$i]}"; ct=$(_wg_time "$pub")
       if [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then st="expiré"; color="$RED"; ct="—"; else st="actif"; color="$GRN"; fi
-      printf "${CYN}┃${NC} %-12.12s %-12.12s %-11s ${color}%-7s${NC} %s" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      if [ -n "$ct" ] && [ "$ct" != "—" ]; then
+        printf "${CYN}┃${NC} %-12.12s %-12.12s %-11s ${color}%-7s${NC} %s ${CYN}(1 IP)${NC}" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "$st" "$ct"
+      else
+        printf "${CYN}┃${NC} %-12.12s %-12.12s %-11s ${color}%-7s${NC} %s" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"
+      fi
+      printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot

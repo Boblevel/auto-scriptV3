@@ -65,6 +65,10 @@ menu_box_entry(){
   local n="$1" e="$2" t="$3"
   printf "${CYN}┃${NC} ${GRN}[%s]${NC} %s ${WHT}%s${NC}" "$n" "$e" "$(_upper "$t")"
   printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  # Séparateur horizontal entre chaque commande, comme dans la présentation
+  # Option 2 validée. Centralisé ici pour garder exactement le même rendu
+  # dans SSH, Xray, Shadowsocks, WireGuard et les trois menus PPP.
+  box_sep
 }
 
 # Tableau fermé : bord cyan, séparateurs internes gris comme sur la maquette.

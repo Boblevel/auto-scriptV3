@@ -67,6 +67,26 @@ pick(){
   done
 }
 
+# Activité PPP par compte, basée uniquement sur les processus pppd réels.
+# Si le nom du compte n'est pas exposé dans la ligne de commande pppd, on
+# n'invente rien et on renvoie « — ».
+_ppp_session_info(){
+  local u="$1" row n et
+  row=$(ps -eo etimes=,args= 2>/dev/null | awk -v u="$u" '
+    /[p]ppd/ {
+      line=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", line)
+      if (line ~ "(^|[[:space:]])" u "([[:space:]]|$)") { print $1 }
+    }')
+  [ -z "$row" ] && { printf '%s' "—"; return; }
+  n=$(printf '%s\n' "$row" | awk 'NF{c++} END{print c+0}')
+  et=$(printf '%s\n' "$row" | sort -nr | head -1)
+  if [ "$et" -ge 3600 ] 2>/dev/null; then
+    printf '%dh %02dmin (%s IP%s)' $((et/3600)) $(((et%3600)/60)) "$n" "$([ "$n" -gt 1 ] && printf s)"
+  else
+    printf '%dmin (%s IP%s)' $((et/60)) "$n" "$([ "$n" -gt 1 ] && printf s)"
+  fi
+}
+
 create(){
   local u p d out
   if [ -n "$1" ]; then
@@ -89,7 +109,7 @@ create(){
 }
 
 list_all(){
-  local page=0 size=4 total pages start end i n e s color choice
+  local page=0 size=4 total pages start end i n e s color choice ct
   mapfile -t _rows_ppp < <(nvpanel-ppp list "$PROTO")
   total=${#_rows_ppp[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun compte $LABEL."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -101,7 +121,8 @@ list_all(){
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r n e s <<< "${_rows_ppp[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "$e")" "$s" "—"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      ct="—"; [ "$s" = "actif" ] && ct=$(_ppp_session_info "$n")
+      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "$e")" "$s" "$ct"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot
