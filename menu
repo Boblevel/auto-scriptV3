@@ -10,6 +10,18 @@ run() {
   else clear; banner; warn "Module « $1 » en préparation (bientôt disponible)."; pause; fi
 }
 
+# Encadrement du menu d'accueil uniquement. Les trois anciennes lignes de
+# séparation sont réutilisées comme haut / milieu / bas du cadre : aucune
+# ligne supplémentaire, afin de respecter la hauteur des terminaux mobiles.
+home_top(){ top; }
+home_mid(){ printf "${CYN}┣"; printf '━%.0s' $(seq 1 $W); printf "┫${NC}\n"; }
+home_bot(){ bot; }
+home_entry(){
+  local n="$1" e="$2" t="$3"
+  printf "${CYN}┃${NC} ${GRN}[%s]${NC} %s ${WHT}%s${NC}" "$n" "$e" "$(_upper "$t")"
+  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+}
+
 services_status() {
   banner; center " 📊  STATUT DES SERVICES " "${BOLD}${WHT}"; line
   local s name
@@ -73,24 +85,24 @@ optimize_server() {
 
 while true; do
   infobox
-  sep             # trait de séparation avant la première commande
-  entry "01" "🔒" "SSH · SlowDNS · UDP"
-  entry "02" "🌐" "Menu · L2TP"
-  entry "03" "📡" "Menu · PPTP"
-  entry "04" "🔐" "Menu · SSTP"
-  entry "05" "🟣" "Xray · Vmess"
-  entry "06" "🔵" "Xray · Vless"
-  entry "07" "🟠" "Xray · Trojan"
-  entry "08" "🟢" "Menu · Shadowsocks"
-  entry "09" "🔰" "Menu · WireGuard"
-  sep
-  entry "10" "🤖" "Bot Telegram"
-  entry "11" "📈" "Statut des services"
-  entry "12" "⚙️" "Paramètres"
-  entry "13" "🔁" "Redémarrer le serveur"
-  entry "14" "🚀" "Optimiser le serveur"
-  entry "00" "🚪" "Quitter"
-  sep
+  home_top
+  home_entry "01" "🔒" "SSH · SlowDNS · UDP"
+  home_entry "02" "🌐" "Menu · L2TP"
+  home_entry "03" "📡" "Menu · PPTP"
+  home_entry "04" "🔐" "Menu · SSTP"
+  home_entry "05" "🟣" "Xray · Vmess"
+  home_entry "06" "🔵" "Xray · Vless"
+  home_entry "07" "🟠" "Xray · Trojan"
+  home_entry "08" "🟢" "Menu · Shadowsocks"
+  home_entry "09" "🔰" "Menu · WireGuard"
+  home_mid
+  home_entry "10" "🤖" "Bot Telegram"
+  home_entry "11" "📈" "Statut des services"
+  home_entry "12" "⚙️" "Paramètres"
+  home_entry "13" "🔁" "Redémarrer le serveur"
+  home_entry "14" "🚀" "Optimiser le serveur"
+  home_entry "00" "🚪" "Quitter"
+  home_bot
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" opt || { clear; exit 0; }
   case "$opt" in
     01|1) run menu-ssh ;;
