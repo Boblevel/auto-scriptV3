@@ -29,56 +29,75 @@ touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE"
 _xapi_ensure(){
   [ -f "$XCONF" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
-  # StatsService donne l'activité par compte. RoutingService + l'outbound
-  # nvpanel-block permettent d'appliquer les limites IP à chaud, sans
-  # redémarrer Xray et sans couper les autres utilisateurs.
-  jq -e '
+
+  # Validation coûteuse mémorisée par signature du fichier. Tant que
+  # config.json n'a pas changé, aucun jq/xray -test/redémarrage n'est refait
+  # lors de l'ouverture d'un menu.
+  local sig stamp=/run/nvpanel-xapi.ok core tmp opt a b
+  sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
+  [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && return 0
+
+  core='
        (.api.tag=="api")
     and ((.api.services // []) | index("StatsService"))
     and ((.api.services // []) | index("RoutingService"))
     and ([.inbounds[]?.tag?] | index("api"))
     and ([.outbounds[]?.tag?] | index("api"))
     and ([.outbounds[]?.tag?] | index("nvpanel-block"))
-    and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))
-    and ([.inbounds[]? | select(.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in")
-          | (.streamSettings.sockopt.trustedXForwardedFor // []) | index("X-Real-IP")] | all)
-  ' "$XCONF" >/dev/null 2>&1 && return 0
+    and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
+
+  # Si le cœur API est déjà présent, l'absence éventuelle du support XFF ne
+  # doit JAMAIS empêcher la création d'un compte. On tente l'amélioration IP
+  # réelle seulement si le binaire Xray installé l'accepte.
+  if jq -e "$core" "$XCONF" >/dev/null 2>&1; then
+    if ! jq -e '[.inbounds[]? | select(.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") | (.streamSettings.sockopt.trustedXForwardedFor // []) | index("X-Real-IP")] | all' "$XCONF" >/dev/null 2>&1; then
+      opt=$(mktemp) || { printf '%s\n' "$sig" > "$stamp" 2>/dev/null; return 0; }
+      jq '[.inbounds[] | if (.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") then .streamSettings=(.streamSettings//{}) | .streamSettings.sockopt=(.streamSettings.sockopt//{}) | .streamSettings.sockopt.trustedXForwardedFor=["X-Real-IP"] else . end] as $x | .inbounds=$x' "$XCONF" > "$opt" 2>/dev/null || true
+      if [ -s "$opt" ]; then
+        a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
+        b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$opt" 2>/dev/null)
+        if [ -n "$a" ] && [ "$a" = "$b" ] && { ! command -v xray >/dev/null 2>&1 || xray run -test -c "$opt" >/dev/null 2>&1; }; then
+          mv "$opt" "$XCONF"
+          systemctl restart xray >/dev/null 2>&1
+          sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null)
+        else
+          rm -f "$opt"
+        fi
+      else
+        rm -f "$opt"
+      fi
+    fi
+    printf '%s\n' "$sig" > "$stamp" 2>/dev/null || true
+    return 0
+  fi
+
+  # Configuration ancienne : ajoute seulement le cœur API/statistiques. Le
+  # patch XFF est volontairement séparé afin qu'une ancienne version de Xray
+  # puisse continuer à créer/servir des comptes sans ERR xapi.
+  tmp=$(mktemp) || return 1
   jq '
       .stats = (.stats // {})
     | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService","RoutingService"]) | unique))
     | .policy = (.policy // {})
     | .policy.levels = (.policy.levels // {})
     | .policy.levels."0" = ((.policy.levels."0" // {}) + { "statsUserUplink": true, "statsUserDownlink": true })
-    | .inbounds = ( if ([.inbounds[]?.tag?]|index("api")) then .inbounds
-        else [ { "tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"} } ] + .inbounds end )
-    | .outbounds = ( if ([.outbounds[]?.tag?]|index("api")) then .outbounds
-        else .outbounds + [ { "protocol":"freedom","tag":"api" } ] end )
-    | .outbounds = ( if ([.outbounds[]?.tag?]|index("nvpanel-block")) then .outbounds
-        else .outbounds + [ { "protocol":"blackhole","tag":"nvpanel-block" } ] end )
-    | .routing = ((.routing // {}) | .rules = ((.rules // []) +
-        (if ([.rules[]?.inboundTag? // [] | index("api")] | any) then []
-         else [ {"type":"field","inboundTag":["api"],"outboundTag":"api"} ] end)))
-    | .inbounds = [.inbounds[] |
-        if (.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") then
-          .streamSettings = (.streamSettings // {})
-          | .streamSettings.sockopt = (.streamSettings.sockopt // {})
-          | .streamSettings.sockopt.trustedXForwardedFor = ["X-Real-IP"]
-        else . end]
-  ' "$XCONF" > "$XCONF.tmp" 2>/dev/null || { rm -f "$XCONF.tmp"; return 1; }
-  local a b
-  a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF"     2>/dev/null)
-  b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF.tmp" 2>/dev/null)
-  [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$XCONF.tmp"; return 1; }
-  # Valide la configuration avec le binaire réellement installé avant de
-  # remplacer le fichier actif. Une ancienne version Xray non compatible reste
-  # donc intacte au lieu d'être cassée par la mise à jour.
+    | .inbounds = ( if ([.inbounds[]?.tag?]|index("api")) then .inbounds else [ { "tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"} } ] + .inbounds end )
+    | .outbounds = ( if ([.outbounds[]?.tag?]|index("api")) then .outbounds else .outbounds + [ { "protocol":"freedom","tag":"api" } ] end )
+    | .outbounds = ( if ([.outbounds[]?.tag?]|index("nvpanel-block")) then .outbounds else .outbounds + [ { "protocol":"blackhole","tag":"nvpanel-block" } ] end )
+    | .routing = ((.routing // {}) | .rules = ((.rules // []) + (if ([.rules[]?.inboundTag? // [] | index("api")] | any) then [] else [ {"type":"field","inboundTag":["api"],"outboundTag":"api"} ] end)))
+  ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
+  b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
+  [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$tmp"; return 1; }
   if command -v xray >/dev/null 2>&1; then
-    xray run -test -c "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; return 1; }
+    xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
   fi
-  mv "$XCONF.tmp" "$XCONF"
+  mv "$tmp" "$XCONF"
   systemctl restart xray >/dev/null 2>&1
-  return 0
+  rm -f "$stamp"
+  _xapi_ensure
 }
+
 # Relève les compteurs de trafic de chaque compte et en déduit son activité.
 # Xray ne dit pas « qui est connecté » : il tient en revanche un compteur
 # d'octets par compte. Un compteur qui progresse = un compte en train de s'en
@@ -105,7 +124,7 @@ xsample_run(){
   # "%d" passe par un entier 32 bits et déborde au-delà de 4 Go de cumul
   # par compte, ce qui pouvait faire paraître "tot" plus petit que "prev"
   # (retour en arrière apparent) et déclarer à tort un compte inactif.
-  snap=$(xray api statsquery --server="$XAPI" -pattern "user>>>" 2>/dev/null \
+  snap=$(timeout 2 xray api statsquery --server="$XAPI" -pattern "user>>>" 2>/dev/null \
     | jq -r '.stat[]? | "\(.name) \(.value // 0)"' 2>/dev/null \
     | awk '{ split($1, p, ">>>"); if (p[2] != "") t[p[2]] += $2 } END { for (u in t) printf "%s %.0f\n", u, t[u] }')
   [ -z "$snap" ] && return 0
@@ -231,6 +250,20 @@ _x_ip_count(){ # proto compte
   local now cutoff
   now=$(date +%s); cutoff=$((now-300))
   awk -F'|' -v p="$1" -v n="$2" -v c="$cutoff" '$1==p&&$2==n&&$5>=c{a[$3]=1} END{for(i in a)x++; print x+0}' "$XIPSTATE" 2>/dev/null
+}
+
+_x_online_ips_one(){ # proto -> nombre d'IP/appareils réellement observés
+  local proto="$1" today nm ex fl ips total=0
+  xmeta "$proto" || { echo 0; return; }
+  today=$(date +%F)
+  while read -r _ nm _ ex fl; do
+    [ -n "$nm" ] || continue
+    [ "$fl" = "L" ] && continue
+    [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; } && continue
+    ips=$(_x_ip_count "$proto" "$nm"); ips=${ips:-0}
+    total=$((total + ips))
+  done < <(grep '^### ' "$XDB" 2>/dev/null)
+  echo "$total"
 }
 
 _x_limit_get(){
@@ -670,7 +703,7 @@ case "$cmd" in
     touch "$XDB"; grep -q "^### $name " "$XDB" && { echo "ERR exists"; exit 1; }
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
     [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
-    _xapi_ensure || { echo "ERR xapi"; exit 1; }
+    _xapi_ensure >/dev/null 2>&1 || true
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     if [ "$proto" = ss ]; then id=$(openssl rand -base64 32); client="{\"password\":\"$id\",\"email\":\"$name\"}"
     else
@@ -698,21 +731,25 @@ case "$cmd" in
     echo "OK $name $exp"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
   xonline)
-    # Compte les clients de CE protocole précis dont l'activité (échantillonnée
-    # via l'API stats Xray, identique à _conn_since) est en cours — jamais un
-    # comptage de sockets sur le port public, qui ne peut pas distinguer
-    # Vmess/Vless/Trojan/Shadowsocks entre eux (tous en 127.0.0.1 côté Xray).
-    proto="$1"; xmeta "$proto" || { echo 0; exit 0; }
-    _xapi_ensure; xsample_run
-    n=0; today=$(date +%F)
-    while read -r _ nm _ ex fl; do
-      [ -z "$nm" ] && continue
-      [ "$fl" = "L" ] && continue
-      [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; } && continue
-      first=$(grep "^$nm|" "$XSTAT" 2>/dev/null | head -1 | cut -d'|' -f3)
-      case "$first" in ''|0|*[!0-9]*) ;; *) n=$((n+1)) ;; esac
-    done < <(grep '^### ' "$XDB" 2>/dev/null)
-    echo "$n" ;;
+    # « En ligne » = appareils/IP sources RÉELLEMENT vus pendant les 5
+    # dernières minutes, et non plus simple nombre de comptes ayant du trafic.
+    # "all" permet à l'accueil de tout obtenir en une seule invocation.
+    proto="$1"
+    # Le compteur d'en-tête n'a besoin ni de StatsService ni d'une validation
+    # de config : il lit uniquement les IP réellement journalisées par Xray.
+    # Cela évite tout test/restart Xray pendant le simple affichage d'un menu.
+    # Le suivi « connecté depuis » reste fait par xlist.
+    _x_ip_refresh
+    if [ "$proto" = "all" ]; then
+      n=0
+      for xp in vmess vless trojan ss; do
+        v=$(_x_online_ips_one "$xp"); v=${v:-0}; n=$((n+v))
+      done
+      echo "$n"
+    else
+      xmeta "$proto" || { echo 0; exit 0; }
+      _x_online_ips_one "$proto"
+    fi ;;
   xipcount)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo 0; exit 0; }
     _x_ip_refresh

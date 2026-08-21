@@ -9,7 +9,9 @@ BKDIR=/root
 
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
 param_box_line(){
-  printf "${CYN}┃${NC} %s" "$1"
+  # %b interprète les séquences ANSI contenues dans les variables de couleur.
+  # Avec %s elles apparaissaient littéralement comme "\033[0;32m".
+  printf "${CYN}┃${NC} %b" "$1"
   printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
 
@@ -18,12 +20,10 @@ traffic_report(){
   header
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
   local DB=/etc/nvpanel/db/conso
+  _edge "┏" "┓" "BILAN DU TRAFIC — TOUS PROTOCOLES"
   if [ ! -s "$DB" ]; then
-    _edge "┏" "┓" "BILAN DU TRAFIC — TOUS PROTOCOLES"
-    param_box_line "${YLW}Aucune donnée de consommation pour l'instant.${NC}"
-    bot
-    pause
-    return
+    param_box_line "${YLW}Aucune consommation client enregistrée pour le moment.${NC}"
+    bot; pause; return
   fi
 
   local year today_str week month yearsum days_tracked start_date todaysum
@@ -32,20 +32,19 @@ traffic_report(){
   week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   yearsum=$(awk -F'|' -v p="$year" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
-  days_tracked=$(wc -l < "$DB" 2>/dev/null); days_tracked=${days_tracked:-0}
-  start_date=$(head -1 "$DB" 2>/dev/null | cut -d'|' -f1)
+  days_tracked=$(awk -F'|' 'NF{d[$1]=1} END{for(i in d)c++; print c+0}' "$DB" 2>/dev/null)
+  start_date=$(awk -F'|' 'NF{print $1; exit}' "$DB" 2>/dev/null)
 
-  _edge "┏" "┓" "BILAN DU TRAFIC — TOUS PROTOCOLES"
-  param_box_line "${GRN}▸ Aujourd'hui${NC}                  ${WHT}$(_hr "${todaysum:-0}")${NC}"
+  param_box_line "${GRY}Aujourd'hui          :${NC} ${GRN}$(_hr "${todaysum:-0}")${NC}"
   box_sep
-  param_box_line "${GRN}▸ 7 derniers jours${NC}            ${WHT}$(_hr "${week:-0}")${NC}"
+  param_box_line "${GRY}7 derniers jours    :${NC} ${GRN}$(_hr "${week:-0}")${NC}"
   box_sep
-  param_box_line "${GRN}▸ Ce mois-ci${NC}                  ${WHT}$(_hr "${month:-0}")${NC}"
+  param_box_line "${GRY}Ce mois-ci           :${NC} ${GRN}$(_hr "${month:-0}")${NC}"
   box_sep
-  param_box_line "${GRN}▸ Cette année ($year)${NC}          ${WHT}$(_hr "${yearsum:-0}")${NC}"
+  param_box_line "${GRY}Année $year          :${NC} ${GRN}$(_hr "${yearsum:-0}")${NC}"
   if [ -n "$start_date" ]; then
     box_sep
-    param_box_line "${GRY}Suivi depuis le $(_fmtd "$start_date") · ${days_tracked} jour(s)${NC}"
+    param_box_line "${GRY}Historique depuis    :${NC} ${WHT}$(_fmtd "$start_date") · ${days_tracked} jour(s)${NC}"
   fi
   bot
   pause
@@ -129,35 +128,51 @@ enable_bbr(){
 }
 speedtest(){
   header
-  local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
   _edge "┏" "┓" "TEST DE VITESSE DU SERVEUR"
-  param_box_line "${GRY}⬇  Mesure de la vitesse en cours…${NC}"
-  box_sep
+  param_box_line "${GRY}Mesure en cours… quelques secondes suffisent.${NC}"
+  bot
 
-  local tmp; tmp=$(mktemp)
-  (
-    for url in \
-      "https://speed.cloudflare.com/__down?bytes=1000000000" \
-      "https://proof.ovh.net/files/1Gb.dat" \
-      "http://speedtest.tele2.net/1GB.zip" \
-      "http://ipv4.download.thinkbroadband.com/512MB.zip" \
-      "https://fra.download.datapacket.com/100mb.bin"; do
-      res=$(curl -o /dev/null -sL --max-time 8 -w '%{size_download} %{time_total}' "$url" 2>/dev/null)
+  local lat tmpdir url i=0 sp best=0 mbps
+  lat=$(ping -c 1 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms.*/,"",$2); print $2; exit}')
+  tmpdir=$(mktemp -d) || { err "Impossible de créer le fichier temporaire."; pause; return; }
+
+  # Les sources sont testées en parallèle : au pire ~6 s au lieu de plusieurs
+  # délais de 8 s successifs. Le résultat reste un débit réellement mesuré.
+  for url in \
+    "https://speed.cloudflare.com/__down?bytes=50000000" \
+    "https://proof.ovh.net/files/100Mb.dat" \
+    "https://fra.download.datapacket.com/100mb.bin"; do
+    i=$((i+1))
+    (
+      res=$(curl -o /dev/null -sL --connect-timeout 3 --max-time 6 -w '%{size_download} %{time_total}' "$url" 2>/dev/null)
       dl=${res%% *}; tt=${res##* }
-      sp=$(awk -v b="${dl:-0}" -v t="${tt:-0}" 'BEGIN{ if(t<=0){print 0} else {printf "%d", b/t} }')
-      if awk -v b="${sp:-0}" 'BEGIN{exit !(b>50000)}'; then echo "$sp" > "$tmp"; break; fi
-    done
-  ) &
-  local pid=$!
-  wait "$pid" 2>/dev/null
-  local sp; sp=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
-  if [ -n "$sp" ] && awk -v b="$sp" 'BEGIN{exit !(b>50000)}'; then
-    local mbps; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
-    param_box_line "${GRN}✔ Vitesse du serveur :${NC} ${WHT}${mbps} Mbps${NC}"
-  else
-    param_box_line "${RED}✘ Aucune source de test n'a répondu.${NC}"
+      awk -v b="${dl:-0}" -v t="${tt:-0}" 'BEGIN{if(t>0) printf "%.0f", b/t; else print 0}' > "$tmpdir/$i"
+    ) &
+  done
+  wait
+  for f in "$tmpdir"/*; do
+    [ -f "$f" ] || continue
+    sp=$(cat "$f" 2>/dev/null); case "$sp" in ''|*[!0-9]*) sp=0 ;; esac
+    [ "$sp" -gt "$best" ] && best=$sp
+  done
+  rm -rf "$tmpdir"
+
+  # Redessine le résultat final proprement : aucune ligne « en cours » résiduelle.
+  header
+  _edge "┏" "┓" "TEST DE VITESSE DU SERVEUR"
+  if [ "$best" -gt 50000 ] 2>/dev/null; then
+    mbps=$(awk -v b="$best" 'BEGIN{printf "%.1f", b*8/1000000}')
+    param_box_line "${GRY}État du test          :${NC} ${GRN}Terminé avec succès${NC}"
     box_sep
-    param_box_line "${GRY}Latence mesurée : ${lat:-n/a} ms${NC}"
+    param_box_line "${GRY}Débit descendant     :${NC} ${WHT}${mbps} Mbps${NC}"
+    box_sep
+    param_box_line "${GRY}Latence réseau       :${NC} ${WHT}${lat:-non disponible} ms${NC}"
+  else
+    param_box_line "${GRY}État du test          :${NC} ${RED}Échec de la mesure${NC}"
+    box_sep
+    param_box_line "${GRY}Latence réseau       :${NC} ${WHT}${lat:-non disponible} ms${NC}"
+    box_sep
+    param_box_line "${YLW}Aucun serveur de test n'a répondu à temps.${NC}"
   fi
   bot
   pause

@@ -287,14 +287,9 @@ stats() {
   local ssh on_ssh bl_ssh
   ssh=$(grep -c '^### ' /etc/nvpanel/db/ssh 2>/dev/null); ssh=${ssh:-0}
   on_ssh=$(_ssh_online)
-  bl_ssh=0
-  if [ -f /etc/nvpanel/db/ssh ]; then
-    while read -r _ u _; do
-      [ -z "$u" ] && continue
-      local st; st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
-      [ "$st" = "L" ] && bl_ssh=$((bl_ssh+1))
-    done < /etc/nvpanel/db/ssh
-  fi
+  # Un seul passage dans /etc/shadow au lieu d'un appel `passwd -S` par
+  # compte : même information réelle, nettement moins de processus au chargement.
+  bl_ssh=$(awk 'NR==FNR{if($1=="###")u[$2]=1; next} {split($0,a,":"); if(u[a[1]] && a[2] ~ /^!/)c++} END{print c+0}' /etc/nvpanel/db/ssh /etc/shadow 2>/dev/null); bl_ssh=${bl_ssh:-0}
 
   local vm vl tr ss wg l2 pp sst hy
   vm=$(_count_db vmess); vl=$(_count_db vless); tr=$(_count_db trojan)
@@ -303,27 +298,30 @@ stats() {
   hy=$(_count_db hysteria)
   total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
 
-  local on_xray on_ss on_wg on_l2 on_pp on_sst
+  local on_xray on_ss on_wg on_l2 on_pp on_sst ppp_online
   # Ne compte « en ligne » que si des comptes existent pour ce protocole :
   # sinon une connexion quelconque sur le port public (scan internet, très
   # courant sur tout VPS exposé) peut apparaître comme un faux client alors
   # qu'aucun compte n'a jamais été créé.
-  on_xray=0
-  # Chaque protocole Xray compte désormais ses propres comptes actifs
-  # (nvpanel-cli xonline, basé sur l'activité réelle par compte) plutôt
-  # qu'un seul total de sockets partagé sur le port public, qui ne pouvait
-  # pas distinguer Vmess/Vless/Trojan entre eux.
-  [ "$vm" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline vmess 2>/dev/null || echo 0) ))
-  [ "$vl" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline vless 2>/dev/null || echo 0) ))
-  [ "$tr" -gt 0 ] && on_xray=$(( on_xray + $(nvpanel-cli xonline trojan 2>/dev/null || echo 0) ))
-  on_ss=0;   [ "$ss" -gt 0 ] && on_ss=$(_online_uniq_port 8388)
+  # Xray + Shadowsocks : une seule invocation, comptée en IP/appareils réels.
+  on_xray=0; on_ss=0
+  if [ $((vm + vl + tr + ss)) -gt 0 ]; then
+    on_xray=$(nvpanel-cli xonline all 2>/dev/null); on_xray=${on_xray:-0}
+  fi
   on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
-  on_l2=0;  [ "$l2"  -gt 0 ] && { on_l2=$(nvpanel-ppp online l2tp 2>/dev/null); on_l2=${on_l2:-0}; }
-  on_pp=0;  [ "$pp"  -gt 0 ] && { on_pp=$(nvpanel-ppp online pptp 2>/dev/null); on_pp=${on_pp:-0}; }
-  on_sst=0; [ "$sst" -gt 0 ] && { on_sst=$(nvpanel-ppp online sstp 2>/dev/null); on_sst=${on_sst:-0}; }
+
+  # PPP : même information réelle, mais les trois protocoles sont lus en une
+  # seule exécution de nvpanel-ppp (un seul prune des sessions).
+  on_l2=0; on_pp=0; on_sst=0
+  if [ $((l2 + pp + sst)) -gt 0 ]; then
+    ppp_online=$(nvpanel-ppp online all 2>/dev/null)
+    on_l2=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="l2tp"{print $2+0}'); on_l2=${on_l2:-0}
+    on_pp=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="pptp"{print $2+0}'); on_pp=${on_pp:-0}
+    on_sst=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="sstp"{print $2+0}'); on_sst=${on_sst:-0}
+  fi
   # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
   # exclu plutôt que d'afficher un faux chiffre.
-  online=$(( on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_sst ))
+  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst ))
 
   local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst
   bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
@@ -360,7 +358,11 @@ proto_dash() {
     port:*)
       local p="${mode#port:}"
       online=0
-      [ "$total" -gt 0 ] && online=$(_online_uniq_port "$p")
+      if [ "$total" -gt 0 ]; then
+        if [ "$dbf" = "shadowsocks" ]; then online=$(nvpanel-cli xonline ss 2>/dev/null)
+        else online=$(_online_uniq_port "$p"); fi
+      fi
+      online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     xray)
       # Auparavant : un seul total de sockets partagé sur le port public

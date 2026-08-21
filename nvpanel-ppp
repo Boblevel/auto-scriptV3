@@ -226,7 +226,11 @@ case "$cmd" in
       END{for(i in a)c++; print c+0 "|" first+0}' "$PSTATE" 2>/dev/null ;;
   online)
     proto=$(_clean "$1"); _ensure_hooks; _prune_sessions
-    awk -F'|' -v p="$proto" '$1==p{a[$2 SUBSEP $4]=1} END{for(i in a)c++; print c+0}' "$PSTATE" 2>/dev/null ;;
+    if [ "$proto" = "all" ]; then
+      awk -F'|' '$1=="l2tp"||$1=="pptp"||$1=="sstp"{a[$1 SUBSEP $2 SUBSEP $4]=1} END{for(i in a){split(i,k,SUBSEP); c[k[1]]++} print "l2tp|" c["l2tp"]+0; print "pptp|" c["pptp"]+0; print "sstp|" c["sstp"]+0}' "$PSTATE" 2>/dev/null
+    else
+      awk -F'|' -v p="$proto" '$1==p{a[$2 SUBSEP $4]=1} END{for(i in a)c++; print c+0}' "$PSTATE" 2>/dev/null
+    fi ;;
   *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|sessions|online <proto> ..."; exit 1 ;;
 esac
 exit 0
