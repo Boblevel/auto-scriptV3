@@ -10,7 +10,7 @@ PROTO="$1"
 case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac
 
 case "$PROTO" in vmess) LPORT=8080 ;; vless) LPORT=8081 ;; trojan) LPORT=8082 ;; esac
-header(){ banner; _edge "┏" "┓" "GESTION ${PROTO^^} (XRAY)"; proto_dash "$PROTO" xray "$PROTO"; bot; }
+header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; proto_dash "$PROTO" xray "$PROTO"; line; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -21,16 +21,15 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days lim out
+  local name days out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"; lim="${3:-1}"
+    name="$1"; days="${2:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
-  ask " Limite d'appareils (0 = illimité) : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days" "$lim")
+  out=$(nvpanel-cli xadd "$PROTO" "$name" "$days")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     ok "Client ${PROTO^^} créé"
@@ -42,7 +41,7 @@ add_client() {
 }
 
 list_clients() {
-  local page=0 size=4 total pages start end i n e s c ips lim color choice
+  local page=0 size=4 total pages start end i n e s c color choice
   mapfile -t _rows_x < <(nvpanel-cli xlist "$PROTO")
   total=${#_rows_x[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client ${PROTO^^}."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -53,14 +52,9 @@ list_clients() {
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r n e s c ips lim <<< "${_rows_x[$i]}"
+      IFS='|' read -r n e s c <<< "${_rows_x[$i]}"
       case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      if [ "${ips:-0}" -gt 0 ] 2>/dev/null; then
-        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s ${CYN}(%s IP%s)${NC}" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}" "$ips" "$([ "$ips" -gt 1 ] && printf s)"
-      else
-        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
-      fi
-      printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot
@@ -78,7 +72,7 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial_client() {
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un client ${PROTO^^} valable 24 heures…${NC}\n"
-  add_client "$(_rand_name)" 1 1
+  add_client "$(_rand_name)" 1
 }
 
 pick_client() {
@@ -117,12 +111,29 @@ renew_client() {
 }
 
 view_client() {
-  header; pick_client || return; name="$PICK"
-  out=$(nvpanel-cli xinfo "$PROTO" "$name")
-  clear; header
-  if echo "$out" | head -1 | grep -q '^OK'; then printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
-  else err "Introuvable : $out"; fi
-  pause
+  header; pick_client || return
+  local idx=0 total=${#_cl[@]} i name out nav
+  for ((i=0; i<total; i++)); do
+    [ "${_cl[$i]%%|*}" = "$PICK" ] && { idx=$i; break; }
+  done
+  while true; do
+    name="${_cl[$idx]%%|*}"
+    out=$(nvpanel-cli xinfo "$PROTO" "$name")
+    clear; header
+    printf "   ${GRY}Client ${PROTO^^} · %d/%d${NC}\n" "$((idx+1))" "$total"
+    if echo "$out" | head -1 | grep -q '^OK'; then
+      printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+    else
+      err "Introuvable : $out"
+    fi
+    ask "   ➤ n suivant | p précédent | 0 retour : " nav
+    case "${nav,,}" in
+      n) [ "$idx" -lt $((total-1)) ] && idx=$((idx+1)) ;;
+      p) [ "$idx" -gt 0 ] && idx=$((idx-1)) ;;
+      0|'') return ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
 }
 
 cleanup_menu() {
@@ -208,15 +219,15 @@ ensure_xray || exit 0
 while true; do
   header
   menu_box_top
-  compact_menu_entry "1" "➕" "Ajouter un client"
-  compact_menu_entry "2" "📋" "Lister les clients"
-  compact_menu_entry "3" "🔍" "Revoir un client"
-  compact_menu_entry "4" "♻️" "Prolonger un client"
-  compact_menu_entry "5" "🗑️" "Supprimer un client"
-  compact_menu_entry "6" "🧹" "Nettoyage des comptes"
-  compact_menu_entry "7" "🎁" "Compte test 24 h"
-  compact_menu_entry "8" "⚙️" "Installer / désinstaller"
-  compact_menu_entry "0" "⬅️" "Retour"
+  menu_box_entry "1" "➕" "Ajouter un client"
+  menu_box_entry "2" "📋" "Lister les clients"
+  menu_box_entry "3" "🔍" "Revoir un client"
+  menu_box_entry "4" "♻️" "Prolonger un client"
+  menu_box_entry "5" "🗑️" "Supprimer un client"
+  menu_box_entry "6" "🧹" "Nettoyage des comptes"
+  menu_box_entry "7" "🎁" "Compte test 24 h"
+  menu_box_entry "8" "⚙️" "Installer / désinstaller"
+  menu_box_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in

@@ -19,7 +19,8 @@ XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_ac
 XLIMDB=/etc/nvpanel/db/xlimit    # proto|compte|limite_appareils (0 = illimite)
 XIPSTATE=/etc/nvpanel/db/xips    # proto|compte|ip|premiere_vue|derniere_vue
 XBLOCKSTATE=/etc/nvpanel/db/xblocks # tag|proto|compte|ips_bloquees
-touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE"
+XCREATED=/etc/nvpanel/db/xcreated # proto|compte|date_creation (AAAA-MM-JJ)
+touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED"
 
 # Active le service de statistiques dans une configuration qui ne l'a pas
 # encore (serveurs installés avant cette version).
@@ -353,6 +354,23 @@ _x_limit_del(){
   mv "$t" "$XLIMDB"
 }
 
+_x_created_get(){
+  awk -F'|' -v p="$1" -v n="$2" '$1==p&&$2==n{v=$3} END{print v}' "$XCREATED" 2>/dev/null
+}
+_x_created_set(){
+  local p="$1" n="$2" d="$3" t
+  t=$(mktemp) || return 1
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XCREATED" 2>/dev/null > "$t"
+  printf '%s|%s|%s\n' "$p" "$n" "$d" >> "$t"
+  mv "$t" "$XCREATED"
+}
+_x_created_del(){
+  local p="$1" n="$2" t
+  t=$(mktemp) || return 0
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XCREATED" 2>/dev/null > "$t"
+  mv "$t" "$XCREATED"
+}
+
 # Applique les dépassements à chaud avec RoutingService : une règle combine
 # l'email Xray + l'inbound exact + l'IP excédentaire, donc elle ne bloque ni
 # les autres comptes derrière le même NAT ni les autres protocoles.
@@ -571,70 +589,46 @@ _client_json(){ # proto id name
 
 xray_box(){ # proto name id created exp
   local proto="$1" name="$2" id="$3" cr="$4" ex="$5"
-  local host path label ltls lnotls ip tlsp plainp lim
-  host=$(_host); ip=$(_ip); tlsp=$(_xport); plainp=80
-  lim=$(_x_limit_get "$proto" "$name"); [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
+  local host path label ltls lnotls tlsp plainp created
+  host=$(_host); tlsp=$(_xport); plainp=80
   case "$proto" in
     vmess)  path="/vmess";  label="VMESS";  ltls=$(_vmess_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vmess_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
     vless)  path="/vless";  label="VLESS";  ltls=$(_vless_link "$id" "$host" "$tlsp" "$path" 1 "$name");  lnotls=$(_vless_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
     trojan) path="/trojan"; label="TROJAN"; ltls=$(_trojan_link "$id" "$host" "$tlsp" "$path" 1 "$name"); lnotls=$(_trojan_link "$id" "$host" "$plainp" "$path" 0 "$name") ;;
   esac
-  local blabel
-  case "$proto" in
-    vmess)  blabel="𝐕𝐌𝐄𝐒𝐒" ;;
-    vless)  blabel="𝐕𝐋𝐄𝐒𝐒" ;;
-    trojan) blabel="𝐓𝐑𝐎𝐉𝐀𝐍" ;;
-  esac
+  if [ -n "$cr" ] && [ "$cr" != "-" ]; then created=$(_fmtd "$cr"); else created="non disponible"; fi
   cat <<EOF
-==========  𝐗𝐑𝐀𝐘 / $blabel ☠️ ==========
-📝 Remarks     : $name
-🖥️ IP/Host     : $ip
-🌐 Address     : $host
+==========  XRAY / $label  ==========
+📝 Compte      : $name
 🔒 Port TLS    : $tlsp
 🔓 Port No TLS : $plainp
-🆔 User ID     : $id
-📱 Appareils   : $lim
-🔐 Encryption  : none
-🌐 Network     : ws
-📁 Path        : $path
-📅 Created     : $(_fmtd "$cr")
-⏳ Expired     : $(_fmtd "$ex")
-=========================================================
-🔗 Link TLS ($tlsp) :
-    $ltls
-
-🔗 Link No TLS ($plainp) :
-    $lnotls
-
-=========================================================
+📅 Créé le     : $created
+⏳ Expire le   : $(_fmtd "$ex")
+🔗 Lien TLS    : $ltls
+🔗 Lien No TLS : $lnotls
+=====================================
 EOF
 }
 
 
 # ---- encadré Shadowsocks -----------------------------------
 ss_box(){ # name ckey created exp
-  local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link lim
+  local name="$1" ck="$2" cr="$3" ex="$4" host skey ui link created
   host=$(_host); skey=$(cat "$NDIR/ss_key" 2>/dev/null)
-  lim=$(_x_limit_get ss "$name"); [ "$lim" -gt 0 ] 2>/dev/null || lim="illimité"
   ui=$(printf '%s' "2022-blake3-aes-256-gcm:$skey:$ck" | base64 -w0)
   link="ss://$ui@$host:8388#$(_remark_url SS "$name")"
+  if [ -n "$cr" ] && [ "$cr" != "-" ]; then created=$(_fmtd "$cr"); else created="non disponible"; fi
   cat <<EOF
-==========  𝐒𝐇𝐀𝐃𝐎𝐖𝐒𝐎𝐂𝐊𝐒 ☠️ ==========
-📝 Remarks : $name
-🖥️ IP/Host : $(_ip)
-🌐 Address : $host
-🔒 Port    : 8388
-🧪 Method  : 2022-blake3-aes-256-gcm
-📱 Appareils: $lim
-📅 Created : $(_fmtd "$cr")
-⏳ Expired : $(_fmtd "$ex")
-=========================================================
-🔗 Link (8388) :
-    $link
-
-=========================================================
+==========  SHADOWSOCKS  ==========
+📝 Compte    : $name
+🔒 Port      : 8388
+📅 Créé le   : $created
+⏳ Expire le : $(_fmtd "$ex")
+🔗 Lien      : $link
+===================================
 EOF
 }
+
 
 cmd="$1"; shift 2>/dev/null
 
@@ -795,6 +789,7 @@ case "$cmd" in
       "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
     mv "$XCONF.tmp" "$XCONF"
     echo "### $name $id $exp" >> "$XDB"
+    _x_created_set "$proto" "$name" "$cr"
     _x_limit_set "$proto" "$name" "$lim"
     systemctl restart xray >/dev/null 2>&1
     echo "OK $name $exp"
@@ -858,7 +853,7 @@ case "$cmd" in
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
     jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
-    sed -i "/^### $name /d" "$XDB"; _x_limit_del "$proto" "$name"; systemctl restart xray >/dev/null 2>&1
+    sed -i "/^### $name /d" "$XDB"; _x_limit_del "$proto" "$name"; _x_created_del "$proto" "$name"; systemctl restart xray >/dev/null 2>&1
     echo "OK deleted" ;;
   xrenew)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
@@ -890,9 +885,9 @@ case "$cmd" in
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
     row=$(grep "^### $name " "$XDB" 2>/dev/null | head -1)
     [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
-    id=$(echo "$row" | awk '{print $3}'); exp=$(echo "$row" | awk '{print $4}')
+    id=$(echo "$row" | awk '{print $3}'); exp=$(echo "$row" | awk '{print $4}'); cr=$(_x_created_get "$proto" "$name")
     echo "OK $name"
-    if [ "$proto" = ss ]; then ss_box "$name" "$id" "-" "$exp"; else xray_box "$proto" "$name" "$id" "-" "$exp"; fi ;;
+    if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
 
   purge)
     # purge <proto> <expired|all>   → supprime en masse, renvoie « OK <nombre> »
@@ -921,6 +916,7 @@ case "$cmd" in
           jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"
           sed -i "/^### $nm /d" "$XDB" 2>/dev/null
           _x_limit_del "$proto" "$nm"
+          _x_created_del "$proto" "$nm"
           n=$((n+1))
         done
         [ "$n" -gt 0 ] && systemctl restart xray >/dev/null 2>&1

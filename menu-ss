@@ -7,7 +7,7 @@ source /etc/nvpanel/lib/ui.sh
 ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 
-header(){ banner; _edge "┏" "┓" "GESTION SHADOWSOCKS"; proto_dash shadowsocks port:8388 shadowsocks; bot; }
+header(){ banner; center " GESTION SHADOWSOCKS " "${BOLD}${WHT}"; line; proto_dash shadowsocks port:8388 shadowsocks; line; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -18,16 +18,15 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days lim out
+  local name days out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"; lim="${3:-1}"
+    name="$1"; days="${2:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
-  ask " Limite d'appareils (0 = illimité) : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd ss "$name" "$days" "$lim")
+  out=$(nvpanel-cli xadd ss "$name" "$days")
   clear; header
   if echo "$out" | head -1 | grep -q '^OK'; then
     ok "Client Shadowsocks créé"
@@ -36,7 +35,7 @@ add_client() {
   pause
 }
 list_clients() {
-  local page=0 size=4 total pages start end i n e s c ips lim color choice
+  local page=0 size=4 total pages start end i n e s c color choice
   mapfile -t _rows_ss < <(nvpanel-cli xlist ss)
   total=${#_rows_ss[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client Shadowsocks."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -47,14 +46,8 @@ list_clients() {
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r n e s c ips lim <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      ips=${ips:-0}
-      if [ "$ips" -gt 0 ] 2>/dev/null; then
-        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s ${CYN}(%s IP%s)${NC}" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}" "$ips" "$([ "$ips" -gt 1 ] && printf s)"
-      else
-        printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"
-      fi
-      printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      IFS='|' read -r n e s c <<< "${_rows_ss[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "${c:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot
@@ -70,7 +63,7 @@ _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 trial_client() {
   banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
   printf "   ${GRY}Génération d'un client Shadowsocks valable 24 heures…${NC}\n"
-  add_client "$(_rand_name)" 1 1
+  add_client "$(_rand_name)" 1
 }
 
 pick_client() {
@@ -104,11 +97,29 @@ renew_client() {
   echo "$r"|grep -q '^OK' && ok "Prolongé" || err "$r"; pause
 }
 view_client() {
-  header; pick_client || return; name="$PICK"
-  out=$(nvpanel-cli xinfo ss "$name")
-  clear; header
-  if echo "$out"|head -1|grep -q '^OK'; then printf "${GRN}"; echo "$out"|tail -n +2; printf "${NC}"; else err "Introuvable : $out"; fi
-  pause
+  header; pick_client || return
+  local idx=0 total=${#_cl[@]} i name out nav
+  for ((i=0; i<total; i++)); do
+    [ "${_cl[$i]%%|*}" = "$PICK" ] && { idx=$i; break; }
+  done
+  while true; do
+    name="${_cl[$idx]%%|*}"
+    out=$(nvpanel-cli xinfo ss "$name")
+    clear; header
+    printf "   ${GRY}Client Shadowsocks · %d/%d${NC}\n" "$((idx+1))" "$total"
+    if echo "$out" | head -1 | grep -q '^OK'; then
+      printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+    else
+      err "Introuvable : $out"
+    fi
+    ask "   ➤ n suivant | p précédent | 0 retour : " nav
+    case "${nav,,}" in
+      n) [ "$idx" -lt $((total-1)) ] && idx=$((idx+1)) ;;
+      p) [ "$idx" -gt 0 ] && idx=$((idx-1)) ;;
+      0|'') return ;;
+      *) warn "Invalide"; sleep 1 ;;
+    esac
+  done
 }
 
 cleanup_menu() {
@@ -194,15 +205,15 @@ ensure_xray || exit 0
 while true; do
   header
   menu_box_top
-  compact_menu_entry "1" "➕" "Ajouter un client"
-  compact_menu_entry "2" "📋" "Lister les clients"
-  compact_menu_entry "3" "🔍" "Revoir un client"
-  compact_menu_entry "4" "♻️" "Prolonger un client"
-  compact_menu_entry "5" "🗑️" "Supprimer un client"
-  compact_menu_entry "6" "🧹" "Nettoyage des comptes"
-  compact_menu_entry "7" "🎁" "Compte test 24 h"
-  compact_menu_entry "8" "⚙️" "Installer / désinstaller"
-  compact_menu_entry "0" "⬅️" "Retour"
+  menu_box_entry "1" "➕" "Ajouter un client"
+  menu_box_entry "2" "📋" "Lister les clients"
+  menu_box_entry "3" "🔍" "Revoir un client"
+  menu_box_entry "4" "♻️" "Prolonger un client"
+  menu_box_entry "5" "🗑️" "Supprimer un client"
+  menu_box_entry "6" "🧹" "Nettoyage des comptes"
+  menu_box_entry "7" "🎁" "Compte test 24 h"
+  menu_box_entry "8" "⚙️" "Installer / désinstaller"
+  menu_box_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) trial_client ;; 8) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
