@@ -18,15 +18,16 @@ ensure_xray() {
 }
 
 add_client() {
-  local name days out
+  local name days lim out
   if [ -n "$1" ]; then
-    name="$1"; days="${2:-1}"
+    name="$1"; days="${2:-1}"; lim="${3:-1}"
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
   ask " Durée (jours) : " days
+  ask " Limite d'appareils (0 = illimité) : " lim; [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
   fi
-  out=$(nvpanel-cli xadd ss "$name" "$days")
+  out=$(nvpanel-cli xadd ss "$name" "$days" "$lim")
   clear
   if echo "$out" | head -1 | grep -q '^OK'; then
     printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"

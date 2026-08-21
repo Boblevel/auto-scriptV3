@@ -604,7 +604,9 @@ _card_row(){ # libelle valeur
 _card_link(){ # libelle lien
   local label="$1" link="$2" part
   printf '┃ %-52.52s ┃\n' "$label"
-  printf '%s' "$link" | fold -w 52 | while IFS= read -r part; do
+  # Le saut final est volontaire : sans lui, read perd le dernier fragment
+  # lorsque la longueur du lien n'est pas un multiple exact de 52.
+  printf '%s\n' "$link" | fold -w 52 | while IFS= read -r part; do
     printf '┃ %-52s ┃\n' "$part"
   done
 }
@@ -623,8 +625,8 @@ xray_box(){ # proto name id created exp
   _card_cap "CLIENT $label"
   _card_row "Compte" "$name"
   _card_row "Ports" "$tlsp TLS / $plainp No TLS"
-  _card_row "Créé le" "$created"
-  _card_row "Expire le" "$(_fmtd "$ex")"
+  _card_row "Creation" "$created"
+  _card_row "Expiration" "$(_fmtd "$ex")"
   _card_link "Lien TLS ($tlsp)" "$ltls"
   _card_link "Lien No TLS ($plainp)" "$lnotls"
   _card_bot
@@ -641,8 +643,8 @@ ss_box(){ # name ckey created exp
   _card_cap "CLIENT SHADOWSOCKS"
   _card_row "Compte" "$name"
   _card_row "Port" "8388"
-  _card_row "Créé le" "$created"
-  _card_row "Expire le" "$(_fmtd "$ex")"
+  _card_row "Creation" "$created"
+  _card_row "Expiration" "$(_fmtd "$ex")"
   _card_link "Lien Shadowsocks" "$link"
   _card_bot
 }
