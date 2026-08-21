@@ -10,7 +10,7 @@ PROTO="$1"
 case "$PROTO" in vmess|vless|trojan) ;; *) err "Protocole inconnu"; exit 1 ;; esac
 
 case "$PROTO" in vmess) LPORT=8080 ;; vless) LPORT=8081 ;; trojan) LPORT=8082 ;; esac
-header(){ banner; center " GESTION ${PROTO^^} (XRAY) " "${BOLD}${WHT}"; line; proto_dash "$PROTO" xray "$PROTO"; line; }
+header(){ banner; _edge "┏" "┓" "GESTION ${PROTO^^} (XRAY)"; proto_dash "$PROTO" xray "$PROTO"; bot; }
 
 ensure_xray() {
   if [ ! -f /usr/local/etc/xray/config.json ] || ! command -v xray >/dev/null 2>&1; then
@@ -30,14 +30,15 @@ add_client() {
   ask " Durée (jours) : " days
   fi
   out=$(nvpanel-cli xadd "$PROTO" "$name" "$days")
-  clear; header
+  clear
   if echo "$out" | head -1 | grep -q '^OK'; then
-    ok "Client ${PROTO^^} créé"
-    echo; printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+    printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
+    ask "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _pausevar
   else
+    header
     err "Échec : $(echo "$out" | head -1)"
+    pause
   fi
-  pause
 }
 
 list_clients() {
@@ -119,14 +120,13 @@ view_client() {
   while true; do
     name="${_cl[$idx]%%|*}"
     out=$(nvpanel-cli xinfo "$PROTO" "$name")
-    clear; header
-    printf "   ${GRY}Client ${PROTO^^} · %d/%d${NC}\n" "$((idx+1))" "$total"
+    clear
     if echo "$out" | head -1 | grep -q '^OK'; then
       printf "${GRN}"; echo "$out" | tail -n +2; printf "${NC}"
     else
-      err "Introuvable : $out"
+      header; err "Introuvable : $out"
     fi
-    ask "   ➤ n suivant | p précédent | 0 retour : " nav
+    ask "   ➤ n suivant | p précédent | 0 retour · $((idx+1))/$total : " nav
     case "${nav,,}" in
       n) [ "$idx" -lt $((total-1)) ] && idx=$((idx+1)) ;;
       p) [ "$idx" -gt 0 ] && idx=$((idx-1)) ;;
