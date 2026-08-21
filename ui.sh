@@ -308,7 +308,7 @@ stats() {
   if [ $((vm + vl + tr + ss)) -gt 0 ]; then
     on_xray=$(nvpanel-cli xonline all 2>/dev/null); on_xray=${on_xray:-0}
   fi
-  on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}')
+  on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
 
   # PPP : même information réelle, mais les trois protocoles sont lus en une
   # seule exécution de nvpanel-ppp (un seul prune des sessions).
@@ -348,13 +348,7 @@ proto_dash() {
   case "$mode" in
     ssh)
       online=$(_ssh_online)
-      if [ -f "/etc/nvpanel/db/$dbf" ]; then
-        while read -r _ u _; do
-          [ -z "$u" ] && continue
-          local st; st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
-          [ "$st" = "L" ] && blocked=$((blocked+1))
-        done < "/etc/nvpanel/db/$dbf"
-      fi ;;
+      blocked=$(awk 'NR==FNR{if($1=="###")u[$2]=1; next} {split($0,a,":"); if(u[a[1]] && a[2] ~ /^!/)c++} END{print c+0}' "/etc/nvpanel/db/$dbf" /etc/shadow 2>/dev/null); blocked=${blocked:-0} ;;
     port:*)
       local p="${mode#port:}"
       online=0
@@ -376,7 +370,7 @@ proto_dash() {
       [ "$total" -gt 0 ] && online=$(nvpanel-cli xonline "$dbf" 2>/dev/null); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
-      online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<180{c++} END{print c+0}') ;;
+      online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}') ;;
     ppp:*)
       local pp="${mode#ppp:}"
       online=0
@@ -487,7 +481,7 @@ _wg_time(){
   hs=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v p="$pub" '$1==p{print $2}')
   [ -z "$hs" ] || [ "$hs" = 0 ] && return 0
   now=$(date +%s); d=$(( now - hs ))
-  [ "$d" -gt 180 ] 2>/dev/null && return 0
+  [ "$d" -gt 75 ] 2>/dev/null && return 0
   if   [ "$d" -ge 3600 ] 2>/dev/null; then printf '%dh %02dmin' $((d/3600)) $(((d%3600)/60))
   else printf '%dmin' $((d/60)); fi
 }

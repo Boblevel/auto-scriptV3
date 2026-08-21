@@ -195,7 +195,7 @@ def blocked_count(name):
 
 def wg_online():
     return _int(sh("wg show wg0 latest-handshakes 2>/dev/null | "
-                   "awk -v n=$(date +%s) '$2>0 && (n-$2)<180{c++} END{print c+0}'"))
+                   "awk -v n=$(date +%s) '$2>0 && (n-$2)<75{c++} END{print c+0}'"))
 
 def main_kb():
     return {"inline_keyboard": [
@@ -340,7 +340,7 @@ def wg_time(pub):
     """Ancienneté de la dernière poignée de main WireGuard pour cette clé
     publique — identique à _wg_time() du panel. Retourne "" si le client
     n'a jamais négocié ou si sa dernière poignée de main date de plus de
-    3 minutes (considéré comme déconnecté)."""
+    75 secondes (3 intervalles de keepalive, considéré comme déconnecté)."""
     hs = sh("wg show wg0 latest-handshakes 2>/dev/null | awk -v p=%s '$1==p{print $2}'" % shlex.quote(pub))
     try:
         hs = int(hs)
@@ -349,7 +349,7 @@ def wg_time(pub):
     if hs == 0:
         return ""
     d = int(time.time()) - hs
-    if d > 180 or d < 0:
+    if d > 75 or d < 0:
         return ""
     if d >= 3600:
         return "%dh %02dmin" % (d // 3600, (d % 3600) // 60)
@@ -379,19 +379,28 @@ def do_monitor(chat):
     total = ssh + vm + vl + tr + ss + wg + l2 + pp + st + hy_ct
 
     on_ssh = ssh_online()
-    # Même comptage que les tableaux du panel, protocole par protocole.
-    on_xray = ((xray_online("vmess") if vm > 0 else 0)
-               + (xray_online("vless") if vl > 0 else 0)
-               + (xray_online("trojan") if tr > 0 else 0))
-    on_ss = xray_online("ss") if ss > 0 else 0
+    # Une seule interrogation Xray pour les quatre protocoles : même donnée
+    # réelle que le panel, sans quatre chargements successifs.
+    xd = cli("xonline", "all-detail") if (vm + vl + tr + ss) > 0 else ""
+    xon = {}
+    for line in xd.splitlines():
+        if "|" in line:
+            k, v = line.split("|", 1); xon[k] = _int(v)
+    on_xray = xon.get("vmess", 0) + xon.get("vless", 0) + xon.get("trojan", 0)
+    on_ss = xon.get("ss", 0)
     on_wg = wg_online()
     # Même garde-fou que ci-dessus, manquant jusqu'ici : sans compte pour
     # ce protocole, un pppd résiduel ou un scan quelconque pouvait
     # apparaître comme un client en ligne (ex. observé : 7 clients L2TP/
     # PPTP/SSTP fantômes en ligne avec 0 compte créé sur ces protocoles).
-    on_l2 = _int(ppp("online", "l2tp")) if l2 > 0 else 0
-    on_pp = _int(ppp("online", "pptp")) if pp > 0 else 0
-    on_st = _int(ppp("online", "sstp")) if st > 0 else 0
+    pd = ppp("online", "all") if (l2 + pp + st) > 0 else ""
+    pon = {}
+    for line in pd.splitlines():
+        if "|" in line:
+            k, v = line.split("|", 1); pon[k] = _int(v)
+    on_l2 = pon.get("l2tp", 0) if l2 > 0 else 0
+    on_pp = pon.get("pptp", 0) if pp > 0 else 0
+    on_st = pon.get("sstp", 0) if st > 0 else 0
     # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
     # exclu ici aussi (comme dans le panel) plutôt que d'afficher un faux
     # chiffre.
@@ -552,6 +561,17 @@ def handle_callback(chat, data):
     if data.startswith("pl2:"):
         p = data[4:]
         rows = ppp("list", p)
+        snap = ppp("snapshot")
+        smap = {}
+        for sr in snap.splitlines():
+            sp = sr.split("|")
+            if len(sp) >= 4 and sp[0] == p:
+                key = sp[1]; smap.setdefault(key, {"ips": set(), "first": 0})
+                smap[key]["ips"].add(sp[2])
+                try:
+                    ts = int(sp[3]); smap[key]["first"] = ts if not smap[key]["first"] else min(smap[key]["first"], ts)
+                except Exception:
+                    pass
         lignes = []
         for r in rows.split("\n"):
             if "|" not in r:
@@ -560,8 +580,8 @@ def handle_callback(chat, data):
             nm, ex = parts[:2]
             etat = parts[2] if len(parts) > 2 else "actif"
             badge = "🔴" if etat.startswith(("verrou", "expir")) else "🟢"
-            sess = ppp("sessions", p, nm).split("|", 1)
-            n_ip = sess[0] if sess and sess[0].isdigit() else "0"
+            info = smap.get(nm, {"ips": set(), "first": 0})
+            n_ip = str(len(info["ips"]))
             conn = (" · %s IP%s" % (n_ip, "s" if n_ip != "1" else "")) if n_ip != "0" else ""
             lignes.append("%-16s %-12s %s %s%s" % (nm, fmt_date(ex), badge, etat, conn))
         send(chat, "<b>\U0001F4CB %s</b>\n<pre>%s</pre>" % (p.upper(), esc("\n".join(lignes) or "aucun compte"))); return

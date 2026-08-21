@@ -224,6 +224,12 @@ case "$cmd" in
     awk -F'|' -v p="$proto" -v u="$user" -v n="$now" '
       $1==p&&$2==u{a[$4]=1; if(first==0||$5<first) first=$5}
       END{for(i in a)c++; print c+0 "|" first+0}' "$PSTATE" 2>/dev/null ;;
+  snapshot)
+    # Une seule lecture pour toutes les sessions PPP : proto|compte|IP|début.
+    # Les menus et le bot peuvent ainsi afficher les connexions/déconnexions
+    # réelles sans relancer nvpanel-ppp une fois par compte.
+    _ensure_hooks; _prune_sessions
+    awk -F'|' 'NF>=6{print $1"|"$2"|"$4"|"$5}' "$PSTATE" 2>/dev/null ;;
   online)
     proto=$(_clean "$1"); _ensure_hooks; _prune_sessions
     if [ "$proto" = "all" ]; then
@@ -231,6 +237,6 @@ case "$cmd" in
     else
       awk -F'|' -v p="$proto" '$1==p{a[$2 SUBSEP $4]=1} END{for(i in a)c++; print c+0}' "$PSTATE" 2>/dev/null
     fi ;;
-  *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|sessions|online <proto> ..."; exit 1 ;;
+  *) echo "usage: nvpanel-ppp add|list|info|del|renew|lock|unlock|purge|sessions|snapshot|online <proto> ..."; exit 1 ;;
 esac
 exit 0

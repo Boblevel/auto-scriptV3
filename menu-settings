@@ -7,7 +7,7 @@ ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 BKDIR=/root
 
-header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
+header(){ banner; _edge "┏" "┓" "⚙ PARAMÈTRES SYSTÈME" "${BOLD}${WHT}"; bot; }
 param_box_line(){
   # %b interprète les séquences ANSI contenues dans les variables de couleur.
   # Avec %s elles apparaissaient littéralement comme "\033[0;32m".

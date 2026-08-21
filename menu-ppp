@@ -72,7 +72,7 @@ pick(){
 # n'invente rien et on renvoie « — ».
 _ppp_session_info(){
   local u="$1" row n first now et
-  row=$(nvpanel-ppp sessions "$PROTO" "$u" 2>/dev/null)
+  row=$(printf '%s\n' "${PPP_SNAPSHOT:-}" | awk -F'|' -v p="$PROTO" -v u="$u" '$1==p&&$2==u{a[$3]=1; if(first==0||$4<first)first=$4} END{for(i in a)c++; print c+0"|"first+0}')
   n=${row%%|*}; first=${row#*|}
   case "$n" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
   case "$first" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
@@ -108,6 +108,7 @@ create(){
 list_all(){
   local page=0 size=4 total pages start end i n e s color choice ct
   mapfile -t _rows_ppp < <(nvpanel-ppp list "$PROTO")
+  PPP_SNAPSHOT=$(nvpanel-ppp snapshot 2>/dev/null)
   total=${#_rows_ppp[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun compte $LABEL."; pause; return; }
   pages=$(( (total + size - 1) / size ))
   while true; do
