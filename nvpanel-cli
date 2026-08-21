@@ -89,8 +89,18 @@ _xapi_ensure(){
 xsample_run(){
   command -v xray >/dev/null 2>&1 || return 0
   command -v jq   >/dev/null 2>&1 || return 0
-  local now snap tmp em tot prev first last row
+  local now snap tmp em tot prev first last row stamp=/run/nvpanel-xsample.stamp last_run
   now=$(date +%s)
+
+  # Anti-latence UI : plusieurs écrans peuvent demander les mêmes statistiques
+  # Xray à quelques secondes d'intervalle. Une seule interrogation de l'API
+  # suffit ; les appels suivants réutilisent l'échantillon déjà enregistré.
+  # La précision fonctionnelle reste la même à l'échelle de la fenêtre
+  # d'activité de 5 minutes, mais l'ouverture des menus n'attend plus Xray
+  # plusieurs fois de suite.
+  last_run=$(cat "$stamp" 2>/dev/null)
+  case "$last_run" in ''|*[!0-9]*) last_run=0 ;; esac
+  [ $((now - last_run)) -lt 5 ] && return 0
   # "%.0f" et non "%d" : même correction que dans nvpanel-conso — sur mawk,
   # "%d" passe par un entier 32 bits et déborde au-delà de 4 Go de cumul
   # par compte, ce qui pouvait faire paraître "tot" plus petit que "prev"
@@ -122,7 +132,11 @@ xsample_run(){
     fi
     printf '%s|%s|%s|%s\n' "$em" "$tot" "$first" "$last" >> "$tmp"
   done <<< "$snap"
-  mv "$tmp" "$XSTAT" 2>/dev/null || rm -f "$tmp"
+  if mv "$tmp" "$XSTAT" 2>/dev/null; then
+    printf '%s\n' "$now" > "$stamp" 2>/dev/null || true
+  else
+    rm -f "$tmp"
+  fi
   return 0
 }
 
@@ -162,8 +176,14 @@ _x_proto_for_name(){
 
 _x_ip_refresh(){
   command -v journalctl >/dev/null 2>&1 || return 0
-  local now cutoff seen tmp old name ip proto row first last
+  local now cutoff seen tmp old name ip proto row first last stamp=/run/nvpanel-xip.stamp last_run
   now=$(date +%s); cutoff=$((now-300))
+
+  # Même principe pour les IP réelles : journalctl est relativement coûteux
+  # et plusieurs écrans peuvent l'appeler presque simultanément.
+  last_run=$(cat "$stamp" 2>/dev/null)
+  case "$last_run" in ''|*[!0-9]*) last_run=0 ;; esac
+  [ $((now - last_run)) -lt 5 ] && return 0
   seen=$(mktemp) || return 0
   tmp=$(mktemp) || { rm -f "$seen"; return 0; }
 
@@ -200,7 +220,10 @@ _x_ip_refresh(){
         awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{f=1} END{exit !f}' "$tmp" 2>/dev/null \
           || printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$last" >> "$tmp"
       done
-  sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4n -u "$tmp" > "$XIPSTATE.tmp" 2>/dev/null && mv "$XIPSTATE.tmp" "$XIPSTATE"
+  if sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4n -u "$tmp" > "$XIPSTATE.tmp" 2>/dev/null \
+     && mv "$XIPSTATE.tmp" "$XIPSTATE"; then
+    printf '%s\n' "$now" > "$stamp" 2>/dev/null || true
+  fi
   rm -f "$seen" "$tmp"
 }
 
