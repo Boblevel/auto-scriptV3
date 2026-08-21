@@ -183,18 +183,47 @@ _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"
 # Sans argument : total global (accueil). Avec un argument (ex. "vmess",
 # "ssh_bundle") : consommation de ce seul protocole, pour les menus dédiés.
 _conso_raw(){
-  # Consommation des CLIENTS uniquement. Aucun repli sur vnstat :
-  # vnstat mesure tout le trafic de la machine (mises à jour, sauvegardes,
-  # trafic de l'hébergeur…) et affichait des dizaines de Go jamais consommés
-  # par un client VPN.
-  local tag="$1" r
+  # Consommation des CLIENTS uniquement. Aucun repli sur vnstat.
+  # nvpanel-conso reste l'unique source réelle ; son calcul peut toutefois
+  # prendre > 1 s sur un serveur chargé. Pour ne plus bloquer l'affichage,
+  # on rend immédiatement la dernière mesure valide et on la rafraîchit en
+  # arrière-plan. Fenêtre courte (2 s), jamais de valeur inventée.
+  local tag="$1" r key cache lock now mt age tmp
+  key="${tag:-all}"; key=${key//[^a-zA-Z0-9_.-]/_}
+  cache="/run/nvpanel-conso-${key}.cache"
+  lock="/run/nvpanel-conso-${key}.lock"
+  now=$(date +%s)
+
+  if [ -s "$cache" ]; then
+    r=$(head -n1 "$cache" 2>/dev/null)
+    case "$r" in
+      *'|'*'|'*)
+        mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+        if [ "$age" -ge 2 ] 2>/dev/null && [ -x /usr/local/bin/nvpanel-conso ]; then
+          (
+            mkdir "$lock" 2>/dev/null || exit 0
+            trap 'rmdir "$lock" 2>/dev/null' EXIT
+            if [ -n "$tag" ]; then rr=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
+            else rr=$(/usr/local/bin/nvpanel-conso read 2>/dev/null); fi
+            case "$rr" in
+              *'|'*'|'*) tmp="${cache}.${BASHPID}"; printf '%s\n' "$rr" > "$tmp" && mv "$tmp" "$cache" ;;
+            esac
+          ) </dev/null >/dev/null 2>&1 &
+        fi
+        printf '%s\n' "$r"
+        return
+        ;;
+    esac
+  fi
+
+  # Premier passage uniquement : on attend une vraie mesure afin de ne jamais
+  # afficher 0 par défaut à la place d'une consommation existante.
   if [ -x /usr/local/bin/nvpanel-conso ]; then
-    if [ -n "$tag" ]; then
-      r=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
-    else
-      r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null)
-    fi
-    case "$r" in *'|'*'|'*) echo "$r"; return ;; esac
+    if [ -n "$tag" ]; then r=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
+    else r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null); fi
+    case "$r" in
+      *'|'*'|'*) printf '%s\n' "$r" | tee "$cache" 2>/dev/null; return ;;
+    esac
   fi
   echo "0|0|0"
 }
@@ -234,7 +263,7 @@ _online_uniq_port() {
 # authentification), et on ne garde qu'un seul (compte, IP) par couple. Un
 # même compte connecté depuis 3 appareils différents compte donc pour 3, et
 # non plus pour 1 — comme le nombre réel de personnes connectées.
-_ssh_sessions() {
+_ssh_sessions_raw() {
   # On part des PROCESSUS (comme l'ancienne méthode, fiable et déjà éprouvée),
   # jamais de la position des colonnes de « ss » : leur nombre et leur ordre
   # varient selon la version d'iproute2 installée (colonne « Netid » présente
@@ -258,6 +287,30 @@ _ssh_sessions() {
              | tail -1 | sed -E 's/:[0-9]+$//')
         printf '%s|%s\n' "$u" "${ip:-pid$pid}"
       done | sort -u
+}
+
+_ssh_sessions() {
+  # Même principe que pour Xray/consommation : le scan ss+ps reste la source
+  # réelle, mais il ne doit plus figer l'écran ~0,5 s à chaque navigation.
+  local cache=/run/nvpanel-ssh-sessions.cache lock=/run/nvpanel-ssh-sessions.lock
+  local now mt age tmp
+  now=$(date +%s)
+  if [ -f "$cache" ]; then
+    cat "$cache" 2>/dev/null
+    mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+    if [ "$age" -ge 2 ] 2>/dev/null; then
+      (
+        mkdir "$lock" 2>/dev/null || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        tmp="${cache}.${BASHPID}"
+        _ssh_sessions_raw > "$tmp" 2>/dev/null && mv "$tmp" "$cache"
+      ) </dev/null >/dev/null 2>&1 &
+    fi
+    return
+  fi
+  tmp="${cache}.${BASHPID}"
+  _ssh_sessions_raw | tee "$tmp"
+  mv "$tmp" "$cache" 2>/dev/null || true
 }
 
 _ssh_online() { _ssh_sessions | wc -l; }
@@ -526,17 +579,6 @@ ui_leave(){
 
 
 
-# animation de chargement stylée avec pourcentage (comme l'installation)
-loading(){
-  local msg="${1:-Chargement}" w=28 i p
-  printf '\033[H\033[2J\033[3J'; echo; echo
-  for ((p=0;p<=100;p+=4)); do
-    i=$(( p*w/100 ))
-    printf "\r   ${MAG}%s${NC}  ${CYN}[" "$msg"
-    printf "${GRN}%s${NC}" "$(printf '▰%.0s' $(seq 1 "$i" 2>/dev/null))"
-    printf "${GRY}%s${NC}" "$(printf '▱%.0s' $(seq 1 $((w-i)) 2>/dev/null))"
-    printf "${CYN}]${NC} ${WHT}%3d%%${NC}" "$p"
-    sleep 0.012
-  done
-  printf "\n"
-}
+# Compatibilité : les menus peuvent appeler loading(), mais aucune animation
+# artificielle ne doit ralentir la navigation. L'écran cible se redessine lui-même.
+loading(){ :; }

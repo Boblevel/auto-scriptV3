@@ -193,7 +193,7 @@ _x_proto_for_name(){
   [ "$c" -eq 1 ] && printf '%s' "$found"
 }
 
-_x_ip_refresh(){
+_x_ip_refresh_sync(){
   command -v journalctl >/dev/null 2>&1 || return 0
   local now cutoff seen tmp old name ip proto row first last stamp=/run/nvpanel-xip.stamp last_run
   local live_ws live_ss xport cutstr
@@ -282,6 +282,31 @@ _x_ip_refresh(){
   rm -f "$seen" "$tmp" "$live_ws" "$live_ss"
 }
 
+# Navigation non bloquante : xonline/xlist lisent immédiatement le dernier
+# état réel validé et déclenchent le rafraîchissement coûteux en arrière-plan.
+# La fenêtre de 2 s reste identique à celle déjà utilisée par le suivi Xray.
+_x_ip_refresh(){
+  local now stamp=/run/nvpanel-xip.stamp last lock=/run/nvpanel-xip-refresh.lock
+  now=$(date +%s)
+  last=$(cat "$stamp" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+
+  # Après installation/redémarrage sans échantillon courant, un seul passage
+  # synchrone est nécessaire pour éviter de réutiliser un état ancien.
+  if [ ! -s "$XIPSTATE" ] || [ "$last" -eq 0 ]; then
+    _x_ip_refresh_sync
+    return
+  fi
+
+  [ $((now-last)) -lt 2 ] && return 0
+  (
+    mkdir "$lock" 2>/dev/null || exit 0
+    trap 'rmdir "$lock" 2>/dev/null' EXIT
+    _x_ip_refresh_sync
+  ) </dev/null >/dev/null 2>&1 &
+  return 0
+}
+
 _x_ip_count(){ # proto compte
   awk -F'|' -v p="$1" -v n="$2" '$1==p&&$2==n{a[$3]=1} END{for(i in a)x++; print x+0}' "$XIPSTATE" 2>/dev/null
 }
@@ -336,7 +361,7 @@ xlimit_run(){
   command -v jq >/dev/null 2>&1 || return 0
   xray help api adrules >/dev/null 2>&1 || return 0
   _xapi_ensure || return 0
-  _x_ip_refresh
+  _x_ip_refresh_sync
   local pid oldpid now cutoff desired old tag proto name lim db row ex fl TAG ips extras fp oldfp tmp ipsjson ok
   pid=$(systemctl show -p MainPID --value xray 2>/dev/null); pid=${pid:-0}
   oldpid=$(cat /run/nvpanel-xlimit.pid 2>/dev/null)
