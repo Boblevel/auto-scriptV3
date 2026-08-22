@@ -51,14 +51,17 @@ _xapi_ensure(){
   # doit JAMAIS empêcher la création d'un compte. On tente l'amélioration IP
   # réelle seulement si le binaire Xray installé l'accepte.
   if jq -e "$core" "$XCONF" >/dev/null 2>&1; then
-    if ! jq -e '[.inbounds[]? | select(.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") | (.streamSettings.sockopt.trustedXForwardedFor // []) | index("X-Real-IP")] | all' "$XCONF" >/dev/null 2>&1; then
+    if ! jq -e '[.inbounds[]? | select(.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") | (.streamSettings.sockopt.trustedXForwardedFor // []) | index("127.0.0.1")] | all' "$XCONF" >/dev/null 2>&1; then
       opt=$(mktemp) || { printf '%s\n' "$sig" > "$stamp" 2>/dev/null; return 0; }
-      jq '[.inbounds[] | if (.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") then .streamSettings=(.streamSettings//{}) | .streamSettings.sockopt=(.streamSettings.sockopt//{}) | .streamSettings.sockopt.trustedXForwardedFor=["X-Real-IP"] else . end] as $x | .inbounds=$x' "$XCONF" > "$opt" 2>/dev/null || true
+      jq '[.inbounds[] | if (.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") then .streamSettings=(.streamSettings//{}) | .streamSettings.sockopt=(.streamSettings.sockopt//{}) | .streamSettings.sockopt.trustedXForwardedFor=["127.0.0.1"] else . end] as $x | .inbounds=$x' "$XCONF" > "$opt" 2>/dev/null || true
       if [ -s "$opt" ]; then
         a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
         b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$opt" 2>/dev/null)
         if [ -n "$a" ] && [ "$a" = "$b" ] && { ! command -v xray >/dev/null 2>&1 || xray run -test -c "$opt" >/dev/null 2>&1; }; then
           mv "$opt" "$XCONF"
+          # Purge uniquement le cache d'IP Xray après la migration XFF : les
+          # comptes et leurs limites ne sont pas touchés.
+          : > "$XIPSTATE"
           systemctl restart xray >/dev/null 2>&1
           sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null)
         else
@@ -863,6 +866,9 @@ case "$cmd" in
       lim=$(_x_limit_get "$proto" "$nm")
       printf '%s|%s|%s|%s|%s|%s\n' "$nm" "$ex" "$st" "$ct" "${ips:-0}" "${lim:-0}"
     done < <(grep '^### ' "$XDB" 2>/dev/null) ;;
+  xenforce)
+    # Application rapide des limites sans refaire le relevé de consommation.
+    xlimit_run ;;
   xsample)
     # relevé périodique + application des limites IP (aucune sortie)
     xsample_run; xlimit_run ;;
@@ -944,5 +950,5 @@ case "$cmd" in
       *) echo "ERR proto"; exit 1 ;;
     esac ;;
 
-  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xonline|xipcount|xlimit|xdel|xrenew|xinfo|xlock|xunlock|xsample|xapi|purge"; exit 1 ;;
+  *) echo "usage: create|renew|delete|lock|unlock|list|status|info|xadd|xlist|xonline|xipcount|xlimit|xdel|xrenew|xinfo|xlock|xunlock|xenforce|xsample|xapi|purge"; exit 1 ;;
 esac

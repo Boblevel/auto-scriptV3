@@ -130,6 +130,26 @@ fi
 if [ -x /usr/local/bin/nvpanel-cli ]; then
   /usr/local/bin/nvpanel-cli xapi >/dev/null 2>&1
   ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null
+
+  # La limite Xray/Shadowsocks doit réagir en quelques secondes. Ce service
+  # n'agit ni sur SSH ni sur SlowDNS.
+  cat > /etc/systemd/system/nvpanel-xlimit.service <<'UNIT'
+[Unit]
+Description=RHAFF SERVICE - limite appareils Xray/SS
+After=network-online.target xray.service nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 5; done'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable --now nvpanel-xlimit >/dev/null 2>&1
 fi
 # udp-custom : bascule de l'ancien port 36712 vers l'UDP 22, afin que le client
 # saisisse le même port pour SSH, SlowDns et UDP Custom

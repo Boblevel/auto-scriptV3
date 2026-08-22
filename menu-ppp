@@ -71,16 +71,18 @@ pick(){
 # Si le nom du compte n'est pas exposé dans la ligne de commande pppd, on
 # n'invente rien et on renvoie « — ».
 _ppp_session_info(){
-  local u="$1" row n first now et
+  local u="$1" row n first now et lim cap
   row=$(printf '%s\n' "${PPP_SNAPSHOT:-}" | awk -F'|' -v p="$PROTO" -v u="$u" '$1==p&&$2==u{a[$3]=1; if(first==0||$4<first)first=$4} END{for(i in a)c++; print c+0"|"first+0}')
   n=${row%%|*}; first=${row#*|}
-  case "$n" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
-  case "$first" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
+  lim=$(awk -F'|' -v p="$PROTO" -v u="$u" '$1==p&&$2==u{v=$3} END{print v+0}' /etc/nvpanel/db/ppp_limit 2>/dev/null)
+  cap="$lim"; [ -z "$cap" ] || [ "$cap" = 0 ] && cap="∞"
+  case "$n" in ''|0|*[!0-9]*) printf '%s' "— · 0/$cap IP"; return ;; esac
+  case "$first" in ''|0|*[!0-9]*) printf '%s' "— · $n/$cap IP"; return ;; esac
   now=$(date +%s); et=$((now-first)); [ "$et" -lt 0 ] && et=0
   if [ "$et" -ge 3600 ] 2>/dev/null; then
-    printf '%dh %02dmin (%s IP%s)' $((et/3600)) $(((et%3600)/60)) "$n" "$([ "$n" -gt 1 ] && printf s)"
+    printf '%dh%02d · %s/%sIP' $((et/3600)) $(((et%3600)/60)) "$n" "$cap"
   else
-    printf '%dmin (%s IP%s)' $((et/60)) "$n" "$([ "$n" -gt 1 ] && printf s)"
+    printf '%dmin · %s/%sIP' $((et/60)) "$n" "$cap"
   fi
 }
 create(){
