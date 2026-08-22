@@ -268,16 +268,17 @@ uninstall_udp() {
 
 cleanup_menu() {
   while true; do
-    banner; center " 🧹  NETTOYAGE DES COMPTES SSH " "${BOLD}${WHT}"; line
+    banner; _edge "┏" "┓" "NETTOYAGE DES COMPTES SSH"
     local tot exp today c r out
     today=$(date +%F)
     tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
     exp=$(awk -v d="$today" '/^### /{ if ($3!="" && $3<=d) c++ } END{print c+0}' "$DB" 2>/dev/null)
-    printf "   ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
-    entry "1" "🧽" "Supprimer les comptes expirés"
-    entry "2" "💥" "Supprimer TOUS les comptes"
-    entry "0" "⬅️" "Retour"
-    line
+    printf "${CYN}┃${NC} ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}" "$tot" "$exp"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    box_sep
+    compact_menu_entry "1" "🧽" "Supprimer les comptes expirés"
+    compact_menu_entry "2" "💥" "Supprimer TOUS les comptes"
+    compact_menu_entry "0" "⬅️" "Retour"
+    bot
     ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) [ "$exp" -eq 0 ] && { warn "Aucun compte expiré."; pause; continue; }
@@ -297,24 +298,38 @@ cleanup_menu() {
   done
 }
 
+hy_header(){
+  local total blocked expired active today service
+  today=$(date +%F)
+  total=$(grep -c '^### ' /etc/nvpanel/db/hysteria 2>/dev/null); total=${total:-0}
+  blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); blocked=${blocked:-0}
+  expired=$(awk -v d="$today" '/^### /{if($5!="L" && $4!="" && $4<=d)c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); expired=${expired:-0}
+  active=$(( total - blocked - expired )); [ "$active" -lt 0 ] && active=0
+  if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+    service="${GRN}actif${NC}"
+  elif [ -f /etc/hysteria/config.yaml ]; then
+    service="${YLW}arrêté${NC}"
+  else
+    service="${RED}non installé${NC}"
+  fi
+  banner
+  _edge "┏" "┓" "HYSTERIA UDP"
+  printf "${CYN}┃${NC} ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}✅ Actifs:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$total" "$active" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  printf "${CYN}┃${NC} ${GRY}⌛ Expirés:${NC} ${RED}%s${NC}   ${GRY}⚡ Service:${NC} %b   ${GRY}UDP:${NC} ${WHT}443${NC}" "$expired" "$service"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  bot
+}
+
 hysteria_menu() {
   while true; do
-    header; center " ⚡ HYSTERIA2 " "${BOLD}${WHT}"; line
-    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
-      ok "Hysteria2 actif (UDP 443)"
-    elif [ -f /etc/hysteria/config.yaml ]; then
-      warn "Installé, en attente d'un premier compte (option 1)."
-    else
-      warn "Hysteria2 non installé."
-    fi
-    echo
-    entry "1" "➕" "Créer un compte"
-    entry "2" "📋" "Lister les comptes"
-    entry "3" "🗑️" "Supprimer un compte"
-    entry "4" "⬇️" "Installer / réinstaller"
-    entry "5" "🗑️" "Désinstaller"
-    entry "0" "⬅️" "Retour"
-    line
+    hy_header
+    menu_box_top
+    compact_menu_entry "1" "➕" "Créer un compte"
+    compact_menu_entry "2" "📋" "Lister les comptes"
+    compact_menu_entry "3" "🗑️" "Supprimer un compte"
+    compact_menu_entry "4" "⬇️" "Installer / réinstaller"
+    compact_menu_entry "5" "🗑️" "Désinstaller"
+    compact_menu_entry "0" "⬅️" "Retour"
+    bot
     ask "$(printf " ${WHT}Choix :${NC} ")" h || break
     case "$h" in
       1) hy_create ;; 2) hy_list ;; 3) hy_delete ;;
@@ -334,13 +349,13 @@ hysteria_menu() {
 }
 
 hy_create(){
-  header; center " ➕ NOUVEAU COMPTE HYSTERIA2 " "${BOLD}${WHT}"; line
+  hy_header; center " ➕ NOUVEAU COMPTE HYSTERIA UDP " "${BOLD}${WHT}"; line
   ask " Nom d'utilisateur : " u
   ask " Mot de passe (vide = généré) : " p
   [ -z "$p" ] && p=$(openssl rand -hex 6)
   ask " Durée en jours [30] : " d; d=${d:-30}
   if [ ! -x /usr/local/bin/nvpanel-hysteria ]; then
-    err "Hysteria2 n'est pas installé sur ce serveur (option 4)."; pause; return
+    err "Hysteria UDP n'est pas installé sur ce serveur (option 4)."; pause; return
   fi
   local out; out=$(/usr/local/bin/nvpanel-hysteria add "$u" "$p" "$d" 2>&1)
   if echo "$out" | grep -q "^OK"; then
@@ -363,10 +378,10 @@ hy_create(){
 hy_list(){
   local page=0 size=4 total pages start end i u e s color choice
   mapfile -t _rows_hy < <(/usr/local/bin/nvpanel-hysteria list)
-  total=${#_rows_hy[@]}; [ "$total" -eq 0 ] && { header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line; warn "Aucun compte."; pause; return; }
+  total=${#_rows_hy[@]}; [ "$total" -eq 0 ] && { hy_header; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; line; warn "Aucun compte."; pause; return; }
   pages=$(( (total + size - 1) / size ))
   while true; do
-    header; center " 📋 COMPTES HYSTERIA2 " "${BOLD}${WHT}"; line
+    hy_header; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; line
     printf "   ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
@@ -381,7 +396,7 @@ hy_list(){
 }
 
 hy_delete(){
-  header; center " 🗑️ SUPPRIMER UN COMPTE HYSTERIA2 " "${BOLD}${WHT}"; line
+  hy_header; center " 🗑️ SUPPRIMER UN COMPTE HYSTERIA UDP " "${BOLD}${WHT}"; line
   ask " Utilisateur à supprimer : " u
   local out; out=$(/usr/local/bin/nvpanel-hysteria del "$u" 2>&1)
   echo "$out" | grep -q "^OK" && ok "Compte supprimé." || err "Utilisateur introuvable."
@@ -389,11 +404,11 @@ hy_delete(){
 }
 
 hy_uninstall(){
-  header; center " 🗑️ DÉSINSTALLER HYSTERIA2 " "${BOLD}${WHT}"; line
-  confirm " Supprimer Hysteria2 et tous ses comptes ?" || { pause; return; }
+  hy_header; center " 🗑️ DÉSINSTALLER HYSTERIA UDP " "${BOLD}${WHT}"; line
+  confirm " Supprimer Hysteria UDP et tous ses comptes ?" || { pause; return; }
   systemctl disable --now hysteria-server >/dev/null 2>&1
   rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml
-  ok "Hysteria2 désinstallé."
+  ok "Hysteria UDP désinstallé."
   pause
 }
 
@@ -408,7 +423,7 @@ while true; do
   compact_menu_entry "6" "🗑️" "Supprimer un compte"
   compact_menu_entry "7" "🌐" "SlowDNS"
   compact_menu_entry "8" "📡" "UDP (badvpn / udp-custom)"
-  compact_menu_entry "9" "⚡" "Hysteria2"
+  compact_menu_entry "9" "⚡" "Hysteria UDP"
   compact_menu_entry "10" "🧹" "Nettoyage des comptes"
   compact_menu_entry "11" "🎁" "Compte test 24 h"
   compact_menu_entry "0" "⬅️" "Retour"

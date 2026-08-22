@@ -56,7 +56,7 @@ _box(){ # user pass created exp
   host=$(cat /etc/nvpanel/domain 2>/dev/null)
   [ -z "$host" ] && host="$(cat /etc/nvpanel/ip 2>/dev/null)"
   cat <<EOF
-========== 🔐 COMPTE HYSTERIA2 ==========
+========== ⚡ COMPTE HYSTERIA UDP ==========
 🌐 Hôte        : $host
 🔌 Port        : 443 (UDP)
 👤 Utilisateur : $u

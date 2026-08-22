@@ -158,16 +158,17 @@ del(){
 
 cleanup_menu(){
   while true; do
-    banner; center " 🧹  NETTOYAGE $LABEL " "${BOLD}${WHT}"; line
+    banner; _edge "┏" "┓" "NETTOYAGE $LABEL"
     local tot exp today c r out
     today=$(date +%F)
     tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
     exp=$(awk -v d="$today" '/^### /{ if ($4!="" && $4<=d) c++ } END{print c+0}' "$DB" 2>/dev/null)
-    printf "   ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
-    entry "1" "🧽" "Supprimer les comptes expirés"
-    entry "2" "💥" "Supprimer TOUS les comptes"
-    entry "0" "⬅️" "Retour"
-    line
+    printf "${CYN}┃${NC} ${GRY}Comptes au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}" "$tot" "$exp"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    box_sep
+    compact_menu_entry "1" "🧽" "Supprimer les comptes expirés"
+    compact_menu_entry "2" "💥" "Supprimer TOUS les comptes"
+    compact_menu_entry "0" "⬅️" "Retour"
+    bot
     ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) [ "$exp" -eq 0 ] && { warn "Aucun compte expiré."; pause; continue; }
@@ -238,16 +239,17 @@ uninstall_proto(){
 
 setup_menu(){
   while true; do
-    banner; center " ⚙️  INSTALLER / DÉSINSTALLER $LABEL " "${BOLD}${WHT}"; line
+    banner; _edge "┏" "┓" "INSTALLER / DÉSINSTALLER $LABEL"
     if systemctl is-active --quiet "$SVC" 2>/dev/null; then
-      printf "   ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}\n\n"
+      printf "${CYN}┃${NC} ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
     else
-      printf "   ${GRY}État actuel :${NC} ${RED}non installé${NC}\n\n"
+      printf "${CYN}┃${NC} ${GRY}État actuel :${NC} ${RED}non installé${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
     fi
-    entry "1" "⬇️" "Installer / réinstaller"
-    entry "2" "🗑️" "Désinstaller"
-    entry "0" "⬅️" "Retour"
-    line
+    box_sep
+    compact_menu_entry "1" "⬇️" "Installer / réinstaller"
+    compact_menu_entry "2" "🗑️" "Désinstaller"
+    compact_menu_entry "0" "⬅️" "Retour"
+    bot
     ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) "$INST" ;;

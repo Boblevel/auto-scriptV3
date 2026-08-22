@@ -587,11 +587,12 @@ _client_json(){ # proto id name
   esac
 }
 
-# Fiches compactes : largeur totale 56 colonnes, identique aux cadres du panel.
-# Les liens sont repliés volontairement à 52 caractères : le terminal ne crée
-# donc jamais de retour automatique imprévisible au milieu d'une bordure.
+# Fiches compactes : largeur totale 62 colonnes. Cette légère extension
+# donne plus d'espace aux liens tout en restant sous la largeur du terminal
+# mobile utilisé pour le panel. Les liens sont repliés explicitement à 58
+# caractères : aucun retour automatique du terminal ne peut casser le cadre.
 _card_cap(){ # titre
-  local title=" $1 " inner=54 n l r
+  local title=" $1 " inner=60 n l r
   n=${#title}; [ "$n" -gt "$inner" ] && title=" CLIENT " && n=${#title}
   l=$(( (inner-n)/2 )); r=$(( inner-n-l ))
   printf '┏'; printf '━%.0s' $(seq 1 "$l" 2>/dev/null); printf '%s' "$title"; printf '━%.0s' $(seq 1 "$r" 2>/dev/null); printf '┓\n'
@@ -599,18 +600,19 @@ _card_cap(){ # titre
 _card_row(){ # libelle valeur
   local label="$1" value="$2" txt
   txt=$(printf '%-12s : %s' "$label" "$value")
-  printf '┃ %-52.52s ┃\n' "$txt"
+  printf '┃ %-58.58s ┃\n' "$txt"
 }
+_card_sep(){ printf '┣'; printf '─%.0s' $(seq 1 60 2>/dev/null); printf '┫\n'; }
 _card_link(){ # libelle lien
   local label="$1" link="$2" part
-  printf '┃ %-52.52s ┃\n' "$label"
+  printf '┃ %-58.58s ┃\n' "$label"
   # Le saut final est volontaire : sans lui, read perd le dernier fragment
-  # lorsque la longueur du lien n'est pas un multiple exact de 52.
-  printf '%s\n' "$link" | fold -w 52 | while IFS= read -r part; do
-    printf '┃ %-52s ┃\n' "$part"
+  # lorsque la longueur du lien n'est pas un multiple exact de 58.
+  printf '%s\n' "$link" | fold -w 58 | while IFS= read -r part; do
+    printf '┃ %-58s ┃\n' "$part"
   done
 }
-_card_bot(){ printf '┗'; printf '━%.0s' $(seq 1 54 2>/dev/null); printf '┛\n'; }
+_card_bot(){ printf '┗'; printf '━%.0s' $(seq 1 60 2>/dev/null); printf '┛\n'; }
 
 xray_box(){ # proto name id created exp
   local proto="$1" name="$2" id="$3" cr="$4" ex="$5"
@@ -627,6 +629,7 @@ xray_box(){ # proto name id created exp
   _card_row "Ports" "$tlsp TLS / $plainp No TLS"
   _card_row "Creation" "$created"
   _card_row "Expiration" "$(_fmtd "$ex")"
+  _card_sep
   _card_link "Lien TLS ($tlsp)" "$ltls"
   _card_link "Lien No TLS ($plainp)" "$lnotls"
   _card_bot
@@ -645,6 +648,7 @@ ss_box(){ # name ckey created exp
   _card_row "Port" "8388"
   _card_row "Creation" "$created"
   _card_row "Expiration" "$(_fmtd "$ex")"
+  _card_sep
   _card_link "Lien Shadowsocks" "$link"
   _card_bot
 }

@@ -139,16 +139,17 @@ view_client() {
 
 cleanup_menu() {
   while true; do
-    banner; center " 🧹  NETTOYAGE ${PROTO^^} " "${BOLD}${WHT}"; line
+    banner; _edge "┏" "┓" "NETTOYAGE ${PROTO^^}"
     local tot exp today c r out
     today=$(date +%F)
     tot=$(nvpanel-cli xlist "$PROTO" 2>/dev/null | grep -c '|')
     exp=$(nvpanel-cli xlist "$PROTO" 2>/dev/null | awk -F'|' -v d="$today" 'NF && $2!="" && $2<=d {c++} END{print c+0}')
-    printf "   ${GRY}Clients au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}\n\n" "$tot" "$exp"
-    entry "1" "🧽" "Supprimer les clients expirés"
-    entry "2" "💥" "Supprimer TOUS les clients"
-    entry "0" "⬅️" "Retour"
-    line
+    printf "${CYN}┃${NC} ${GRY}Clients au total :${NC} ${WHT}%s${NC}    ${GRY}dont expirés :${NC} ${RED}%s${NC}" "$tot" "$exp"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    box_sep
+    compact_menu_entry "1" "🧽" "Supprimer les clients expirés"
+    compact_menu_entry "2" "💥" "Supprimer TOUS les clients"
+    compact_menu_entry "0" "⬅️" "Retour"
+    bot
     ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) [ "$exp" -eq 0 ] && { warn "Aucun client expiré."; pause; continue; }
@@ -195,17 +196,18 @@ uninstall_xray(){
 
 setup_menu(){
   while true; do
-    banner; center " ⚙️  INSTALLER / DÉSINSTALLER XRAY " "${BOLD}${WHT}"; line
+    banner; _edge "┏" "┓" "INSTALLER / DÉSINSTALLER XRAY"
     if systemctl is-active --quiet xray 2>/dev/null; then
-      printf "   ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}\n"
+      printf "${CYN}┃${NC} ${GRY}État actuel :${NC} ${GRN}installé et actif${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
     else
-      printf "   ${GRY}État actuel :${NC} ${RED}non installé${NC}\n"
+      printf "${CYN}┃${NC} ${GRY}État actuel :${NC} ${RED}non installé${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
     fi
-    printf "   ${GRY}Concerne Vmess · Vless · Trojan · Shadowsocks${NC}\n\n"
-    entry "1" "⬇️" "Installer / réinstaller"
-    entry "2" "🗑️" "Désinstaller"
-    entry "0" "⬅️" "Retour"
-    line
+    printf "${CYN}┃${NC} ${GRY}Concerne Vmess · Vless · Trojan · Shadowsocks${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    box_sep
+    compact_menu_entry "1" "⬇️" "Installer / réinstaller"
+    compact_menu_entry "2" "🗑️" "Désinstaller"
+    compact_menu_entry "0" "⬅️" "Retour"
+    bot
     ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
       1) install-xray ;;
