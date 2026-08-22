@@ -786,7 +786,25 @@ case "$cmd" in
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"; lim="${4:-0}"
     xmeta "$proto" || { echo "ERR proto"; exit 1; }
     [ -f "$XCONF" ] || { echo "ERR noxray"; exit 1; }
-    touch "$XDB"; grep -q "^### $name " "$XDB" && { echo "ERR exists"; exit 1; }
+    touch "$XDB"
+    # Répare uniquement une entrée fantôme laissée dans la base locale :
+    # si le nom est encore dans XDB mais n'existe plus réellement dans la
+    # configuration Xray, on nettoie cette ligne avant la création. Une vraie
+    # entrée existante reste protégée contre les doublons.
+    if grep -q "^### $name " "$XDB"; then
+      if jq -e --arg e "$name" '[.inbounds[]?.settings?.clients[]?.email] | index($e) != null' \
+          "$XCONF" >/dev/null 2>&1; then
+        echo "ERR exists"; exit 1
+      fi
+      sed -i "/^### $name /d" "$XDB"
+      _x_limit_del "$proto" "$name"
+      _x_created_del "$proto" "$name"
+    elif jq -e --arg e "$name" '[.inbounds[]?.settings?.clients[]?.email] | index($e) != null' \
+        "$XCONF" >/dev/null 2>&1; then
+      # Client réellement présent dans Xray mais absent de la base du panel :
+      # ne jamais injecter un second client portant le même email.
+      echo "ERR exists"; exit 1
+    fi
     [[ "$days" =~ ^[0-9]+$ ]] || days=30
     [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
     _xapi_ensure >/dev/null 2>&1 || true

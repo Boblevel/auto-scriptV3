@@ -13,10 +13,10 @@ rm -f /tmp/nvpanel-relaunch 2>/dev/null
 clear
 printf "${CYN}"
 cat <<'ART'
-   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃              R H A F F   S E R V I C E               ┃
-   ┃                 M I S E   À   J O U R                 ┃
-   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃         R H A F F   S E R V I C E              ┃
+   ┃            M I S E   À   J O U R                ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ART
 printf "${NC}\n"
 
@@ -24,15 +24,25 @@ printf "${NC}\n"
 # Une seule ligne est réécrite avec \r : 1 → 100 % sans remplir
 # l'historique du terminal ni provoquer les doublons d'affichage.
 _PROGRESS=0
-_BAR_FULL="████████████████████████████"
-_BAR_EMPTY="░░░░░░░░░░░░░░░░░░░░░░░░░░░░"
+# Barre volontairement courte : elle reste sur UNE seule ligne même dans les
+# terminaux mobiles étroits. Le retour chariot réécrit cette même ligne.
+_BAR_FULL="####################"
+_BAR_EMPTY="--------------------"
 progress_to(){
-  local target="$1" label="$2" i filled empty bar
+  local target="$1" label="$2" i filled empty bar short
   [ "$target" -gt 100 ] && target=100
+  case "$label" in
+    *Téléchargement*) short="Téléchargement" ;;
+    *Mise\ en\ place*) short="Installation" ;;
+    *services*) short="Services" ;;
+    *configuration*) short="Configuration" ;;
+    *terminée*) short="Terminé" ;;
+    *) short="$label" ;;
+  esac
   for ((i=_PROGRESS+1; i<=target; i++)); do
-    filled=$(( i * 28 / 100 )); empty=$((28 - filled))
+    filled=$(( i * 20 / 100 )); empty=$((20 - filled))
     bar="${_BAR_FULL:0:filled}${_BAR_EMPTY:0:empty}"
-    printf "\r\033[K   ${CYN}[%s]${NC} ${WHT}%3d%%${NC}  ${GRY}%s${NC}" "$bar" "$i" "$label"
+    printf "\r\033[2K ${CYN}[%s]${NC} ${WHT}%3d%%${NC} ${GRY}%s${NC}" "$bar" "$i" "$short"
     sleep 0.006
   done
   _PROGRESS=$target
