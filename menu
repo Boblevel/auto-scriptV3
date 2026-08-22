@@ -6,15 +6,20 @@ source /etc/nvpanel/lib/ui.sh
 ui_enter; trap ui_leave EXIT INT TERM HUP
 
 run() {
-  if command -v "$1" >/dev/null 2>&1; then "$@"
+  if command -v "$1" >/dev/null 2>&1; then
+    "$@"
+    if [ -e /tmp/nvpanel-relaunch ]; then
+      rm -f /tmp/nvpanel-relaunch
+      exec /usr/local/bin/menu
+    fi
   else clear; banner; warn "Module « $1 » en préparation (bientôt disponible)."; pause; fi
 }
 
 # Encadrement du menu d'accueil uniquement. Les trois anciennes lignes de
 # séparation sont réutilisées comme haut / milieu / bas du cadre : aucune
 # ligne supplémentaire, afin de respecter la hauteur des terminaux mobiles.
-home_top(){ _edge "┏" "┓" "PROTOCOLES & SERVICES" "$YLW"; }
-home_mid(){ _edge "┣" "┫" "OUTILS & ADMINISTRATION" "$YLW"; }
+home_top(){ _edge "┏" "┓" "PROTOCOLES & SERVICES"; }
+home_mid(){ _edge "┣" "┫" "OUTILS & ADMINISTRATION"; }
 home_bot(){ bot; }
 home_entry(){
   local n="$1" e="$2" t="$3"

@@ -208,38 +208,60 @@ uninstall_slowdns() {
 }
 
 udp_status() {
-  header; center " 📡  UDP (UDPGW) " "${BOLD}${WHT}"; line
-  local on=0
-  for p in 7100 7200 7300; do
-    if systemctl is-active --quiet nvpanel-badvpn-$p 2>/dev/null; then
-      printf "   ${GRN}● actif  ${NC} UDPGW port %s\n" "$p"; on=$((on+1))
+  local custom=0 custom_port=22 on=0 p listen=0 state
+  if [ -f /etc/systemd/system/nvpanel-udp-custom.service ] || [ -f /etc/nvpanel/udp/config.json ]; then
+    custom=1
+  fi
+  if [ -f /etc/nvpanel/udp/config.json ]; then
+    p=$(sed -n 's/.*"listen"[[:space:]]*:[[:space:]]*"[^"]*:\([0-9][0-9]*\)".*/\1/p' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
+    [[ "$p" =~ ^[0-9]+$ ]] && custom_port="$p"
+  fi
+
+  header
+  if [ "$custom" = 1 ]; then
+    _edge "┏" "┓" "UDP CUSTOM"
+    if systemctl is-active --quiet nvpanel-udp-custom 2>/dev/null; then
+      state="${GRN}actif${NC}"
     else
-      printf "   ${RED}○ arrêté ${NC} ${GRY}UDPGW port %s${NC}\n" "$p"
+      state="${RED}arrêté${NC}"
     fi
-  done
-  if systemctl is-active --quiet nvpanel-udp-custom 2>/dev/null; then
-    printf "   ${GRN}● actif  ${NC} udp-custom (36712)\n"
+    printf "${CYN}┃${NC} ${GRY}● Service :${NC} %b" "$state"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    box_sep
+    printf "${CYN}┃${NC} ${GRY}● Port UDP :${NC} ${WHT}%s${NC}" "$custom_port"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    box_sep
+    printf "${CYN}┃${NC} ${GRY}● Comptes  :${NC} ${WHT}SSH / SlowDNS / UDP Custom${NC}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    bot
   else
-    printf "   ${GRY}– absent ${NC} ${GRY}udp-custom (facultatif)${NC}\n"
+    _edge "┏" "┓" "UDP (UDPGW)"
+    for p in 7100 7200 7300; do
+      if systemctl is-active --quiet nvpanel-badvpn-$p 2>/dev/null; then
+        printf "${CYN}┃${NC} ${GRN}● actif${NC}   UDPGW port %s" "$p"; on=$((on+1))
+      else
+        printf "${CYN}┃${NC} ${RED}○ arrêté${NC}  ${GRY}UDPGW port %s${NC}" "$p"
+      fi
+      printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+      [ "$p" != 7300 ] && box_sep
+    done
+    bot
+    if command -v ss >/dev/null 2>&1; then
+      ss -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && listen=1
+    elif command -v netstat >/dev/null 2>&1; then
+      netstat -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && listen=1
+    fi
+    if [ "$listen" = 1 ]; then
+      ok "Port 7300 vérifié : l'UDP passe."
+    elif [ "$on" -gt 0 ]; then
+      warn "Services UDPGW actifs mais le port 7300 ne répond pas."
+    else
+      warn "UDPGW non installé."
+    fi
   fi
-  echo
-  local listen=0
-  if command -v ss >/dev/null 2>&1; then
-    ss -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && listen=1
-  elif command -v netstat >/dev/null 2>&1; then
-    netstat -lnt 2>/dev/null | grep -q '127.0.0.1:7300' && listen=1
-  fi
-  if [ "$listen" = 1 ]; then
-    printf "   ${GRN}✔ Port 7300 vérifié : l'UDP passe.${NC}\n\n"
-    printf "   ${GRY}Dans l'appli client : UDPGW / Payload UDP =${NC} ${WHT}127.0.0.1:7300${NC}\n"
-  elif [ "$on" -gt 0 ]; then
-    warn "Services lancés mais le port 7300 ne répond pas — réinstalle (option 1)."
-  else
-    warn "UDP non installé — choisis 1 pour l'installer."
-  fi
-  echo; entry "1" "⬇️" "Installer / réinstaller"
-  entry "2" "🗑️" "Désinstaller"
-  entry "0" "⬅️" "Retour"; line
+
+  menu_box_top
+  compact_menu_entry "1" "⬇️" "Installer UDP Custom"
+  compact_menu_entry "2" "🗑️" "Désinstaller"
+  compact_menu_entry "0" "⬅️" "Retour"
+  menu_box_bot
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
   case "$s" in
     1) install-udp ;;

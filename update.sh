@@ -8,6 +8,7 @@ REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\033[1;37m'; GRY='\033[0;90m'; MAG='\033[0;35m'; NC='\033[0m'
 [ "$EUID" -ne 0 ] && { printf "${RED}✘ Lance en root (sudo su -).${NC}\n"; exit 1; }
 [ -d /etc/nvpanel ] || { printf "${RED}✘ RHAFF SERVICE n'est pas installé.${NC}\n"; exit 1; }
+rm -f /tmp/nvpanel-relaunch 2>/dev/null
 
 clear
 printf "${CYN}"
@@ -223,9 +224,11 @@ sleep 1
 # vide les touches tapées pendant la mise à jour (sinon elles ressortent en ^[[A)
 while IFS= read -r -s -t 0.01 -n 512 _ 2>/dev/null; do :; done
 
-# Lancé DEPUIS le panel (menu 14) : on rend simplement la main, le menu
-# appelant se redessine tout seul. Sans cela, « exec menu » empilait un
-# second menu par-dessus le premier — d'où les cadres qui se multipliaient
-# à chaque mise à jour.
-[ -n "${NVPANEL_UI:-}" ] && exit 0
+# Lancé depuis le panel : signale au menu principal qu'il doit se remplacer
+# par la nouvelle version une fois le sous-menu Paramètres refermé. On évite
+# ainsi tout empilement de menus tout en rechargeant immédiatement les fichiers.
+if [ -n "${NVPANEL_UI:-}" ]; then
+  : > /tmp/nvpanel-relaunch
+  exit 0
+fi
 exec menu

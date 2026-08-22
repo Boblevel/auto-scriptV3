@@ -7,46 +7,54 @@ ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 BKDIR=/root
 
-header(){ banner; _edge "┏" "┓" "⚙ PARAMÈTRES SYSTÈME" "${BOLD}${WHT}"; bot; }
-param_box_line(){
-  # %b interprète les séquences ANSI contenues dans les variables de couleur.
-  # Avec %s elles apparaissaient littéralement comme "\033[0;32m".
-  printf "${CYN}┃${NC} %b" "$1"
-  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
-}
+header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
 
 traffic_report(){
   local LC_ALL=C.UTF-8
-  header
+  header; center " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES " "${BOLD}${WHT}"; line
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
   local DB=/etc/nvpanel/db/conso
-  _edge "┏" "┓" "BILAN DU TRAFIC — TOUS PROTOCOLES"
-  if [ ! -s "$DB" ]; then
-    param_box_line "${YLW}Aucune consommation client enregistrée pour le moment.${NC}"
-    bot; pause; return
-  fi
+  [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
 
-  local year today_str week month yearsum days_tracked start_date todaysum
+  local year today_str week month yearsum days_tracked start_date
   year=$(date +%Y); today_str=$(date +%F)
+  # "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu), "%d"
+  # convertit la somme via un entier 32 bits et déborde au-delà de 4 Go —
+  # exactement le bug déjà corrigé dans nvpanel-conso, mais cette fonction
+  # réimplémentait sa propre somme séparée, jamais mise à jour à l'époque.
+  # "%.0f" passe par le formatage flottant natif d'awk, sans cette limite.
+  local todaysum
   todaysum=$(awk -F'|' -v d="$today_str" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   week=$(awk -F'|' -v lim="$(date -d '-7 days' +%F 2>/dev/null)" '$1>=lim{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   month=$(awk -F'|' -v p="$(date +%Y-%m)" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
   yearsum=$(awk -F'|' -v p="$year" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$DB" 2>/dev/null)
-  days_tracked=$(awk -F'|' 'NF{d[$1]=1} END{for(i in d)c++; print c+0}' "$DB" 2>/dev/null)
-  start_date=$(awk -F'|' 'NF{print $1; exit}' "$DB" 2>/dev/null)
+  days_tracked=$(wc -l < "$DB" 2>/dev/null); days_tracked=${days_tracked:-0}
+  start_date=$(head -1 "$DB" 2>/dev/null | cut -d'|' -f1)
 
-  param_box_line "${GRY}Aujourd'hui          :${NC} ${GRN}$(_hr "${todaysum:-0}")${NC}"
-  box_sep
-  param_box_line "${GRY}7 derniers jours    :${NC} ${GRN}$(_hr "${week:-0}")${NC}"
-  box_sep
-  param_box_line "${GRY}Ce mois-ci           :${NC} ${GRN}$(_hr "${month:-0}")${NC}"
-  box_sep
-  param_box_line "${GRY}Année $year          :${NC} ${GRN}$(_hr "${yearsum:-0}")${NC}"
+  # Padding calculé à la main (et non via printf "%-Ns") : "%-Ns" compte des
+  # OCTETS, pas des caractères — un accent comme le "é" d'« année » occupe
+  # 2 octets en UTF-8 pour 1 seul caractère affiché, ce qui décalait cette
+  # ligne d'une colonne par rapport aux autres. ${#s} sous LC_ALL=C.UTF-8
+  # compte, lui, le vrai nombre de caractères, donc l'alignement reste
+  # correct quel que soit le contenu.
+  local w=20 lbl0 lbl1 lbl2 lbl3
+  lbl0="Aujourd'hui"; lbl1="7 derniers jours"; lbl2="Ce mois-ci"; lbl3="Cette année ($year)"
+
+  echo
+  printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl0" $((w-${#lbl0})) "" "$(_hr "${todaysum:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
+  printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
+  echo
+  # Explique pourquoi semaine/mois/année peuvent afficher le même chiffre :
+  # tant que le suivi n'a pas plus de 7 jours d'historique, c'est normal et
+  # mathématique — plutôt que de laisser un chiffre identique sans
+  # explication, la période réellement couverte est maintenant affichée.
   if [ -n "$start_date" ]; then
-    box_sep
-    param_box_line "${GRY}Historique depuis    :${NC} ${WHT}$(_fmtd "$start_date") · ${days_tracked} jour(s)${NC}"
+    printf "   ${GRY}Suivi depuis le %s · %s jour(s) d'historique${NC}\n" "$(_fmtd "$start_date")" "$days_tracked"
   fi
-  bot
   pause
 }
 
@@ -127,57 +135,46 @@ enable_bbr(){
   pause
 }
 speedtest(){
-  header
-  _edge "┏" "┓" "TEST DE VITESSE DU SERVEUR"
-  param_box_line "${GRY}Mesure en cours… quelques secondes suffisent.${NC}"
-  bot
+  header; center " 📶  TEST DE VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
+  local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
+  printf "   ${GRY}⬇  Mesure de la vitesse en cours…${NC}\n\n"
 
-  local lat tmpdir url i=0 sp best=0 mbps
-  lat=$(ping -c 1 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms.*/,"",$2); print $2; exit}')
-  tmpdir=$(mktemp -d) || { err "Impossible de créer le fichier temporaire."; pause; return; }
-
-  # Les sources sont testées en parallèle : au pire ~6 s au lieu de plusieurs
-  # délais de 8 s successifs. Le résultat reste un débit réellement mesuré.
-  for url in \
-    "https://speed.cloudflare.com/__down?bytes=50000000" \
-    "https://proof.ovh.net/files/100Mb.dat" \
-    "https://fra.download.datapacket.com/100mb.bin"; do
-    i=$((i+1))
-    (
-      res=$(curl -o /dev/null -sL --connect-timeout 3 --max-time 6 -w '%{size_download} %{time_total}' "$url" 2>/dev/null)
+  local tmp; tmp=$(mktemp)
+  # Mesure sur une DURÉE FIXE (8 s) : bien plus fiable qu'un petit fichier,
+  # qui se termine en une fraction de seconde et gonfle le résultat.
+  (
+    for url in \
+      "https://speed.cloudflare.com/__down?bytes=1000000000" \
+      "https://proof.ovh.net/files/1Gb.dat" \
+      "http://speedtest.tele2.net/1GB.zip" \
+      "http://ipv4.download.thinkbroadband.com/512MB.zip" \
+      "https://fra.download.datapacket.com/100mb.bin"; do
+      res=$(curl -o /dev/null -sL --max-time 8 -w '%{size_download} %{time_total}' "$url" 2>/dev/null)
       dl=${res%% *}; tt=${res##* }
-      awk -v b="${dl:-0}" -v t="${tt:-0}" 'BEGIN{if(t>0) printf "%.0f", b/t; else print 0}' > "$tmpdir/$i"
-    ) &
+      sp=$(awk -v b="${dl:-0}" -v t="${tt:-0}" 'BEGIN{ if(t<=0){print 0} else {printf "%d", b/t} }')
+      if awk -v b="${sp:-0}" 'BEGIN{exit !(b>50000)}'; then echo "$sp" > "$tmp"; break; fi
+    done
+  ) &
+  local pid=$! i=0
+  local frames=( "▰▱▱▱▱▱" "▱▰▱▱▱▱" "▱▱▰▱▱▱" "▱▱▱▰▱▱" "▱▱▱▱▰▱" "▱▱▱▱▱▰" "▱▱▱▱▰▱" "▱▱▱▰▱▱" "▱▱▰▱▱▱" "▱▰▱▱▱▱" )
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r   ${CYN}[${GRN}%s${CYN}]${NC}  ${GRY}analyse du réseau…${NC}   " "${frames[i % ${#frames[@]}]}"
+    i=$((i+1)); sleep 0.12
   done
-  wait
-  for f in "$tmpdir"/*; do
-    [ -f "$f" ] || continue
-    sp=$(cat "$f" 2>/dev/null); case "$sp" in ''|*[!0-9]*) sp=0 ;; esac
-    [ "$sp" -gt "$best" ] && best=$sp
-  done
-  rm -rf "$tmpdir"
-
-  # Redessine le résultat final proprement : aucune ligne « en cours » résiduelle.
-  header
-  _edge "┏" "┓" "TEST DE VITESSE DU SERVEUR"
-  if [ "$best" -gt 50000 ] 2>/dev/null; then
-    mbps=$(awk -v b="$best" 'BEGIN{printf "%.1f", b*8/1000000}')
-    param_box_line "${GRY}État du test          :${NC} ${GRN}Terminé avec succès${NC}"
-    box_sep
-    param_box_line "${GRY}Débit descendant     :${NC} ${WHT}${mbps} Mbps${NC}"
-    box_sep
-    param_box_line "${GRY}Latence réseau       :${NC} ${WHT}${lat:-non disponible} ms${NC}"
+  wait "$pid" 2>/dev/null
+  local sp; sp=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
+  printf "\r%-52s\r" " "
+  if [ -n "$sp" ] && awk -v b="$sp" 'BEGIN{exit !(b>50000)}'; then
+    local mbps mbs; mbps=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b*8/1000000}')
+    mbs=$(awk -v b="$sp" 'BEGIN{printf "%.1f", b/1048576}')
+    line
+    printf "   ${GRN}✔ Vitesse du serveur :${NC} ${WHT}%s Mbps${NC}\n\n" "$mbps"
   else
-    param_box_line "${GRY}État du test          :${NC} ${RED}Échec de la mesure${NC}"
-    box_sep
-    param_box_line "${GRY}Latence réseau       :${NC} ${WHT}${lat:-non disponible} ms${NC}"
-    box_sep
-    param_box_line "${YLW}Aucun serveur de test n'a répondu à temps.${NC}"
+    err "Aucune source de test n'a répondu (réseau du serveur restreint ou pare-feu)."
+    printf "   ${GRY}Latence mesurée : %s ms${NC}\n" "${lat:-n/a}"
   fi
-  bot
   pause
 }
-
 restart_services(){
   header; center " ♻️  REDÉMARRAGE DES SERVICES " "${BOLD}${WHT}"; line
   echo
@@ -364,22 +361,9 @@ reset_traffic(){
 
 settings_row(){
   local n1="$1" t1="$2" n2="$3" t2="$4"
-  # Positions fixes : les accents UTF-8 ne peuvent plus déplacer la colonne
-  # centrale ni la bordure droite.
-  printf "${CYN}┃${NC}"
-  printf "\033[3G${GRN}[%02d]${NC} %-20.20s" "$n1" "$t1"
-  printf "\033[30G${CYN}┃${NC}"
-  printf "\033[32G${GRN}[%02d]${NC} %-20.20s" "$n2" "$t2"
-  printf "\033[58G${CYN}┃${NC}\n"
+  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-21.21s ${CYN}│${NC} ${GRN}[%02d]${NC} %-21.21s${CYN}┃${NC}\n" "$n1" "$t1" "$n2" "$t2"
 }
-settings_sep(){
-  # Trait continu d'une bordure à l'autre, relié à la séparation centrale.
-  printf "${CYN}┣${GRY}"
-  printf '─%.0s' $(seq 1 28)
-  printf "${CYN}╋${GRY}"
-  printf '─%.0s' $(seq 1 27)
-  printf "${CYN}┫${NC}\n"
-}
+settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
 
 while true; do
   flush_in; printf '\033[H\033[2J'
@@ -409,7 +393,9 @@ while true; do
     7) ram_usage ;; 8) swap_ram ;; 9) enable_bbr ;; 10) speedtest ;;
     11) restart_services ;; 12) renew_cert ;; 13) change_banner ;;
     14) script_info ;; 15) reset_traffic ;;
-    16) if command -v update >/dev/null 2>&1; then update
+    16) if command -v update >/dev/null 2>&1; then
+          update
+          [ -e /tmp/nvpanel-relaunch ] && exit 0
         else err "Commande de mise à jour introuvable."; pause; fi ;;
     17) if command -v menu-uninstall >/dev/null 2>&1; then menu-uninstall
         else err "Commande de désinstallation introuvable."; pause; fi ;;
