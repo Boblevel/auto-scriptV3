@@ -604,13 +604,11 @@ _card_row(){ # libelle valeur
 }
 _card_sep(){ printf '┣'; printf '─%.0s' $(seq 1 60 2>/dev/null); printf '┫\n'; }
 _card_link(){ # libelle lien
-  local label="$1" link="$2" part
-  printf '┃ %-58.58s ┃\n' "$label"
-  # Le saut final est volontaire : sans lui, read perd le dernier fragment
-  # lorsque la longueur du lien n'est pas un multiple exact de 58.
-  printf '%s\n' "$link" | fold -w 58 | while IFS= read -r part; do
-    printf '┃ %-58s ┃\n' "$part"
-  done
+  # Lien hors du cadre : le terminal peut le replier visuellement, mais la
+  # copie reste une URI exacte, sans caractères ┃ injectés dans le lien.
+  local label="$1" link="$2"
+  printf '🔗 %s :\n' "$label"
+  printf '%s\n' "$link"
 }
 _card_bot(){ printf '┗'; printf '━%.0s' $(seq 1 60 2>/dev/null); printf '┛\n'; }
 
@@ -629,10 +627,9 @@ xray_box(){ # proto name id created exp
   _card_row "Ports" "$tlsp TLS / $plainp No TLS"
   _card_row "Creation" "$created"
   _card_row "Expiration" "$(_fmtd "$ex")"
-  _card_sep
+  _card_bot
   _card_link "Lien TLS ($tlsp)" "$ltls"
   _card_link "Lien No TLS ($plainp)" "$lnotls"
-  _card_bot
 }
 
 
@@ -648,9 +645,8 @@ ss_box(){ # name ckey created exp
   _card_row "Port" "8388"
   _card_row "Creation" "$created"
   _card_row "Expiration" "$(_fmtd "$ex")"
-  _card_sep
-  _card_link "Lien Shadowsocks" "$link"
   _card_bot
+  _card_link "Lien Shadowsocks" "$link"
 }
 
 
