@@ -13,16 +13,30 @@ clear
 printf "${CYN}"
 cat <<'ART'
    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃        R H A F F   S E R V I C E                     ┃
-   ┃        Mise à jour                                   ┃
+   ┃              R H A F F   S E R V I C E               ┃
+   ┃                 M I S E   À   J O U R                 ┃
    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ART
 printf "${NC}\n"
 
-# ---- Progression compacte ----------------------------------
-# Une seule ligne par étape : évite l'empilement des pourcentages dans les
-# terminaux mobiles tout en gardant une progression claire.
-step(){ printf "   ${CYN}◆${NC} ${WHT}%s${NC}\n" "$1"; }
+# ---- Progression horizontale dynamique ---------------------
+# Une seule ligne est réécrite avec \r : 1 → 100 % sans remplir
+# l'historique du terminal ni provoquer les doublons d'affichage.
+_PROGRESS=0
+_BAR_FULL="████████████████████████████"
+_BAR_EMPTY="░░░░░░░░░░░░░░░░░░░░░░░░░░░░"
+progress_to(){
+  local target="$1" label="$2" i filled empty bar
+  [ "$target" -gt 100 ] && target=100
+  for ((i=_PROGRESS+1; i<=target; i++)); do
+    filled=$(( i * 28 / 100 )); empty=$((28 - filled))
+    bar="${_BAR_FULL:0:filled}${_BAR_EMPTY:0:empty}"
+    printf "\r\033[K   ${CYN}[%s]${NC} ${WHT}%3d%%${NC}  ${GRY}%s${NC}" "$bar" "$i" "$label"
+    sleep 0.006
+  done
+  _PROGRESS=$target
+}
+progress_to 1 "Préparation"
 
 # ---- Téléchargement silencieux -----------------------------
 FAILED=""; CHANGED=0
@@ -48,7 +62,8 @@ fetch(){
   fi
 }
 
-step "Téléchargement des composants…"
+progress_to 5 "Téléchargement des composants"
+_DONE_FILES=0; _TOTAL_FILES=27
 for pair in \
   "ui.sh:/etc/nvpanel/lib/ui.sh" "menu:/usr/local/bin/menu" "menu-ssh:/usr/local/bin/menu-ssh" \
   "menu-xray:/usr/local/bin/menu-xray" "menu-ss:/usr/local/bin/menu-ss" "menu-wg:/usr/local/bin/menu-wg" \
@@ -65,15 +80,18 @@ for pair in \
   "install-hysteria:/usr/local/bin/install-hysteria" "nvpanel-hysteria:/usr/local/bin/nvpanel-hysteria" \
   "update.sh:/usr/local/bin/update"; do
   fetch "${pair%%:*}" "${pair##*:}"
+  _DONE_FILES=$((_DONE_FILES+1))
+  progress_to $((5 + _DONE_FILES * 60 / _TOTAL_FILES)) "Téléchargement des composants"
 done
+progress_to 65 "Téléchargement terminé"
 
-step "Mise en place des composants…"
+progress_to 72 "Mise en place des composants"
 command -v qrencode >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1
 ln -sf /usr/local/bin/menu /usr/local/bin/acc 2>/dev/null
 ln -sf /usr/local/bin/menu /usr/local/bin/dgh 2>/dev/null
 ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 
-step "Mise à jour des services…"
+progress_to 80 "Mise à jour des services"
 systemctl daemon-reload >/dev/null 2>&1
 # Dropbear : Ubuntu livre NO_START=1, le service ne démarre jamais sans ceci
 if dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
@@ -105,7 +123,7 @@ grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shel
 # depuis le menu (Bot Telegram → « Redémarrer le bot »).
 systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
 
-step "Application de la configuration…"
+progress_to 90 "Application de la configuration"
 
 # --- Message d'accueil du serveur (MOTD) ---------------------------------
 # Ubuntu et Debian affichent au login un long texte : bannière de la
@@ -167,7 +185,8 @@ fi
 for _t in curl jq openssl python3; do
   command -v "$_t" >/dev/null 2>&1 || apt-get install -y "$_t" >/dev/null 2>&1
 done
-printf "   ${GRN}✔${NC} ${WHT}Mise à jour terminée.${NC}\n"
+progress_to 100 "Mise à jour terminée"
+printf "\n"
 
 clear
 if [ "$CHANGED" -eq 0 ] && [ -z "$FAILED" ]; then

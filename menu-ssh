@@ -88,7 +88,7 @@ create_account() {
 }
 
 list_accounts() {
-  local page=0 size=4 total pages start end i u exp st st_color ct sessions n today
+  local page=0 size=4 total pages start end i u exp st st_color ct sessions n today lim limtxt connfmt
   mapfile -t _rows_ssh < <(awk '/^### /{print $2"|"$3}' "$DB" 2>/dev/null)
   total=${#_rows_ssh[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun compte SSH."; pause; return; }
   pages=$(( (total + size - 1) / size )); sessions=$(_ssh_sessions); today=$(date +%F)
@@ -108,11 +108,10 @@ list_accounts() {
         st="actif"; st_color="$GRN"
       fi
       ct=$(_conn_time "$u"); n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
-      if [ "$n" -gt 1 ]; then
-        printf "${CYN}┃${NC} %-16s %-12s ${st_color}%-8s${NC} %s ${CYN}(%s IP)${NC}" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}" "$n"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
-      else
-        printf "${CYN}┃${NC} %-16s %-12s ${st_color}%-8s${NC} %s" "$u" "$(_fmtd "${exp:-?}")" "$st" "${ct:-—}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
-      fi
+      lim=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null); lim=${lim:-0}
+      [ "$lim" -gt 0 ] 2>/dev/null && limtxt="$lim" || limtxt="∞"
+      connfmt="${ct:-—} · ${n}/${limtxt}IP"
+      printf "${CYN}┃${NC} %-16s %-12s ${st_color}%-8s${NC} %s" "$u" "$(_fmtd "${exp:-?}")" "$st" "$connfmt"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     table_bot
@@ -376,7 +375,7 @@ hy_create(){
 }
 
 hy_list(){
-  local page=0 size=4 total pages start end i u e s color choice
+  local page=0 size=4 total pages start end i u e s color choice connfmt
   mapfile -t _rows_hy < <(/usr/local/bin/nvpanel-hysteria list)
   total=${#_rows_hy[@]}; [ "$total" -eq 0 ] && { hy_header; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; line; warn "Aucun compte."; pause; return; }
   pages=$(( (total + size - 1) / size ))
@@ -386,7 +385,11 @@ hy_list(){
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r u e s <<< "${_rows_hy[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      printf "   %-16s %-12s ${color}%-8s${NC} %s\n" "$u" "$(_fmtd "$e")" "$s" "—"
+      # Hysteria UDP (QUIC) ne fournit pas l'IP active par utilisateur ni une
+      # limite d'appareils exploitable par le panel : même format visuel, sans
+      # fabriquer de valeurs qui n'existent pas.
+      connfmt="— · —/—IP"
+      printf "   %-16s %-12s ${color}%-8s${NC} %s\n" "$u" "$(_fmtd "$e")" "$s" "$connfmt"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
     if [ "$pages" -le 1 ]; then pause; return; fi
