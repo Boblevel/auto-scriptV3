@@ -80,9 +80,9 @@ _ppp_session_info(){
   case "$first" in ''|0|*[!0-9]*) printf '%s' "— · $n/$cap IP"; return ;; esac
   now=$(date +%s); et=$((now-first)); [ "$et" -lt 0 ] && et=0
   if [ "$et" -ge 3600 ] 2>/dev/null; then
-    printf '%dh%02d · %s/%sIP' $((et/3600)) $(((et%3600)/60)) "$n" "$cap"
+    printf '%dh%02d · %s/%s IP' $((et/3600)) $(((et%3600)/60)) "$n" "$cap"
   else
-    printf '%dmin · %s/%sIP' $((et/60)) "$n" "$cap"
+    printf '%dmin · %s/%s IP' $((et/60)) "$n" "$cap"
   fi
 }
 create(){

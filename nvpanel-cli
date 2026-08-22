@@ -434,6 +434,22 @@ xlimit_run(){
         '{routing:{rules:[{type:"field",ruleTag:$rt,inboundTag:[$it],user:[$u],sourceIP:$src,outboundTag:"nvpanel-block"}]}}' > "$tmp"
       xray api adrules --server="$XAPI" -append "$tmp" >/dev/null 2>&1 || ok=0
       rm -f "$tmp"
+      # Une règle de routage ajoutée à chaud ne coupe pas un WebSocket déjà
+      # établi. Après ajout réussi, ferme uniquement les sockets publiques de
+      # l'IP excédentaire : sa reconnexion repasse alors dans la règle Xray
+      # (email + inbound + sourceIP), sans verrouiller le compte autorisé.
+      if [ "$ok" -eq 1 ] && command -v ss >/dev/null 2>&1; then
+        while IFS= read -r bip; do
+          [ -n "$bip" ] || continue
+          if [ "$proto" = ss ]; then
+            ss -K state established dst "$bip" sport = :8388 >/dev/null 2>&1 || true
+          else
+            _xp=$(cat /etc/nvpanel/xport 2>/dev/null); _xp=${_xp:-443}
+            ss -K state established dst "$bip" sport = :"$_xp" >/dev/null 2>&1 || true
+            [ "$_xp" = 80 ] || ss -K state established dst "$bip" sport = :80 >/dev/null 2>&1 || true
+          fi
+        done < <(printf '%s' "$fp" | tr ',' '\n')
+      fi
     fi
     [ "$ok" -eq 1 ] && printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$XBLOCKSTATE.tmp"
   done < "$desired"

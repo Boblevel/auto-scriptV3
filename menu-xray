@@ -61,7 +61,7 @@ list_clients() {
       case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
       cap="$lim"; [ -z "$cap" ] || [ "$cap" = 0 ] && cap="∞"
       ct=${ct:-—}; ct=${ct// /}
-      shown="$ct · ${ips:-0}/${cap}IP"
+      shown="$ct · ${ips:-0}/${cap} IP"
       printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "${e:-?}")" "${s:-actif}" "$shown"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done

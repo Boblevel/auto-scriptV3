@@ -110,7 +110,7 @@ list_accounts() {
       ct=$(_conn_time "$u"); n=$(printf '%s\n' "$sessions" | grep -c "^$u|")
       lim=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null); lim=${lim:-0}
       [ "$lim" -gt 0 ] 2>/dev/null && limtxt="$lim" || limtxt="∞"
-      connfmt="${ct:-—} · ${n}/${limtxt}IP"
+      connfmt="${ct:-—} · ${n}/${limtxt} IP"
       printf "${CYN}┃${NC} %-16s %-12s ${st_color}%-8s${NC} %s" "$u" "$(_fmtd "${exp:-?}")" "$st" "$connfmt"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
@@ -410,7 +410,7 @@ hy_list(){
       # Hysteria UDP (QUIC) ne fournit pas l'IP active par utilisateur ni une
       # limite d'appareils exploitable par le panel : même format visuel, sans
       # fabriquer de valeurs qui n'existent pas.
-      connfmt="— · —/—IP"
+      connfmt="— · —/— IP"
       printf "   %-16s %-12s ${color}%-8s${NC} %s\n" "$u" "$(_fmtd "$e")" "$s" "$connfmt"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
