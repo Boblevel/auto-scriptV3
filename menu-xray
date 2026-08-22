@@ -37,7 +37,10 @@ add_client() {
     ask "$(printf "${GRY}Entrée pour revenir au menu…${NC}")" _pausevar
   else
     header
-    err "Échec : $(echo "$out" | head -1)"
+    case "$(echo "$out" | head -1)" in
+      *"ERR exists"*) err "Ce nom de client existe déjà. Choisis un autre nom." ;;
+      *) err "Échec : $(echo "$out" | head -1)" ;;
+    esac
     pause
   fi
 }

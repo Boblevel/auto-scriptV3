@@ -170,7 +170,7 @@ banner() {
 
 # ---- Aides consommation (compteur clients) -----------------
 _iface(){ ip route 2>/dev/null | awk '/default/{print $5; exit}'; }
-_hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go To Po",u," "); i=1; while(b>=1024 && i<6){b/=1024;i++} printf "%.1f %s", b, u[i] }'; }
+_hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go To Po",u," "); i=1; while(b>=1024 && i<6){b/=1024;i++} if(i>=5) printf "%.2f %s", b, u[i]; else printf "%.1f %s", b, u[i] }'; }
 
 # Affichage uniquement (JJ-MM-AAAA) — les dates restent stockées en AAAA-MM-JJ
 # dans toutes les bases (comparaisons de tri comme "$exp < $today" en
