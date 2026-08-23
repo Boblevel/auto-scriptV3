@@ -214,9 +214,10 @@ _x_ip_refresh_sync(){
   live_ws=$(mktemp) || { rm -f "$seen" "$tmp"; return 0; }
   live_ss=$(mktemp) || { rm -f "$seen" "$tmp" "$live_ws"; return 0; }
 
-  # Les WebSockets Xray restent des connexions TCP établies côté nginx.
-  # On garde uniquement les IP qui ont encore une socket publique active :
-  # une déconnexion disparaît donc du compteur dès le rafraîchissement suivant.
+  # Les sockets publiques servent uniquement de confirmation de présence.
+  # La source d'autorité pour une IP fraîche reste access.log de Xray : une
+  # socket peut disparaître/revenir entre deux scans sans que le client soit
+  # réellement déconnecté.
   xport=$(cat /etc/nvpanel/xport 2>/dev/null); xport=${xport:-443}
   ss -Htn state established 2>/dev/null | awk -v p1=80 -v p2="$xport" '
     {for(i=1;i<NF;i++){
@@ -253,9 +254,15 @@ _x_ip_refresh_sync(){
     [ -n "$name" ] && [ -n "$ip" ] || continue
     proto=$(_x_proto_for_name "$name")
     [ -n "$proto" ] || continue
+    # Pour Xray, la source fiable est le journal Xray lui-même. Ne jamais
+    # rejeter une IP fraîche simplement parce que la socket nginx n'est plus
+    # visible au même instant dans `ss` : WebSocket/HTTP peuvent se fermer ou
+    # se recréer entre deux rafraîchissements. C'était précisément la cause
+    # des comptes actifs vus dans access.log mais absents de xips/xipcount.
+    # Shadowsocks est lui aussi accepté ici sur activité fraîche du journal.
     case "$proto" in
-      vmess|vless|trojan) grep -Fxq "$ip" "$live_ws" 2>/dev/null || continue ;;
-      ss) : ;; # TCP : socket active ; UDP : activité réelle récente du journal
+      vmess|vless|trojan|ss) : ;;
+      *) continue ;;
     esac
     row=$(awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{print;exit}' "$XIPSTATE" 2>/dev/null)
     first=$(printf '%s' "$row" | cut -d'|' -f4)
@@ -268,7 +275,14 @@ _x_ip_refresh_sync(){
   awk -F'|' 'NF>=5{print}' "$XIPSTATE" 2>/dev/null \
     | while IFS='|' read -r proto name ip first last; do
         case "$proto" in
-          vmess|vless|trojan) grep -Fxq "$ip" "$live_ws" 2>/dev/null || continue ;;
+          vmess|vless|trojan)
+            # Une IP déjà connue reste active si la socket publique existe
+            # encore OU si Xray l'a vue très récemment. On évite ainsi les
+            # faux 0 causés par une course entre `ss` et access.log.
+            if ! grep -Fxq "$ip" "$live_ws" 2>/dev/null; then
+              case "$last" in ''|*[!0-9]*) continue ;; esac
+              [ "$last" -ge "$cutoff" ] 2>/dev/null || continue
+            fi ;;
           ss)
             if ! grep -Fxq "$ip" "$live_ss" 2>/dev/null; then
               case "$last" in ''|*[!0-9]*) continue ;; esac
