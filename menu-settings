@@ -363,19 +363,27 @@ settings_row(){
   local n1="$1" t1="$2" n2="$3" t2="$4"
   printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-21.21s ${CYN}│${NC} ${GRN}[%02d]${NC} %-21.21s${CYN}┃${NC}\n" "$n1" "$t1" "$n2" "$t2"
 }
-settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
+settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
 
 while true; do
   flush_in; printf '\033[H\033[2J'
   _edge "┏" "┓" "PARAMÈTRES DU PANEL"
   settings_row 1  "DOMAINE"               10 "TEST DE VITESSE"
+  settings_sep
   settings_row 2  "TLS / HTTPS"           11 "REDÉMARRER SERVICES"
+  settings_sep
   settings_row 3  "PORT DROPBEAR"         12 "CERTIFICATS SSL"
+  settings_sep
   settings_row 4  "BILAN DU TRAFIC"       13 "BANNIÈRE SSH"
+  settings_sep
   settings_row 5  "SAUVEGARDER"           14 "INFO DU SCRIPT"
+  settings_sep
   settings_row 6  "RESTAURER"             15 "RÉINITIALISER CONSO"
+  settings_sep
   settings_row 7  "RAM / TRAFIC"          16 "METTRE À JOUR"
+  settings_sep
   settings_row 8  "CRÉER SWAPRAM"         17 "DÉSINSTALLER SCRIPT"
+  settings_sep
   settings_row 9  "ACTIVER BBR"            0 "RETOUR"
   _edge "┗" "┛" "$CONTACT"
   ask "$(printf " ${WHT}➤ Choix [0-17] :${NC} ")" o || break
