@@ -360,8 +360,12 @@ reset_traffic(){
 }
 
 settings_row(){
-  local n1="$1" t1="$2" n2="$3" t2="$4"
-  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %-21.21s ${CYN}│${NC} ${GRN}[%02d]${NC} %-21.21s${CYN}┃${NC}\n" "$n1" "$t1" "$n2" "$t2"
+  local LC_ALL=C.UTF-8 n1="$1" t1="$2" n2="$3" t2="$4" c1 c2
+  # printf %-21s compte les OCTETS : les accents (É, È, À…) décalent alors
+  # les séparateurs et la bordure droite. On tronque/padde en caractères réels.
+  c1=${t1:0:21}; c2=${t2:0:21}
+  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %s%*s ${CYN}│${NC} ${GRN}[%02d]${NC} %s%*s${CYN}┃${NC}\n" \
+    "$n1" "$c1" $((21-${#c1})) "" "$n2" "$c2" $((21-${#c2})) ""
 }
 settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
 
