@@ -34,7 +34,7 @@ _xapi_ensure(){
   # Validation coûteuse mémorisée par signature du fichier. Tant que
   # config.json n'a pas changé, aucun jq/xray -test/redémarrage n'est refait
   # lors de l'ouverture d'un menu.
-  local sig stamp=/run/nvpanel-xapi.ok core tmp opt a b
+  local sig stamp=/run/nvpanel-xapi.ok core base_core tmp opt a b
   sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
 
   core='
@@ -45,14 +45,38 @@ _xapi_ensure(){
     and ([.outbounds[]?.tag?] | index("api"))
     and ([.outbounds[]?.tag?] | index("nvpanel-block"))
     and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
+  base_core='
+       (.api.tag=="api")
+    and ((.api.services // []) | index("StatsService"))
+    and ([.inbounds[]?.tag?] | index("api"))
+    and ([.outbounds[]?.tag?] | index("api"))
+    and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
 
-  # Le cache n'est valable que si la configuration contient ENCORE le cœur
-  # API complet requis par la limitation. Un ancien cache pouvait survivre à
-  # une config ne contenant que StatsService : _xapi_ensure retournait alors
-  # succès, mais adrules échouait faute de RoutingService et aucune IP
-  # excédentaire n'était réellement bloquée.
+  # Le cache n'est valable que si le coeur complet existe réellement.
   if [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && jq -e "$core" "$XCONF" >/dev/null 2>&1; then
     return 0
+  fi
+
+  # Cas courant des installations déjà fonctionnelles : StatsService + API
+  # existent, mais RoutingService / nvpanel-block manquent. Les diagnostics
+  # Debian 26.6.1 et Ubuntu 26.3.27 confirment que ces deux ajouts seuls sont
+  # valides. On ne touche alors à rien d'autre dans config.json.
+  if jq -e "$base_core" "$XCONF" >/dev/null 2>&1 && ! jq -e "$core" "$XCONF" >/dev/null 2>&1; then
+    tmp=$(mktemp) || return 1
+    jq '
+        .api.services = (((.api.services // []) + ["StatsService","RoutingService"]) | unique)
+      | .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
+    ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
+    b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
+    [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$tmp"; return 1; }
+    if command -v xray >/dev/null 2>&1; then
+      xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+    fi
+    mv "$tmp" "$XCONF"
+    systemctl restart xray >/dev/null 2>&1
+    rm -f "$stamp"
+    sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
   fi
 
   # Si le cœur API est déjà présent, l'absence éventuelle du support XFF ne
@@ -93,10 +117,12 @@ _xapi_ensure(){
     | .policy = (.policy // {})
     | .policy.levels = (.policy.levels // {})
     | .policy.levels."0" = ((.policy.levels."0" // {}) + { "statsUserUplink": true, "statsUserDownlink": true })
-    | .inbounds = ( if ([.inbounds[]?.tag?]|index("api")) then .inbounds else [ { "tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"} } ] + .inbounds end )
-    | .outbounds = ( if ([.outbounds[]?.tag?]|index("api")) then .outbounds else .outbounds + [ { "protocol":"freedom","tag":"api" } ] end )
-    | .outbounds = ( if ([.outbounds[]?.tag?]|index("nvpanel-block")) then .outbounds else .outbounds + [ { "protocol":"blackhole","tag":"nvpanel-block" } ] end )
-    | .routing = ((.routing // {}) | .rules = ((.rules // []) + (if ([.rules[]?.inboundTag? // [] | index("api")] | any) then [] else [ {"type":"field","inboundTag":["api"],"outboundTag":"api"} ] end)))
+    | .inbounds = (if ([.inbounds[]?.tag?] | index("api")) then .inbounds else [{"tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}}] + .inbounds end)
+    | .outbounds = (if ([.outbounds[]?.tag?] | index("api")) then .outbounds else .outbounds + [{"protocol":"freedom","tag":"api"}] end)
+    | .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
+    | .routing = (.routing // {})
+    | .routing.rules = (.routing.rules // [])
+    | if ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api")) then . else .routing.rules += [{"type":"field","inboundTag":["api"],"outboundTag":"api"}] end
   ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
   b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
