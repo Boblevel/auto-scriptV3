@@ -14,7 +14,7 @@ NDIR=/etc/nvpanel/xray
 mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
 
 # ---- helpers -----------------------------------------------
-XAPI=127.0.0.1:10086
+XAPI=127.0.0.1:10085
 XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_activite
 XLIMDB=/etc/nvpanel/db/xlimit    # proto|compte|limite_appareils (0 = illimite)
 XIPSTATE=/etc/nvpanel/db/xips    # proto|compte|ip|premiere_vue|derniere_vue
@@ -31,77 +31,65 @@ _xapi_ensure(){
   [ -f "$XCONF" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
-  # RHAFF_XAPI_CORE_V4_DIRECT
-  # Xray 26.x supporte l'API directe via api.listen. On l'utilise sur 10086
-  # pour ne pas dépendre de l'ancien tunnel dokodemo-door:10085 déjà présent.
-  # L'ancien API 10085 n'est ni supprimé ni modifié.
-  local sig stamp=/run/nvpanel-xapi.ok core tmp bak a b i
+  # RHAFF_XAPI_CORE_V5_STATIC
+  # La limitation n'utilise plus RoutingService/adrules : les règles de limite
+  # sont écrites dans le routing statique de config.json puis validées par
+  # « xray run -test ». L'API 10085 existante reste réservée aux statistiques.
+  local sig stamp=/run/nvpanel-xapi.ok core tmp a b
   sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
   core='
        (.api.tag=="api")
-    and (.api.listen=="127.0.0.1:10086")
     and ((.api.services // []) | index("StatsService"))
-    and ((.api.services // []) | index("RoutingService"))
-    and ([.outbounds[]?.tag?] | index("nvpanel-block"))'
+    and ([.inbounds[]?.tag?] | index("api"))
+    and ([.outbounds[]?.tag?] | index("api"))
+    and ([.outbounds[]?.tag?] | index("nvpanel-block"))
+    and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
 
-  if [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] \
-     && jq -e "$core" "$XCONF" >/dev/null 2>&1 \
-     && xray api lsrules --server="$XAPI" >/dev/null 2>&1; then
+  if [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && jq -e "$core" "$XCONF" >/dev/null 2>&1; then
     return 0
   fi
 
   tmp=$(mktemp) || return 1
   jq '
       .stats = (.stats // {})
-    | .api = ((.api // {})
-        | .tag="api"
-        | .listen="127.0.0.1:10086"
-        | .services=(((.services // []) + ["StatsService","RoutingService"]) | unique))
+    | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService"]) | unique | map(select(. != "RoutingService"))))
     | .policy = (.policy // {})
     | .policy.levels = (.policy.levels // {})
     | .policy.levels."0" = ((.policy.levels."0" // {}) + {"statsUserUplink":true,"statsUserDownlink":true})
+    | .inbounds = (if ([.inbounds[]?.tag?] | index("api")) then .inbounds else [{"tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}}] + .inbounds end)
+    | .outbounds = (if ([.outbounds[]?.tag?] | index("api")) then .outbounds else .outbounds + [{"protocol":"freedom","tag":"api"}] end)
     | .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
+    | .routing = (.routing // {})
+    | .routing.rules = (.routing.rules // [])
+    | if ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api")) then . else .routing.rules += [{"type":"field","inboundTag":["api"],"outboundTag":"api"}] end
   ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
 
-  # Garde-fou absolu : aucun client existant ne doit changer.
   a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
   b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
   [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$tmp"; return 1; }
+  xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
 
-  if command -v xray >/dev/null 2>&1; then
-    xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  if ! cmp -s "$tmp" "$XCONF"; then
+    cp -a "$XCONF" "$XCONF.before-xapi-v5" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$XCONF" || { rm -f "$tmp"; return 1; }
+    # Le garde Xray conserve une copie de référence : on la synchronise avec
+    # la configuration validée pour qu'il ne restaure pas une version ancienne.
+    mkdir -p /etc/nvpanel/xray
+    cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
+    systemctl restart xray >/dev/null 2>&1 || {
+      cp -a "$XCONF.before-xapi-v5" "$XCONF" 2>/dev/null
+      systemctl restart xray >/dev/null 2>&1 || true
+      return 1
+    }
+    sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
+  else
+    rm -f "$tmp"
   fi
 
-  bak="$XCONF.before-xapi-v4"
-  cp -a "$XCONF" "$bak" 2>/dev/null || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$XCONF" || { rm -f "$tmp"; return 1; }
-
-  if ! systemctl restart xray >/dev/null 2>&1; then
-    cp -a "$bak" "$XCONF" 2>/dev/null
-    systemctl restart xray >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  # Attend l'API directe et valide réellement RoutingService + StatsService.
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    if xray api lsrules --server="$XAPI" >/dev/null 2>&1 \
-       && xray api statsquery --server="$XAPI" -pattern 'user>>>' >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.25
-  done
-  if ! xray api lsrules --server="$XAPI" >/dev/null 2>&1; then
-    cp -a "$bak" "$XCONF" 2>/dev/null
-    systemctl restart xray >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
   jq -e "$core" "$XCONF" >/dev/null 2>&1 || return 1
   printf '%s\n' "$sig" > "$stamp" 2>/dev/null || true
   return 0
 }
-
 # Relève les compteurs de trafic de chaque compte et en déduit son activité.
 # Xray ne dit pas « qui est connecté » : il tient en revanche un compteur
 # d'octets par compte. Un compteur qui progresse = un compte en train de s'en
@@ -394,16 +382,15 @@ _x_created_del(){
 xlimit_run(){
   command -v xray >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  xray help api adrules >/dev/null 2>&1 || return 0
   _xapi_ensure || return 0
   _x_ip_refresh_sync
-  local pid oldpid now cutoff desired old tag proto name lim db row ex fl TAG ips extras fp oldfp tmp ipsjson ok
-  pid=$(systemctl show -p MainPID --value xray 2>/dev/null); pid=${pid:-0}
-  oldpid=$(cat /run/nvpanel-xlimit.pid 2>/dev/null)
-  if [ "$pid" != "$oldpid" ]; then
-    : > "$XBLOCKSTATE"
-    printf '%s\n' "$pid" > /run/nvpanel-xlimit.pid 2>/dev/null
-  fi
+
+  # RHAFF_XLIMIT_V5_STATIC
+  # Les IP excédentaires deviennent des règles de routing STATIQUES. Cela
+  # évite totalement RoutingService/adrules, qui était le maillon défaillant
+  # sur les VPS testés. Une modification du jeu de règles provoque un seul
+  # redémarrage Xray ; si rien ne change, aucun redémarrage n'est effectué.
+  local now cutoff desired rules tmp a b proto name lim db row ex fl tag ips extras fp it ipsjson
   now=$(date +%s); cutoff=$((now-300)); desired=$(mktemp) || return 0
 
   while IFS='|' read -r proto name lim; do
@@ -426,51 +413,57 @@ xlimit_run(){
     printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$desired"
   done < "$XLIMDB"
 
-  # Supprime les anciennes règles qui n'ont plus lieu d'être.
-  while IFS='|' read -r tag proto name oldfp; do
-    [ -n "$tag" ] || continue
-    fp=$(awk -F'|' -v t="$tag" '$1==t{print $4;exit}' "$desired" 2>/dev/null)
-    if [ "$fp" != "$oldfp" ]; then
-      xray api rmrules --server="$XAPI" "$tag" >/dev/null 2>&1 || true
-    fi
-  done < "$XBLOCKSTATE"
+  rules=$(mktemp) || { rm -f "$desired"; return 0; }
+  printf '[]\n' > "$rules"
+  while IFS='|' read -r tag proto name fp; do
+    [ -n "$tag" ] && [ -n "$fp" ] || continue
+    xmeta "$proto" || continue
+    it="$TAG"
+    ipsjson=$(printf '%s' "$fp" | tr ',' '\n' | jq -Rsc 'split("\n")|map(select(length>0))')
+    jq --arg rt "$tag" --arg u "$name" --arg it "$it" --argjson src "$ipsjson" \
+      '. + [{type:"field",ruleTag:$rt,inboundTag:[$it],user:[$u],sourceIP:$src,outboundTag:"nvpanel-block"}]' \
+      "$rules" > "$rules.tmp" 2>/dev/null && mv "$rules.tmp" "$rules"
+  done < "$desired"
 
+  tmp=$(mktemp) || { rm -f "$desired" "$rules"; return 0; }
+  jq --slurpfile nr "$rules" '
+      .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
+    | .routing = (.routing // {})
+    | .routing.rules = ((.routing.rules // []) | map(select(((.ruleTag // "") | startswith("nvlim-")) | not))) + $nr[0]
+  ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$desired" "$rules"; return 0; }
+
+  a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
+  b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
+  if [ -z "$a" ] || [ "$a" != "$b" ] || ! xray run -test -c "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp" "$desired" "$rules"
+    return 0
+  fi
+
+  if ! cmp -s "$tmp" "$XCONF"; then
+    cp -a "$XCONF" "$XCONF.before-xlimit-v5" 2>/dev/null || { rm -f "$tmp" "$desired" "$rules"; return 0; }
+    mv "$tmp" "$XCONF" || { rm -f "$tmp" "$desired" "$rules"; return 0; }
+    mkdir -p /etc/nvpanel/xray
+    cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
+    if ! systemctl restart xray >/dev/null 2>&1; then
+      cp -a "$XCONF.before-xlimit-v5" "$XCONF" 2>/dev/null
+      systemctl restart xray >/dev/null 2>&1 || true
+      rm -f "$desired" "$rules"
+      return 0
+    fi
+    rm -f /run/nvpanel-xapi.ok /run/nvpanel-xip.stamp
+  else
+    rm -f "$tmp"
+  fi
+
+  # État visible par le panel : uniquement les règles effectivement calculées.
   : > "$XBLOCKSTATE.tmp"
   while IFS='|' read -r tag proto name fp; do
     [ -n "$tag" ] || continue
-    oldfp=$(awk -F'|' -v t="$tag" '$1==t{print $4;exit}' "$XBLOCKSTATE" 2>/dev/null)
-    ok=1
-    if [ "$fp" != "$oldfp" ] && [ -n "$fp" ]; then
-      xmeta "$proto" || { ok=0; continue; }
-      ipsjson=$(printf '%s' "$fp" | tr ',' '\n' | jq -Rsc 'split("\n")|map(select(length>0))')
-      tmp=$(mktemp) || { ok=0; continue; }
-      jq -n --arg u "$name" --arg it "$TAG" --arg rt "$tag" --argjson src "$ipsjson" \
-        '{routing:{rules:[{type:"field",ruleTag:$rt,inboundTag:[$it],user:[$u],sourceIP:$src,outboundTag:"nvpanel-block"}]}}' > "$tmp"
-      xray api adrules --server="$XAPI" -append "$tmp" >/dev/null 2>&1 || ok=0
-      rm -f "$tmp"
-      # Une règle de routage ajoutée à chaud ne coupe pas un WebSocket déjà
-      # établi. Après ajout réussi, ferme uniquement les sockets publiques de
-      # l'IP excédentaire : sa reconnexion repasse alors dans la règle Xray
-      # (email + inbound + sourceIP), sans verrouiller le compte autorisé.
-      if [ "$ok" -eq 1 ] && command -v ss >/dev/null 2>&1; then
-        while IFS= read -r bip; do
-          [ -n "$bip" ] || continue
-          if [ "$proto" = ss ]; then
-            ss -K state established dst "$bip" sport = :8388 >/dev/null 2>&1 || true
-          else
-            _xp=$(cat /etc/nvpanel/xport 2>/dev/null); _xp=${_xp:-443}
-            ss -K state established dst "$bip" sport = :"$_xp" >/dev/null 2>&1 || true
-            [ "$_xp" = 80 ] || ss -K state established dst "$bip" sport = :80 >/dev/null 2>&1 || true
-          fi
-        done < <(printf '%s' "$fp" | tr ',' '\n')
-      fi
-    fi
-    [ "$ok" -eq 1 ] && printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$XBLOCKSTATE.tmp"
+    printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$XBLOCKSTATE.tmp"
   done < "$desired"
   mv "$XBLOCKSTATE.tmp" "$XBLOCKSTATE" 2>/dev/null
-  rm -f "$desired"
+  rm -f "$desired" "$rules"
 }
-
 _today(){ date +%Y-%m-%d; }
 
 # udp-custom (mode « passwords ») ne lit pas /etc/shadow : il cherche les
