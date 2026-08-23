@@ -13,10 +13,10 @@ rm -f /tmp/nvpanel-relaunch 2>/dev/null
 clear
 printf "${CYN}"
 cat <<'ART'
-   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃         R H A F F   S E R V I C E              ┃
-   ┃            M I S E   À   J O U R                ┃
-   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃      R H A F F   S E R V I C E           ┃
+   ┃         M I S E   À   J O U R             ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ART
 printf "${NC}\n"
 
@@ -42,7 +42,9 @@ progress_to(){
   for ((i=_PROGRESS+1; i<=target; i++)); do
     filled=$(( i * 20 / 100 )); empty=$((20 - filled))
     bar="${_BAR_FULL:0:filled}${_BAR_EMPTY:0:empty}"
-    printf "\r\033[2K ${CYN}[%s]${NC} ${WHT}%3d%%${NC} ${GRY}%s${NC}" "$bar" "$i" "$short"
+    # Bordure fermée de la barre : [################----] reste complète
+    # même pendant la réécriture dynamique sur terminal mobile.
+    printf "\r\033[2K ${CYN}[%s]${NC} ${WHT}%3d%%${NC} ${GRY}%-16s${NC}" "$bar" "$i" "$short"
     sleep 0.006
   done
   _PROGRESS=$target
@@ -203,18 +205,18 @@ clear
 if [ "$CHANGED" -eq 0 ] && [ -z "$FAILED" ]; then
   printf "${GRN}"
   cat <<'UPTODATE'
-   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃      ✔   Le script est déjà à jour         ┃
-   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃      ✔   Le script est déjà à jour        ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 UPTODATE
   printf "${NC}\n"
   printf "   ${GRY}Aucun composant n'a changé depuis la dernière mise à jour.${NC}\n\n"
 else
   printf "${GRN}"
   cat <<'DONE'
-   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃        ✔   Mise à jour terminée            ┃
-   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃       ✔   Mise à jour terminée            ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 DONE
   printf "${NC}\n"
   [ -z "$FAILED" ] && printf "   ${GRY}Le script est maintenant à jour (%s composant(s) mis à jour).${NC}\n\n" "$CHANGED"
