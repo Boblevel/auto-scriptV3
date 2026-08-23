@@ -15,7 +15,7 @@ printf "${CYN}"
 cat <<'ART'
    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
    ┃         R H A F F   S E R V I C E              ┃
-   ┃            M I S E   À   J O U R               ┃
+   ┃            M I S E   À   J O U R                ┃
    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ART
 printf "${NC}\n"
@@ -203,18 +203,18 @@ clear
 if [ "$CHANGED" -eq 0 ] && [ -z "$FAILED" ]; then
   printf "${GRN}"
   cat <<'UPTODATE'
-   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃      ✔   Le script est déjà à jour                 ┃
-   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃      ✔   Le script est déjà à jour         ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 UPTODATE
   printf "${NC}\n"
   printf "   ${GRY}Aucun composant n'a changé depuis la dernière mise à jour.${NC}\n\n"
 else
   printf "${GRN}"
   cat <<'DONE'
-   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃        ✔   Mise à jour terminée                    ┃
-   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ┃        ✔   Mise à jour terminée            ┃
+   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 DONE
   printf "${NC}\n"
   [ -z "$FAILED" ] && printf "   ${GRY}Le script est maintenant à jour (%s composant(s) mis à jour).${NC}\n\n" "$CHANGED"
@@ -223,11 +223,11 @@ if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Mise à jour partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion du serveur et relance : update${NC}\n\n"
 fi
-# Le bot n'est jamais redémarré automatiquement : on le signale clairement.
+# Le bot partage les mêmes commandes que le panel. S'il tourne déjà, on le
+# redémarre après la mise à jour afin qu'il charge immédiatement les fichiers
+# qui viennent d'être remplacés, sans modifier son état activé/désactivé.
 if systemctl is-active --quiet nvpanel-bot 2>/dev/null; then
-  printf "   ${YLW}ℹ Le bot Telegram tourne encore sur l'ANCIENNE version.${NC}\n"
-  printf "   ${GRY}  Il n'a pas été redémarré automatiquement.${NC}\n"
-  printf "   ${GRY}  Pour appliquer la mise à jour : menu → 10 → 2 (Redémarrer le bot).${NC}\n\n"
+  systemctl restart nvpanel-bot >/dev/null 2>&1 || true
 fi
 printf "   ${GRY}Ouverture du menu…${NC}\n"
 sleep 1

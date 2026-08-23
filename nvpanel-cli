@@ -36,7 +36,6 @@ _xapi_ensure(){
   # lors de l'ouverture d'un menu.
   local sig stamp=/run/nvpanel-xapi.ok core tmp opt a b
   sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
-  [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && return 0
 
   core='
        (.api.tag=="api")
@@ -46,6 +45,15 @@ _xapi_ensure(){
     and ([.outbounds[]?.tag?] | index("api"))
     and ([.outbounds[]?.tag?] | index("nvpanel-block"))
     and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
+
+  # Le cache n'est valable que si la configuration contient ENCORE le cœur
+  # API complet requis par la limitation. Un ancien cache pouvait survivre à
+  # une config ne contenant que StatsService : _xapi_ensure retournait alors
+  # succès, mais adrules échouait faute de RoutingService et aucune IP
+  # excédentaire n'était réellement bloquée.
+  if [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && jq -e "$core" "$XCONF" >/dev/null 2>&1; then
+    return 0
+  fi
 
   # Si le cœur API est déjà présent, l'absence éventuelle du support XFF ne
   # doit JAMAIS empêcher la création d'un compte. On tente l'amélioration IP
