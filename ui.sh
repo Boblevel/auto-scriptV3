@@ -237,7 +237,7 @@ sysinfo() {
   cores=$(nproc)
   ip=$(cat /etc/nvpanel/ip 2>/dev/null || echo "-")
   domain=$(cat /etc/nvpanel/domain 2>/dev/null || echo "non configuré")
-  up=$(uptime -p 2>/dev/null | sed 's/up //; s/ hours\?/h/; s/ minutes\?/m/; s/,//g')
+  up=$(LC_ALL=C uptime -p 2>/dev/null | sed -E 's/^up //; s/ weeks?/w/g; s/ days?/d/g; s/ hours?/h/g; s/ minutes?/m/g; s/,//g')
   printf "${CYN}┃${NC} ${GRY}🖥️  OS   :${NC} %-20s ${GRY}💾 RAM :${NC} %s/%s Mo" "${os:0:20}" "$ram_used" "$ram_tot"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   printf "${CYN}┃${NC} ${GRY}🌐 IP   :${NC} %-20s ${GRY}⚙️  Core:${NC} %s" "$ip" "$cores"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   printf "${CYN}┃${NC} ${GRY}🔗 Dom. :${NC} %-20s ${GRY}⏱️  Up  :${NC} %s" "${domain:0:20}" "${up:-.}"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
