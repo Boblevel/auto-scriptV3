@@ -31,12 +31,12 @@ _xapi_ensure(){
   [ -f "$XCONF" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
-  # Validation coûteuse mémorisée par signature du fichier. Tant que
-  # config.json n'a pas changé, aucun jq/xray -test/redémarrage n'est refait
-  # lors de l'ouverture d'un menu.
-  local sig stamp=/run/nvpanel-xapi.ok core base_core tmp opt a b
+  # RHAFF_XAPI_CORE_V3
+  # Réparation strictement minimale du cœur API requis par la limitation :
+  # StatsService + RoutingService + outbound de blocage + route API.
+  # Les inbounds clients et leurs identifiants ne sont jamais reconstruits.
+  local sig stamp=/run/nvpanel-xapi.ok core tmp bak a b i
   sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
-
   core='
        (.api.tag=="api")
     and ((.api.services // []) | index("StatsService"))
@@ -45,78 +45,18 @@ _xapi_ensure(){
     and ([.outbounds[]?.tag?] | index("api"))
     and ([.outbounds[]?.tag?] | index("nvpanel-block"))
     and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
-  base_core='
-       (.api.tag=="api")
-    and ((.api.services // []) | index("StatsService"))
-    and ([.inbounds[]?.tag?] | index("api"))
-    and ([.outbounds[]?.tag?] | index("api"))
-    and ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api"))'
 
-  # Le cache n'est valable que si le coeur complet existe réellement.
   if [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && jq -e "$core" "$XCONF" >/dev/null 2>&1; then
     return 0
   fi
 
-  # Cas courant des installations déjà fonctionnelles : StatsService + API
-  # existent, mais RoutingService / nvpanel-block manquent. Les diagnostics
-  # Debian 26.6.1 et Ubuntu 26.3.27 confirment que ces deux ajouts seuls sont
-  # valides. On ne touche alors à rien d'autre dans config.json.
-  if jq -e "$base_core" "$XCONF" >/dev/null 2>&1 && ! jq -e "$core" "$XCONF" >/dev/null 2>&1; then
-    tmp=$(mktemp) || return 1
-    jq '
-        .api.services = (((.api.services // []) + ["StatsService","RoutingService"]) | unique)
-      | .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
-    ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
-    a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
-    b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
-    [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$tmp"; return 1; }
-    if command -v xray >/dev/null 2>&1; then
-      xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
-    fi
-    mv "$tmp" "$XCONF"
-    systemctl restart xray >/dev/null 2>&1
-    rm -f "$stamp"
-    sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
-  fi
-
-  # Si le cœur API est déjà présent, l'absence éventuelle du support XFF ne
-  # doit JAMAIS empêcher la création d'un compte. On tente l'amélioration IP
-  # réelle seulement si le binaire Xray installé l'accepte.
-  if jq -e "$core" "$XCONF" >/dev/null 2>&1; then
-    if ! jq -e '[.inbounds[]? | select(.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") | (.streamSettings.sockopt.trustedXForwardedFor // []) | index("127.0.0.1")] | all' "$XCONF" >/dev/null 2>&1; then
-      opt=$(mktemp) || { printf '%s\n' "$sig" > "$stamp" 2>/dev/null; return 0; }
-      jq '[.inbounds[] | if (.tag=="vmess-in" or .tag=="vless-in" or .tag=="trojan-in") then .streamSettings=(.streamSettings//{}) | .streamSettings.sockopt=(.streamSettings.sockopt//{}) | .streamSettings.sockopt.trustedXForwardedFor=["127.0.0.1"] else . end] as $x | .inbounds=$x' "$XCONF" > "$opt" 2>/dev/null || true
-      if [ -s "$opt" ]; then
-        a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
-        b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$opt" 2>/dev/null)
-        if [ -n "$a" ] && [ "$a" = "$b" ] && { ! command -v xray >/dev/null 2>&1 || xray run -test -c "$opt" >/dev/null 2>&1; }; then
-          mv "$opt" "$XCONF"
-          # Purge uniquement le cache d'IP Xray après la migration XFF : les
-          # comptes et leurs limites ne sont pas touchés.
-          : > "$XIPSTATE"
-          systemctl restart xray >/dev/null 2>&1
-          sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null)
-        else
-          rm -f "$opt"
-        fi
-      else
-        rm -f "$opt"
-      fi
-    fi
-    printf '%s\n' "$sig" > "$stamp" 2>/dev/null || true
-    return 0
-  fi
-
-  # Configuration ancienne : ajoute seulement le cœur API/statistiques. Le
-  # patch XFF est volontairement séparé afin qu'une ancienne version de Xray
-  # puisse continuer à créer/servir des comptes sans ERR xapi.
   tmp=$(mktemp) || return 1
   jq '
       .stats = (.stats // {})
     | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService","RoutingService"]) | unique))
     | .policy = (.policy // {})
     | .policy.levels = (.policy.levels // {})
-    | .policy.levels."0" = ((.policy.levels."0" // {}) + { "statsUserUplink": true, "statsUserDownlink": true })
+    | .policy.levels."0" = ((.policy.levels."0" // {}) + {"statsUserUplink":true,"statsUserDownlink":true})
     | .inbounds = (if ([.inbounds[]?.tag?] | index("api")) then .inbounds else [{"tag":"api","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}}] + .inbounds end)
     | .outbounds = (if ([.outbounds[]?.tag?] | index("api")) then .outbounds else .outbounds + [{"protocol":"freedom","tag":"api"}] end)
     | .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
@@ -124,16 +64,43 @@ _xapi_ensure(){
     | .routing.rules = (.routing.rules // [])
     | if ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api")) then . else .routing.rules += [{"type":"field","inboundTag":["api"],"outboundTag":"api"}] end
   ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+
+  # Garde-fou : aucun client existant ne doit disparaître pendant le patch.
   a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
   b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
   [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$tmp"; return 1; }
+
   if command -v xray >/dev/null 2>&1; then
     xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
   fi
-  mv "$tmp" "$XCONF"
-  systemctl restart xray >/dev/null 2>&1
-  rm -f "$stamp"
-  _xapi_ensure
+
+  bak="$XCONF.before-xapi-v3"
+  cp -a "$XCONF" "$bak" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$XCONF" || { rm -f "$tmp"; return 1; }
+
+  if ! systemctl restart xray >/dev/null 2>&1; then
+    cp -a "$bak" "$XCONF" 2>/dev/null
+    systemctl restart xray >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  # Ne déclare le cœur prêt que lorsque RoutingService répond réellement.
+  if command -v xray >/dev/null 2>&1; then
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      xray api lsrules --server="$XAPI" >/dev/null 2>&1 && break
+      sleep 0.2
+    done
+    if ! xray api lsrules --server="$XAPI" >/dev/null 2>&1; then
+      cp -a "$bak" "$XCONF" 2>/dev/null
+      systemctl restart xray >/dev/null 2>&1 || true
+      return 1
+    fi
+  fi
+
+  sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
+  jq -e "$core" "$XCONF" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$sig" > "$stamp" 2>/dev/null || true
+  return 0
 }
 
 # Relève les compteurs de trafic de chaque compte et en déduit son activité.
