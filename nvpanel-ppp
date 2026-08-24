@@ -31,15 +31,16 @@ _limit_set(){
 _limit_del(){ local p="$1" u="$2" t; t=$(mktemp) || return 0; awk -F'|' -v p="$p" -v u="$u" '!($1==p&&$2==u)' "$PLIM" 2>/dev/null > "$t"; mv "$t" "$PLIM"; }
 
 # PPP appelle automatiquement ip-up/ip-down à chaque vraie session. Ces deux
-# hooks enregistrent compte + interface + IP distante et coupent uniquement la
-# nouvelle session qui dépasserait la limite configurée pour CE compte.
+# hooks enregistrent compte + interface + IP distante. Si une NOUVELLE IP fait
+# dépasser la limite, le compte complet est supprimé et toutes ses sessions
+# sont coupées (politique RHAFF demandée).
 _ensure_hooks(){
   local up=/etc/ppp/ip-up.d/90-nvpanel-device-limit down=/etc/ppp/ip-down.d/90-nvpanel-device-limit
   mkdir -p /etc/ppp/ip-up.d /etc/ppp/ip-down.d
-  if ! grep -q 'RHAFF_PPP_LIMIT_V2' "$up" 2>/dev/null; then
+  if ! grep -q 'RHAFF_PPP_LIMIT_V3_DELETE_ON_EXCESS' "$up" 2>/dev/null; then
     cat > "$up" <<'EOF'
 #!/bin/sh
-# RHAFF_PPP_LIMIT_V2
+# RHAFF_PPP_LIMIT_V3_DELETE_ON_EXCESS
 LIM=/etc/nvpanel/db/ppp_limit
 STATE=/run/nvpanel-ppp-sessions
 user=${PEERNAME:-}
@@ -74,6 +75,10 @@ if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then
   exists=$(awk -F'|' -v p="$proto" -v u="$user" -v i="$ip" '$1==p&&$2==u&&$4==i{f=1} END{print f+0}' "$STATE")
   n=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{a[$4]=1} END{for(i in a)c++; print c+0}' "$STATE")
   if [ "$exists" -eq 0 ] && [ "$n" -ge "$lim" ]; then
+    # Le nouvel appareil ferait passer le compte au-dessus de sa limite :
+    # suppression complète du compte, puis coupure de la session déclenchante.
+    /usr/local/bin/nvpanel-ppp del "$proto" "$user" >/dev/null 2>&1
+    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$lim" "$((n+1))" >> /var/log/nvpanel-device-delete.log 2>/dev/null
     kill "$pid" 2>/dev/null
     exit 0
   fi

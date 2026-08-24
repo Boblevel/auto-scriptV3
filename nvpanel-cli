@@ -376,104 +376,71 @@ _x_created_del(){
   mv "$t" "$XCREATED"
 }
 
-# Applique les dépassements à chaud avec RoutingService : une règle combine
-# l'email Xray + l'inbound exact + l'IP excédentaire, donc elle ne bloque ni
-# les autres comptes derrière le même NAT ni les autres protocoles.
+# Applique la politique de dépassement : dès que le nombre d'IP/appareils
+# distincts observés dépasse la limite, le compte Xray/SS complet est supprimé.
 xlimit_run(){
-  command -v xray >/dev/null 2>&1 || return 0
+  # RHAFF_XLIMIT_V6_DELETE_ON_EXCESS
+  # Politique demandée : si un compte dépasse sa limite d'appareils, le
+  # compte COMPLET est supprimé. Aucune règle RoutingService/API n'est
+  # nécessaire : la décision repose uniquement sur les IP réellement vues
+  # dans les logs Xray, déjà suivies par _x_ip_refresh_sync.
   command -v jq >/dev/null 2>&1 || return 0
-  _xapi_ensure || return 0
+  [ -f "$XCONF" ] || return 0
   _x_ip_refresh_sync
 
-  # RHAFF_XLIMIT_V5_STATIC
-  # Les IP excédentaires deviennent des règles de routing STATIQUES. Cela
-  # évite totalement RoutingService/adrules, qui était le maillon défaillant
-  # sur les VPS testés. Une modification du jeu de règles provoque un seul
-  # redémarrage Xray ; si rien ne change, aucun redémarrage n'est effectué.
-  local now cutoff desired rules tmp a b proto name lim db row ex fl tag ips extras fp it ipsjson
-  now=$(date +%s); cutoff=$((now-300)); desired=$(mktemp) || return 0
+  local offenders proto name lim db row ex fl count tmp changed=0 today
+  offenders=$(mktemp) || return 0
+  today=$(date +%F)
 
   while IFS='|' read -r proto name lim; do
     [ -n "$proto" ] && [ -n "$name" ] || continue
     case "$lim" in ''|*[!0-9]*) lim=0 ;; esac
+    [ "$lim" -gt 0 ] 2>/dev/null || continue
     xmeta "$proto" || continue
-    db="$XDB"; row=$(awk -v n="$name" '$1=="###"&&$2==n{print;exit}' "$db" 2>/dev/null)
+    db="$XDB"
+    row=$(awk -v n="$name" '$1=="###"&&$2==n{print;exit}' "$db" 2>/dev/null)
     [ -n "$row" ] || continue
-    ex=$(printf '%s\n' "$row" | awk '{print $4}'); fl=$(printf '%s\n' "$row" | awk '{print $5}')
-    [ "$fl" = L ] && lim=0
-    [ -n "$ex" ] && { [ "$ex" \< "$(date +%F)" ] || [ "$ex" = "$(date +%F)" ]; } && lim=0
-    tag="nvlim-$(printf '%s' "$proto|$name" | sha256sum | cut -c1-16)"
-    ips=$(awk -F'|' -v p="$proto" -v n="$name" -v c="$cutoff" '$1==p&&$2==n&&$5>=c{print $4"|"$3}' "$XIPSTATE" 2>/dev/null | sort -t'|' -k1,1n -k2,2 -u | cut -d'|' -f2-)
-    if [ "$lim" -gt 0 ] 2>/dev/null; then
-      extras=$(printf '%s\n' "$ips" | awk -v l="$lim" 'NF{c++; if(c>l) print}')
-    else
-      extras=""
-    fi
-    fp=$(printf '%s\n' "$extras" | awk 'NF' | sort -u | paste -sd, -)
-    printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$desired"
+    ex=$(printf '%s\n' "$row" | awk '{print $4}')
+    fl=$(printf '%s\n' "$row" | awk '{print $5}')
+    [ "$fl" = "L" ] && continue
+    [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; } && continue
+    count=$(_x_ip_count "$proto" "$name"); count=${count:-0}
+    [ "$count" -gt "$lim" ] 2>/dev/null || continue
+    printf '%s|%s|%s|%s\n' "$proto" "$name" "$lim" "$count" >> "$offenders"
   done < "$XLIMDB"
 
-  rules=$(mktemp) || { rm -f "$desired"; return 0; }
-  printf '[]\n' > "$rules"
-  while IFS='|' read -r tag proto name fp; do
-    [ -n "$tag" ] && [ -n "$fp" ] || continue
+  [ -s "$offenders" ] || { rm -f "$offenders"; return 0; }
+
+  # Retire tous les comptes fautifs dans une seule copie de config puis ne
+  # redémarre Xray qu'une fois. Le nombre des autres clients est préservé.
+  tmp=$(mktemp) || { rm -f "$offenders"; return 0; }
+  cp -a "$XCONF" "$tmp" 2>/dev/null || { rm -f "$tmp" "$offenders"; return 0; }
+  while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
-    it="$TAG"
-    ipsjson=$(printf '%s' "$fp" | tr ',' '\n' | jq -Rsc 'split("\n")|map(select(length>0))')
-    jq --arg rt "$tag" --arg u "$name" --arg it "$it" --argjson src "$ipsjson" \
-      '. + [{type:"field",ruleTag:$rt,inboundTag:[$it],user:[$u],sourceIP:$src,outboundTag:"nvpanel-block"}]' \
-      "$rules" > "$rules.tmp" 2>/dev/null && mv "$rules.tmp" "$rules"
-  done < "$desired"
+    jq --arg tag "$TAG" --arg e "$name" \
+      '(.inbounds[] | select(.tag==$tag) | .settings.clients) |= map(select(.email != $e))' \
+      "$tmp" > "$tmp.next" 2>/dev/null || { rm -f "$tmp.next"; continue; }
+    mv "$tmp.next" "$tmp"
+    changed=1
+  done < "$offenders"
 
-  tmp=$(mktemp) || { rm -f "$desired" "$rules"; return 0; }
-  jq --slurpfile nr "$rules" '
-      .outbounds = (if ([.outbounds[]?.tag?] | index("nvpanel-block")) then .outbounds else .outbounds + [{"protocol":"blackhole","tag":"nvpanel-block"}] end)
-    | .routing = (.routing // {})
-    | .routing.rules = ((.routing.rules // []) | map(select(((.ruleTag // "") | startswith("nvlim-")) | not))) + $nr[0]
-  ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$desired" "$rules"; return 0; }
+  [ "$changed" -eq 1 ] || { rm -f "$tmp" "$offenders"; return 0; }
+  command -v xray >/dev/null 2>&1 && ! xray run -test -c "$tmp" >/dev/null 2>&1 && { rm -f "$tmp" "$offenders"; return 0; }
+  cp -a "$XCONF" "$XCONF.before-device-delete" 2>/dev/null || true
+  mv "$tmp" "$XCONF" || { rm -f "$tmp" "$offenders"; return 0; }
 
-  a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
-  b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
-  if [ -z "$a" ] || [ "$a" != "$b" ] || ! xray run -test -c "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp" "$desired" "$rules"
-    return 0
-  fi
-
-  if ! cmp -s "$tmp" "$XCONF"; then
-    cp -a "$XCONF" "$XCONF.before-xlimit-v5" 2>/dev/null || { rm -f "$tmp" "$desired" "$rules"; return 0; }
-    mv "$tmp" "$XCONF" || { rm -f "$tmp" "$desired" "$rules"; return 0; }
-    mkdir -p /etc/nvpanel/xray
-    cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
-    if ! systemctl restart xray >/dev/null 2>&1; then
-      cp -a "$XCONF.before-xlimit-v5" "$XCONF" 2>/dev/null
-      systemctl restart xray >/dev/null 2>&1 || true
-      rm -f "$desired" "$rules"
-      return 0
-    fi
-    rm -f /run/nvpanel-xapi.ok /run/nvpanel-xip.stamp
-  else
-    rm -f "$tmp"
-  fi
-
-  # État visible par le panel : uniquement les règles effectivement calculées.
-  : > "$XBLOCKSTATE.tmp"
-  while IFS='|' read -r tag proto name fp; do
-    [ -n "$tag" ] || continue
-    printf '%s|%s|%s|%s\n' "$tag" "$proto" "$name" "$fp" >> "$XBLOCKSTATE.tmp"
-  done < "$desired"
-  mv "$XBLOCKSTATE.tmp" "$XBLOCKSTATE" 2>/dev/null
-  rm -f "$desired" "$rules"
+  while IFS='|' read -r proto name lim count; do
+    xmeta "$proto" || continue
+    sed -i "/^### $name /d" "$XDB"
+    _x_limit_del "$proto" "$name"
+    _x_created_del "$proto" "$name"
+    awk -F'|' -v p="$proto" -v n="$name" '!($1==p&&$2==n)' "$XIPSTATE" > "$XIPSTATE.tmp" 2>/dev/null && mv "$XIPSTATE.tmp" "$XIPSTATE"
+    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$name" "$lim" "$count" >> /var/log/nvpanel-device-delete.log 2>/dev/null || true
+  done < "$offenders"
+  rm -f "$offenders"
+  systemctl restart xray >/dev/null 2>&1 || true
 }
-_today(){ date +%Y-%m-%d; }
 
-# udp-custom (mode « passwords ») ne lit pas /etc/shadow : il cherche les
-# identifiants dans le champ commentaire de /etc/passwd, au format
-# « limite_de_connexions,mot_de_passe ». Sans cette inscription, le module UDP
-# ne reconnaît aucun compte créé par le panel.
-# Deux caractères sont interdits : « : » sépare les champs de /etc/passwd et
-# « , » sépare la limite du mot de passe. Un mot de passe qui en contient est
-# laissé de côté — le compte reste parfaitement utilisable en SSH, seul l'UDP
-# ne le reconnaîtra pas.
 _udp_cred(){ # $1 = compte  $2 = mot de passe  $3 = limite
   command -v usermod >/dev/null 2>&1 || return 0
   case "$2" in *:*|*,*) return 0 ;; esac
