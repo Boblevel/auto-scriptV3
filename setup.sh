@@ -44,8 +44,8 @@ clear
 printf "${CYN}"
 cat <<'ART'
    ┌────────────────────────────────────────────────────┐
-   │        R H A F F   S E R V I C E                     │
-   │        Installation                                  │
+   │        R H A F F   S E R V I C E                   │
+   │        Installation                                │
    └────────────────────────────────────────────────────┘
 ART
 printf "${NC}\n"
@@ -297,9 +297,9 @@ clear
 printf "${GRN}"
 cat <<'DONE'
    ┌──────────────────────────────────────────────────┐
-   │                                                    │
-   │      ✔   R H A F F   S E R V I C E   installé      │
-   │                                                    │
+   │                                                  │
+   │      ✔   R H A F F   S E R V I C E   installé    │
+   │                                                  │
    └──────────────────────────────────────────────────┘
 DONE
 printf "${NC}\n"

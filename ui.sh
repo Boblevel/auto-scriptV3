@@ -31,7 +31,10 @@ center() {
   local len=${#txt}
   local pad=$(( (W - len) / 2 ))
   local rpad=$(( W - len - pad ))
-  printf "${CYN}┃${NC}%*s${color}%s${NC}%*s${CYN}┃${NC}\n" "$pad" "" "$txt" "$rpad" ""
+  printf "${CYN}┃${NC}%*s${color}%s${NC}%*s" "$pad" "" "$txt" "$rpad" ""
+  # La bordure droite revient toujours à sa colonne fixe, même si un emoji
+  # est affiché sur deux colonnes par la police du terminal mobile.
+  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
 
 # Menu : entry "01" "🔒" "Label"  (avec emoji)  ou  entry "1" "Label"

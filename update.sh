@@ -35,7 +35,7 @@ printf "${CYN}"
 cat <<'ART'
    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
    ┃      R H A F F   S E R V I C E           ┃
-   ┃         M I S E   À   J O U R             ┃
+   ┃         M I S E   À   J O U R            ┃
    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ART
 printf "${NC}\n"
@@ -268,7 +268,7 @@ if [ "$CHANGED" -eq 0 ] && [ -z "$FAILED" ]; then
   printf "${GRN}"
   cat <<'UPTODATE'
    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃      ✔   Le script est déjà à jour        ┃
+   ┃      ✔   Le script est déjà à jour       ┃
    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 UPTODATE
   printf "${NC}\n"
@@ -277,7 +277,7 @@ else
   printf "${GRN}"
   cat <<'DONE'
    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ┃       ✔   Mise à jour terminée            ┃
+   ┃       ✔   Mise à jour terminée           ┃
    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 DONE
   printf "${NC}\n"
@@ -306,10 +306,11 @@ while IFS= read -r -s -t 0.01 -n 512 _ 2>/dev/null; do :; done
 # Lancé depuis le panel : signale au menu principal qu'il doit se remplacer
 # par la nouvelle version une fois le sous-menu Paramètres refermé. On évite
 # ainsi tout empilement de menus tout en rechargeant immédiatement les fichiers.
-if [ -n "$FAILED$CONFIG_FAILED" ]; then
-  exit 1
-elif [ -n "${NVPANEL_UI:-}" ]; then
+_UPDATE_RC=0
+[ -n "$FAILED$CONFIG_FAILED" ] && _UPDATE_RC=1
+if [ -n "${NVPANEL_UI:-}" ]; then
   : > /tmp/nvpanel-relaunch
-  exit 0
+  exit "$_UPDATE_RC"
 fi
+[ "$_UPDATE_RC" -eq 0 ] || exit "$_UPDATE_RC"
 exec menu

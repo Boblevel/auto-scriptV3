@@ -52,10 +52,14 @@ traffic_report(){
 
   echo
   printf "   ${CYN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl0" $((w-${#lbl0})) "" "$(_hr "${todaysum:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
-  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC} ${CYN}┃${NC}\n" "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC}  " "$lbl0" $((w-${#lbl0})) "" "$(_hr "${todaysum:-0}")"
+  printf "\033[41G${CYN}┃${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC}  " "$lbl1" $((w-${#lbl1})) "" "$(_hr "${week:-0}")"
+  printf "\033[41G${CYN}┃${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC}  " "$lbl2" $((w-${#lbl2})) "" "$(_hr "${month:-0}")"
+  printf "\033[41G${CYN}┃${NC}\n"
+  printf "   ${CYN}┃${NC} ${GRY}▸${NC} %s%*s${WHT}%11s${NC}  " "$lbl3" $((w-${#lbl3})) "" "$(_hr "${yearsum:-0}")"
+  printf "\033[41G${CYN}┃${NC}\n"
   printf "   ${CYN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}\n"
   echo
   # Explique pourquoi semaine/mois/année peuvent afficher le même chiffre :
@@ -464,8 +468,9 @@ settings_row(){
   # printf %-21s compte les OCTETS : les accents (É, È, À…) décalent alors
   # les séparateurs et la bordure droite. On tronque/padde en caractères réels.
   c1=${t1:0:21}; c2=${t2:0:21}
-  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %s%*s ${CYN}│${NC} ${GRN}[%02d]${NC} %s%*s${CYN}┃${NC}\n" \
+  printf "${CYN}┃${NC} ${GRN}[%02d]${NC} %s%*s ${CYN}│${NC} ${GRN}[%02d]${NC} %s%*s" \
     "$n1" "$c1" $((21-${#c1})) "" "$n2" "$c2" $((21-${#c2})) ""
+  printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
 }
 settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
 

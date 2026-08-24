@@ -82,7 +82,9 @@ _xapi_ensure(){
     return 0
   fi
 
-  tmp=$(mktemp "${XCONF}.xapi.XXXXXX") || return 1
+  # Xray déduit le format depuis l'extension : le temporaire doit finir en
+  # .json, sinon « xray run -test » répond « Failed to get format ».
+  tmp=$(mktemp "${XCONF}.xapi.XXXXXX.json") || return 1
   jq '
       .stats = (.stats // {})
     | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService"]) | unique))
@@ -465,7 +467,7 @@ xlimit_run(){
 
   # Retire tous les comptes fautifs dans une seule copie de config puis ne
   # redémarre Xray qu'une fois. Le nombre des autres clients est préservé.
-  tmp=$(mktemp "${XCONF}.device-lock.XXXXXX") || { rm -f "$offenders"; return 0; }
+  tmp=$(mktemp "${XCONF}.device-lock.XXXXXX.json") || { rm -f "$offenders"; return 0; }
   cp -a "$XCONF" "$tmp" 2>/dev/null || { rm -f "$tmp" "$offenders"; return 0; }
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
@@ -566,7 +568,7 @@ _xconf_commit(){ # fichier temporaire déjà construit
 
 _xconf_add(){ # objet client JSON, nom à vérifier
   local client="$1" name="$2" tmp
-  tmp=$(mktemp "${XCONF}.tmp.XXXXXX") || return 1
+  tmp=$(mktemp "${XCONF}.tmp.XXXXXX.json") || return 1
   jq --arg tag "$TAG" --arg key "$CLIENTS_KEY" --argjson client "$client" \
     '(.inbounds[] | select(.tag==$tag) | .settings[$key]) |= ((. // []) + [$client])' \
     "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
@@ -576,7 +578,7 @@ _xconf_add(){ # objet client JSON, nom à vérifier
 
 _xconf_remove(){ # nom du compte
   local name="$1" tmp
-  tmp=$(mktemp "${XCONF}.tmp.XXXXXX") || return 1
+  tmp=$(mktemp "${XCONF}.tmp.XXXXXX.json") || return 1
   jq --arg tag "$TAG" --arg key "$CLIENTS_KEY" --arg e "$name" \
     '(.inbounds[] | select(.tag==$tag) | .settings[$key]) |= ((. // []) | map(select(.email != $e)))' \
     "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }

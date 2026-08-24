@@ -125,7 +125,9 @@ fi
 # Met à niveau sans perte les configurations des versions précédentes : les
 # comptes Shadowsocks multi-utilisateurs sont dans "users" (schéma Xray), et
 # les trois backends WebSocket ne doivent être accessibles que via nginx.
-_xcfg_tmp=$(mktemp "${XDIR}/.config.json.XXXXXX") || { err "Impossible de préparer la configuration Xray."; exit 1; }
+# Xray choisit le lecteur JSON grâce à l'extension du fichier. Un temporaire
+# sans suffixe .json est refusé même si son contenu JSON est valide.
+_xcfg_tmp=$(mktemp "${XDIR}/.config.XXXXXX.json") || { err "Impossible de préparer la configuration Xray."; exit 1; }
 _xcfg_changed=0
 jq --arg sk "$SSKEY" '
   .log = ((.log // {}) + {"access":"/var/log/xray/access.log","error":"/var/log/xray/error.log"})
