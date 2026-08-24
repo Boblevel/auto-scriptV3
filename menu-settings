@@ -6,8 +6,18 @@ source /etc/nvpanel/lib/ui.sh
 ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 BKDIR=/root
+umask 077
 
 header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
+valid_domain(){
+  local d="$1" label
+  [ "${#d}" -le 253 ] && [[ "$d" == *.* ]] && [[ "$d" != *..* ]] || return 1
+  IFS='.' read -r -a _labels <<< "$d"
+  for label in "${_labels[@]}"; do
+    [ "${#label}" -ge 1 ] && [ "${#label}" -le 63 ] || return 1
+    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || return 1
+  done
+}
 
 traffic_report(){
   local LC_ALL=C.UTF-8
@@ -64,12 +74,11 @@ set_domain(){
   ask " Domaine complet (ex. vpn.mondomaine.com) : " d
   d=$(printf '%s' "$d" | tr -d '\r\n\t ' | tr 'A-Z' 'a-z')
   [ -z "$d" ] && { warn "Inchangé"; pause; return; }
-  # Un domaine doit contenir au moins un point : « alfredtech » seul est invalide
-  case "$d" in
-    *.*) ;;
-    *) err "Domaine incomplet : il manque l'extension (ex. $d.mondomaine.com)."; pause; return ;;
-  esac
-  echo "$d" > /etc/nvpanel/domain
+  valid_domain "$d" || { err "Domaine invalide (FQDN attendu, ex. vpn.mondomaine.com)."; pause; return; }
+  local old_domain
+  old_domain=$(cat /etc/nvpanel/domain 2>/dev/null)
+  printf '%s\n' "$d" > /etc/nvpanel/domain
+  chmod 600 /etc/nvpanel/domain 2>/dev/null
   ok "Domaine enregistré : $d"
   echo
 
@@ -86,44 +95,133 @@ set_domain(){
   fi
   if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
     printf "${CYN}➜${NC} Mise à jour de la façade web…\n"
-    /usr/local/bin/install-xray auto >/dev/null 2>&1
-    ok "Façade web mise à jour."
+    if /usr/local/bin/install-xray auto >/dev/null 2>&1; then
+      ok "Façade web mise à jour."
+    else
+      if [ -n "$old_domain" ]; then printf '%s\n' "$old_domain" > /etc/nvpanel/domain; else rm -f /etc/nvpanel/domain; fi
+      /usr/local/bin/install-xray auto >/dev/null 2>&1 || true
+      if [ -n "$old_domain" ]; then
+        /usr/local/bin/install-slowdns auto "ns-$old_domain" >/dev/null 2>&1 || true
+      else
+        systemctl stop nvpanel-slowdns >/dev/null 2>&1 || true
+        iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+        iptables -D INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
+        command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+      fi
+      err "La façade web a refusé le nouveau domaine : modification annulée."
+      pause; return
+    fi
+  fi
+  if [ -f "/etc/letsencrypt/live/$d/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/$d/privkey.pem" ]; then
+    touch /etc/nvpanel/tls_on; chmod 600 /etc/nvpanel/tls_on 2>/dev/null
+    if [ -x /usr/local/bin/nvpanel-hysteria ] && grep -q '^### ' /etc/nvpanel/db/hysteria 2>/dev/null; then
+      /usr/local/bin/nvpanel-hysteria rebuild >/dev/null 2>&1 \
+        || warn "Hysteria2 n'a pas pu appliquer le certificat de ce domaine."
+    fi
+    if systemctl is-active --quiet nvpanel-sstp 2>/dev/null && [ -x /usr/local/bin/install-sstp ]; then
+      /usr/local/bin/install-sstp auto >/dev/null 2>&1 \
+        || warn "SSTP n'a pas pu appliquer le certificat de ce domaine."
+    fi
+  else
+    rm -f /etc/nvpanel/tls_on
+    warn "Le TLS officiel doit être réactivé pour ce nouveau domaine (option 2)."
   fi
   echo
   printf "   ${YLW}Les comptes déjà créés doivent être ré-envoyés (option « Revoir un compte »).${NC}\n"
   pause
 }
 change_port(){
-  header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$(grep -oP '^DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1 || echo '?')"
+  local old backup fw_added=0 fw_ok=1
+  old=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null); old=${old:-143}
+  header; printf " ${GRY}Port Dropbear actuel :${NC} %s\n" "$old"
   ask " Nouveau port Dropbear : " p
-  [[ "$p" =~ ^[0-9]+$ ]] || { err "Port invalide"; pause; return; }
-  if grep -q DROPBEAR_PORT /etc/default/dropbear 2>/dev/null; then
+  [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { err "Port invalide (1 à 65535)."; pause; return; }
+  if [ "$p" != "$old" ] && ss -H -ltn 2>/dev/null | awk -v p=":$p" '$4 ~ (p "$"){f=1} END{exit f?0:1}'; then
+    err "Le port $p est déjà utilisé par un autre service."; pause; return
+  fi
+  backup=$(mktemp) || { err "Sauvegarde temporaire impossible."; pause; return; }
+  cp -a /etc/default/dropbear "$backup" 2>/dev/null || { rm -f "$backup"; err "Configuration Dropbear introuvable."; pause; return; }
+  if grep -q '^DROPBEAR_PORT=' /etc/default/dropbear 2>/dev/null; then
     sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$p/" /etc/default/dropbear
   else echo "DROPBEAR_PORT=$p" >> /etc/default/dropbear; fi
-  systemctl restart dropbear 2>/dev/null; ok "Port Dropbear : $p"; pause
+  if systemctl restart dropbear >/dev/null 2>&1 && systemctl is-active --quiet dropbear \
+     && ss -H -ltn 2>/dev/null | awk -v p=":$p" '$4 ~ (p "$"){f=1} END{exit f?0:1}'; then
+    if ! iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null; then
+      iptables -I INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null && fw_added=1 || fw_ok=0
+    fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+      ufw allow "$p/tcp" >/dev/null 2>&1 || fw_ok=0
+    fi
+    command -v netfilter-persistent >/dev/null 2>&1 \
+      && netfilter-persistent save >/dev/null 2>&1 || fw_ok=0
+    if [ "$fw_ok" != 1 ]; then
+      [ "$fw_added" = 1 ] && iptables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null
+      if [ "$p" != "$old" ] && command -v ufw >/dev/null 2>&1; then
+        ufw --force delete allow "$p/tcp" >/dev/null 2>&1
+      fi
+      cp -a "$backup" /etc/default/dropbear 2>/dev/null; rm -f "$backup"
+      systemctl restart dropbear >/dev/null 2>&1 || true
+      err "Pare-feu non appliqué ou non persistant : ancien port $old restauré."
+      pause; return
+    fi
+    if [ "$p" != "$old" ] && [ "$old" != 22 ]; then
+      iptables -D INPUT -p tcp --dport "$old" -j ACCEPT 2>/dev/null
+      command -v ufw >/dev/null 2>&1 && ufw --force delete allow "$old/tcp" >/dev/null 2>&1
+    fi
+    netfilter-persistent save >/dev/null 2>&1 \
+      || warn "Le nouveau port est persistant, mais l'ancienne règle de pare-feu pourra réapparaître au redémarrage."
+    rm -f "$backup"
+    ok "Port Dropbear : $p"
+  else
+    cp -a "$backup" /etc/default/dropbear 2>/dev/null; rm -f "$backup"
+    systemctl restart dropbear >/dev/null 2>&1 || true
+    err "Dropbear n'a pas démarré sur $p : ancien port $old restauré."
+  fi
+  pause
 }
 backup_now(){
-  header; local f="$BKDIR/rhaff-backup-$(date +%F-%H%M).tar.gz"
-  tar czf "$f" /etc/nvpanel /usr/local/etc/xray /etc/wireguard 2>/dev/null
-  ok "Sauvegarde créée : $f"; pause
+  header; local f="$BKDIR/rhaff-backup-$(date +%F-%H%M).tar.gz" paths=()
+  [ -e /etc/nvpanel ] && paths+=(etc/nvpanel)
+  [ -e /usr/local/etc/xray ] && paths+=(usr/local/etc/xray)
+  [ -e /etc/wireguard/wg0.conf ] && paths+=(etc/wireguard/wg0.conf)
+  [ "${#paths[@]}" -gt 0 ] || { err "Aucune donnée du panel à sauvegarder."; pause; return; }
+  if tar czf "$f" -C / "${paths[@]}" 2>/dev/null && tar tzf "$f" >/dev/null 2>&1; then
+    chmod 600 "$f" 2>/dev/null; ok "Sauvegarde créée : $f"
+  else
+    rm -f "$f"; err "La sauvegarde a échoué."
+  fi
+  pause
 }
 restore_data(){
   header; local files=("$BKDIR"/rhaff-backup-*.tar.gz)
   [ -e "${files[0]}" ] || { err "Aucune sauvegarde trouvée"; pause; return; }
   local i=1; for f in "${files[@]}"; do printf "  ${GRN}%s)${NC} %s\n" "$i" "$(basename "$f")"; i=$((i+1)); done
   ask " Numéro à restaurer : " n
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#files[@]}" ] || { err "Choix invalide"; pause; return; }
   local sel="${files[$((n-1))]}"
   [ -f "$sel" ] || { err "Choix invalide"; pause; return; }
-  tar xzf "$sel" -C / && ok "Restauré depuis $(basename "$sel")"; pause
+  tar tzf "$sel" >/dev/null 2>&1 || { err "Archive de sauvegarde corrompue."; pause; return; }
+  if tar xzf "$sel" -C /; then ok "Restauré depuis $(basename "$sel")"; else err "Restauration échouée."; fi
+  pause
 }
 ram_usage(){ header; free -h; echo; command -v vnstat >/dev/null && vnstat --oneline 2>/dev/null; pause; }
 swap_ram(){
   header; ask " Taille du swap en Mo (ex. 1024) : " s
-  [[ "$s" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
-  fallocate -l "${s}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$s" 2>/dev/null
-  chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile 2>/dev/null
-  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  ok "Swap de ${s} Mo activé."; pause
+  [[ "$s" =~ ^[0-9]+$ ]] && [ "$s" -ge 64 ] && [ "$s" -le 65536 ] || { err "Taille invalide (64 à 65536 Mo)."; pause; return; }
+  swapon --show=NAME --noheadings 2>/dev/null | grep -qx '/swapfile' && { warn "/swapfile est déjà actif : aucune modification."; pause; return; }
+  [ ! -e /swapfile ] || { err "/swapfile existe déjà : suppression manuelle requise avant remplacement."; pause; return; }
+  local avail; avail=$(df -Pm / | awk 'NR==2{print $4}')
+  [ -n "$avail" ] && [ "$avail" -gt $((s + 256)) ] || { err "Espace disque insuffisant pour ${s} Mo de swap."; pause; return; }
+  fallocate -l "${s}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$s" status=none 2>/dev/null \
+    || { rm -f /swapfile; err "Création du fichier swap échouée."; pause; return; }
+  chmod 600 /swapfile
+  if mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile 2>/dev/null; then
+    grep -qE '^[^#]*[[:space:]]/swapfile[[:space:]]' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    ok "Swap de ${s} Mo activé."
+  else
+    rm -f /swapfile; err "Activation du swap échouée."
+  fi
+  pause
 }
 enable_bbr(){
   header
@@ -190,7 +288,7 @@ restart_services(){
     "nvpanel-badvpn-7300:UDP 7300" "nvpanel-udp-custom:UDP custom" "wg-quick@wg0:WireGuard" \
     "xl2tpd:L2TP" "strongswan-starter:IPsec" "strongswan:IPsec" "pptpd:PPTP" \
     "nvpanel-sstp:SSTP" "hysteria-server:Hysteria2" \
-    "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
+    "nvpanel-limit:Limite SSH" "nvpanel-xlimit:Limite Xray/SS" "nvpanel-bot:Bot Telegram"; do
     s="${pair%%:*}"
     if systemctl is-active --quiet "$s" 2>/dev/null || systemctl is-enabled --quiet "$s" 2>/dev/null; then
       total=$((total+1))
@@ -218,14 +316,16 @@ renew_cert(){
     pause; return
   fi
   printf "${CYN}➜${NC} Vérification et renouvellement…\n\n"
-  local out; out=$(certbot renew --non-interactive 2>&1)
-  systemctl reload nginx >/dev/null 2>&1
-  if echo "$out" | grep -qiE 'not yet due|no renewals|no certificates'; then
+  local out rc; out=$(certbot renew --non-interactive 2>&1); rc=$?
+  [ "$rc" -eq 0 ] && systemctl reload nginx >/dev/null 2>&1
+  if [ "$rc" -ne 0 ]; then
+    err "Le renouvellement a échoué. Lance : certbot renew --dry-run"
+  elif echo "$out" | grep -qiE 'not yet due|no renewals|no certificates'; then
     ok "Certificat encore valide — aucun renouvellement nécessaire."
   elif echo "$out" | grep -qiE 'renewed|congratulations|successfully'; then
     ok "Certificat renouvelé avec succès."
   else
-    ok "Vérification terminée."
+    warn "certbot a terminé sans confirmation explicite de renouvellement."
   fi
   local c d exp
   for c in /etc/letsencrypt/live/*/cert.pem; do
@@ -320,8 +420,8 @@ script_info(){
   printf "   ${CYN}Telegram : %s${NC}\n\n" "$CONTACT"
   printf "   ${GRY}Protocoles :${NC} SSH · SlowDNS · UDP · Vmess · Vless\n"
   printf "   ${GRY}             Trojan · Shadowsocks · WireGuard${NC}\n\n"
-  printf "   ${GRY}Compatible :${NC} Ubuntu 20.04/22.04/24.04 · Debian 10/11/12\n"
-  printf "   ${GRY}Architecture :${NC} x86_64 et ARM (aarch64)\n"
+  printf "   ${GRY}Compatible :${NC} Ubuntu 20.04/22.04/24.04 · Debian 11/12/13\n"
+  printf "   ${GRY}Architecture :${NC} x86_64 et ARM64 (aarch64)\n"
   printf "   ${GRY}RAM minimum :${NC} 1 Go\n"
   pause
 }

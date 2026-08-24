@@ -6,25 +6,50 @@
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+umask 077
 
 AUTO=0; [ "$1" = "auto" ] && AUTO=1
 
 XDIR=/usr/local/etc/xray
 NDIR=/etc/nvpanel/xray
 XPORT=$(cat /etc/nvpanel/xport 2>/dev/null || echo 80)
+case "$XPORT" in ''|*[!0-9]*) XPORT=443 ;; esac
+[ "$XPORT" -ge 1 ] 2>/dev/null && [ "$XPORT" -le 65535 ] 2>/dev/null && [ "$XPORT" -ne 80 ] || XPORT=443
+printf '%s\n' "$XPORT" > /etc/nvpanel/xport
+chmod 600 /etc/nvpanel/xport 2>/dev/null
 mkdir -p "$XDIR" "$NDIR"
 
 [ "$AUTO" = 0 ] && { banner; center " 🟦  INSTALLATION XRAY " "${BOLD}${WHT}"; line; }
 
 if ! command -v xray >/dev/null 2>&1; then
   printf "${CYN}➜${NC} Téléchargement du cœur Xray (dépôt officiel)…\n"
-  bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install >/dev/null 2>&1
+  _installer=$(mktemp) || { err "Impossible de créer un fichier temporaire."; exit 1; }
+  if ! curl -fsSL --connect-timeout 15 --max-time 120 \
+      https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o "$_installer"; then
+    rm -f "$_installer"; err "Téléchargement de Xray impossible."; exit 1
+  fi
+  bash "$_installer" install >/dev/null 2>&1
+  _rc=$?; rm -f "$_installer"
+  [ "$_rc" -eq 0 ] && command -v xray >/dev/null 2>&1 || { err "Installation de Xray échouée."; exit 1; }
 fi
+command -v jq >/dev/null 2>&1 || { err "jq est requis."; exit 1; }
+command -v openssl >/dev/null 2>&1 || { err "openssl est requis."; exit 1; }
 command -v nginx >/dev/null 2>&1 || apt-get install -y nginx >/dev/null 2>&1
+command -v nginx >/dev/null 2>&1 || { err "Installation de nginx échouée."; exit 1; }
 
-# clé serveur Shadowsocks (2022) générée une seule fois
+# clé serveur Shadowsocks (2022) générée une seule fois. Si le fichier local a
+# disparu, on récupère d'abord la clé encore utilisée par config.json afin de
+# ne pas invalider tous les liens clients existants.
+_valid_ss_key(){
+  printf '%s' "$1" | base64 -d >/dev/null 2>&1 || return 1
+  [ "$(printf '%s' "$1" | base64 -d 2>/dev/null | wc -c)" -eq 32 ] 2>/dev/null
+}
 SSKEY=$(cat "$NDIR/ss_key" 2>/dev/null)
-[ -z "$SSKEY" ] && { SSKEY=$(openssl rand -base64 32); echo "$SSKEY" > "$NDIR/ss_key"; }
+if ! _valid_ss_key "$SSKEY"; then
+  SSKEY=$(jq -r '[.inbounds[]? | select(.tag=="ss-in") | .settings.password // empty][0] // empty' "$XDIR/config.json" 2>/dev/null)
+fi
+_valid_ss_key "$SSKEY" || SSKEY=$(openssl rand -base64 32)
+printf '%s\n' "$SSKEY" > "$NDIR/ss_key"
 
 # config de base : 4 entrées, chacune identifiée par un "tag"
 # IMPORTANT : on ne l'écrit QUE si elle n'existe pas encore, pour ne JAMAIS
@@ -48,17 +73,17 @@ cat > "$XDIR/config.json" <<EOF
       "settings": { "address": "127.0.0.1" }
     },
     {
-      "tag": "vmess-in", "port": 8080, "protocol": "vmess",
+      "tag": "vmess-in", "port": 8080, "listen": "127.0.0.1", "protocol": "vmess",
       "settings": { "clients": [] },
       "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" }, "sockopt": { "trustedXForwardedFor": ["X-Real-IP"] } }
     },
     {
-      "tag": "vless-in", "port": 8081, "protocol": "vless",
+      "tag": "vless-in", "port": 8081, "listen": "127.0.0.1", "protocol": "vless",
       "settings": { "clients": [], "decryption": "none" },
       "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" }, "sockopt": { "trustedXForwardedFor": ["X-Real-IP"] } }
     },
     {
-      "tag": "trojan-in", "port": 8082, "protocol": "trojan",
+      "tag": "trojan-in", "port": 8082, "listen": "127.0.0.1", "protocol": "trojan",
       "settings": { "clients": [] },
       "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" }, "sockopt": { "trustedXForwardedFor": ["X-Real-IP"] } }
     },
@@ -67,7 +92,7 @@ cat > "$XDIR/config.json" <<EOF
       "settings": {
         "method": "2022-blake3-aes-256-gcm",
         "password": "$SSKEY",
-        "clients": [],
+        "users": [],
         "network": "tcp,udp"
       }
     }
@@ -81,25 +106,103 @@ cat > "$XDIR/config.json" <<EOF
 EOF
 fi
 
+# Met à niveau sans perte les configurations des versions précédentes : les
+# comptes Shadowsocks multi-utilisateurs sont dans "users" (schéma Xray), et
+# les trois backends WebSocket ne doivent être accessibles que via nginx.
+_xcfg_tmp=$(mktemp "${XDIR}/.config.json.XXXXXX") || { err "Impossible de préparer la configuration Xray."; exit 1; }
+_xcfg_changed=0
+jq --arg sk "$SSKEY" '
+  .log = ((.log // {}) + {"access":"/var/log/xray/access.log","error":"/var/log/xray/error.log"})
+  | .inbounds |= map(
+    if .tag == "ss-in" then
+      .settings.password = $sk
+      | .settings.users = (
+          reduce (((.settings.users // []) + (.settings.clients // []))[]) as $u
+            ([]; if (($u.email // "") != "" and any(.[]; .email == $u.email)) then . else . + [$u] end)
+        )
+      | del(.settings.clients)
+    elif (.tag == "vmess-in" or .tag == "vless-in" or .tag == "trojan-in") then
+      .listen = "127.0.0.1"
+      | .streamSettings = (.streamSettings // {})
+      | .streamSettings.sockopt = ((.streamSettings.sockopt // {}) + {"trustedXForwardedFor":["X-Real-IP"]})
+    else . end
+  )
+' "$XDIR/config.json" > "$_xcfg_tmp" 2>/dev/null || { rm -f "$_xcfg_tmp"; err "Configuration Xray JSON invalide."; exit 1; }
+jq -e '
+  def inbound($tag; $proto; $port):
+    [.inbounds[]? | select(.tag==$tag and .protocol==$proto and .port==$port)] | length == 1;
+  inbound("vmess-in";  "vmess";       8080)
+  and inbound("vless-in";  "vless";       8081)
+  and inbound("trojan-in"; "trojan";      8082)
+  and inbound("ss-in";     "shadowsocks"; 8388)
+' "$_xcfg_tmp" >/dev/null 2>&1 \
+  || { rm -f "$_xcfg_tmp"; err "Configuration Xray incompatible avec les ports du panel."; exit 1; }
+mkdir -p /var/log/xray || { rm -f "$_xcfg_tmp"; err "Création du dossier de journaux Xray impossible."; exit 1; }
+touch /var/log/xray/access.log /var/log/xray/error.log || { rm -f "$_xcfg_tmp"; err "Création des journaux Xray impossible."; exit 1; }
+xray run -test -c "$_xcfg_tmp" >/dev/null 2>&1 || { rm -f "$_xcfg_tmp"; err "La configuration Xray est refusée par le cœur installé."; exit 1; }
+if ! cmp -s "$_xcfg_tmp" "$XDIR/config.json"; then
+  cp -a "$XDIR/config.json" "$XDIR/config.json.before-rhaff-fix" 2>/dev/null || { rm -f "$_xcfg_tmp"; err "Sauvegarde Xray impossible."; exit 1; }
+  chmod 600 "$XDIR/config.json.before-rhaff-fix" 2>/dev/null
+  mv "$_xcfg_tmp" "$XDIR/config.json" || { rm -f "$_xcfg_tmp"; err "Mise à jour Xray impossible."; exit 1; }
+  _xcfg_changed=1
+else
+  rm -f "$_xcfg_tmp"
+fi
+chmod 600 "$XDIR/config.json" "$NDIR/ss_key" 2>/dev/null
+_xray_user=$(systemctl show -p User --value xray 2>/dev/null); _xray_user=${_xray_user:-root}
+if id "$_xray_user" >/dev/null 2>&1; then chown "$_xray_user" /var/log/xray /var/log/xray/access.log /var/log/xray/error.log 2>/dev/null; fi
+chmod 750 /var/log/xray; chmod 640 /var/log/xray/access.log /var/log/xray/error.log 2>/dev/null
+cat > /etc/logrotate.d/nvpanel-xray <<'EOF'
+/var/log/xray/*.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+chmod 644 /etc/logrotate.d/nvpanel-xray 2>/dev/null
+
 systemctl enable xray >/dev/null 2>&1
-systemctl restart xray
+if ! systemctl restart xray >/dev/null 2>&1 || ! systemctl is-active --quiet xray; then
+  if [ "$_xcfg_changed" -eq 1 ] && [ -s "$XDIR/config.json.before-rhaff-fix" ]; then
+    cp -a "$XDIR/config.json.before-rhaff-fix" "$XDIR/config.json" 2>/dev/null
+    systemctl restart xray >/dev/null 2>&1 || true
+  fi
+  err "Xray n'a pas pu démarrer. Consulte : journalctl -u xray"
+  exit 1
+fi
 
 # --- Certificat pour le 443 : Let's Encrypt si dispo, sinon auto-signé ---
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
-if [ -n "$DOMAIN" ] && [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+if [ -n "$DOMAIN" ]; then
+  [[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+    && [ "${#DOMAIN}" -le 253 ] || { err "Domaine invalide dans /etc/nvpanel/domain."; exit 1; }
+fi
+if [ -n "$DOMAIN" ] && [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ] \
+   && [ -f "/etc/letsencrypt/live/$DOMAIN/privkey.pem" ]; then
   CRT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 else
-  if [ ! -s "$NDIR/self.crt" ] || [ ! -s "$NDIR/self.key" ]; then
-    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-      -keyout "$NDIR/self.key" -out "$NDIR/self.crt" \
-      -subj "/CN=${DOMAIN:-rhaffservice}" >/dev/null 2>&1
+  _self_cn=${DOMAIN:-rhaffservice}
+  if [ ! -s "$NDIR/self.crt" ] || [ ! -s "$NDIR/self.key" ] || [ "$(cat "$NDIR/self.cn" 2>/dev/null)" != "$_self_cn" ]; then
+    _crt_tmp=$(mktemp "$NDIR/.self.crt.XXXXXX") || { err "Certificat temporaire impossible."; exit 1; }
+    _key_tmp=$(mktemp "$NDIR/.self.key.XXXXXX") || { rm -f "$_crt_tmp"; err "Clé temporaire impossible."; exit 1; }
+    if ! openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout "$_key_tmp" -out "$_crt_tmp" -subj "/CN=$_self_cn" >/dev/null 2>&1; then
+      rm -f "$_crt_tmp" "$_key_tmp"; err "Génération du certificat auto-signé échouée."; exit 1
+    fi
+    mv "$_key_tmp" "$NDIR/self.key"; mv "$_crt_tmp" "$NDIR/self.crt"
+    printf '%s\n' "$_self_cn" > "$NDIR/self.cn"
+    chmod 600 "$NDIR/self.key" "$NDIR/self.crt" "$NDIR/self.cn" 2>/dev/null
   fi
   CRT="$NDIR/self.crt"; KEY="$NDIR/self.key"
 fi
 
 # --- Façade nginx : 80 (clair) + $XPORT (TLS) → Xray ---------
 mkdir -p /etc/nginx/conf.d /var/www/certbot
-cat > /etc/nginx/nvpanel-ws.conf <<'EOF'
+_ws_tmp=$(mktemp /etc/nginx/.nvpanel-ws.conf.XXXXXX) || { err "Fichier temporaire nginx impossible."; exit 1; }
+if ! cat > "$_ws_tmp" <<'EOF'
 proxy_http_version 1.1;
 proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection "upgrade";
@@ -108,9 +211,61 @@ proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $remote_addr;
 proxy_read_timeout 300s;
 EOF
+then
+  rm -f "$_ws_tmp"; err "Préparation de la façade nginx impossible."; exit 1
+fi
+chmod 644 "$_ws_tmp" 2>/dev/null
 # un seul fichier propre (remplace d'éventuelles anciennes confs)
-rm -f /etc/nginx/conf.d/rhaff-http.conf /etc/nginx/conf.d/rhaff-tls.conf 2>/dev/null
-cat > /etc/nginx/conf.d/rhaff.conf <<EOF
+_ws_backup=$(mktemp "$NDIR/.nvpanel-ws.conf.backup.XXXXXX") || { rm -f "$_ws_tmp"; err "Sauvegarde nginx impossible."; exit 1; }
+_ng_tmp=$(mktemp "$NDIR/.rhaff.conf.XXXXXX") || { rm -f "$_ws_tmp" "$_ws_backup"; err "Fichier temporaire nginx impossible."; exit 1; }
+_ng_backup=$(mktemp "$NDIR/.rhaff.conf.backup.XXXXXX") || { rm -f "$_ws_tmp" "$_ws_backup" "$_ng_tmp"; err "Sauvegarde nginx impossible."; exit 1; }
+_ng_legacy=$(mktemp -d "$NDIR/.nginx-legacy.XXXXXX") || { rm -f "$_ws_tmp" "$_ws_backup" "$_ng_tmp" "$_ng_backup"; err "Sauvegarde des anciennes façades nginx impossible."; exit 1; }
+_ws_had_old=0
+if [ -f /etc/nginx/nvpanel-ws.conf ]; then
+  cp -a /etc/nginx/nvpanel-ws.conf "$_ws_backup" \
+    || { rm -f "$_ws_tmp" "$_ws_backup" "$_ng_tmp" "$_ng_backup"; rmdir "$_ng_legacy" 2>/dev/null; err "Sauvegarde de la façade WebSocket impossible."; exit 1; }
+  _ws_had_old=1
+fi
+_restore_nginx_ws(){
+  if [ "$_ws_had_old" -eq 1 ]; then
+    cp -a "$_ws_backup" /etc/nginx/nvpanel-ws.conf 2>/dev/null
+  else
+    rm -f /etc/nginx/nvpanel-ws.conf
+  fi
+}
+if ! mv "$_ws_tmp" /etc/nginx/nvpanel-ws.conf; then
+  _restore_nginx_ws
+  rm -f "$_ws_tmp" "$_ws_backup" "$_ng_tmp" "$_ng_backup"; rmdir "$_ng_legacy" 2>/dev/null
+  err "Installation de la façade WebSocket impossible."; exit 1
+fi
+_restore_nginx_legacy(){
+  [ -e "$_ng_legacy/sites-enabled-default" ] && mv "$_ng_legacy/sites-enabled-default" /etc/nginx/sites-enabled/default
+  [ -e "$_ng_legacy/rhaff-http.conf" ] && mv "$_ng_legacy/rhaff-http.conf" /etc/nginx/conf.d/rhaff-http.conf
+  [ -e "$_ng_legacy/rhaff-tls.conf" ] && mv "$_ng_legacy/rhaff-tls.conf" /etc/nginx/conf.d/rhaff-tls.conf
+}
+_ng_had_old=0
+if [ -f /etc/nginx/conf.d/rhaff.conf ]; then
+  cp -a /etc/nginx/conf.d/rhaff.conf "$_ng_backup" \
+    || { _restore_nginx_ws; rm -f "$_ws_backup" "$_ng_tmp" "$_ng_backup"; rmdir "$_ng_legacy" 2>/dev/null; err "Sauvegarde de la façade nginx impossible."; exit 1; }
+  _ng_had_old=1
+fi
+for _ng_old in \
+  /etc/nginx/sites-enabled/default \
+  /etc/nginx/conf.d/rhaff-http.conf \
+  /etc/nginx/conf.d/rhaff-tls.conf; do
+  [ -e "$_ng_old" ] || continue
+  case "$_ng_old" in
+    */sites-enabled/default) _ng_old_name=sites-enabled-default ;;
+    *) _ng_old_name=${_ng_old##*/} ;;
+  esac
+  if ! mv "$_ng_old" "$_ng_legacy/$_ng_old_name"; then
+    _restore_nginx_legacy
+    _restore_nginx_ws
+    rm -f "$_ws_backup" "$_ng_tmp" "$_ng_backup"; rmdir "$_ng_legacy" 2>/dev/null
+    err "Isolation des anciennes façades nginx impossible."; exit 1
+  fi
+done
+if ! cat > "$_ng_tmp" <<EOF
 server {
     listen 80;
     server_name ${DOMAIN:-_};
@@ -131,8 +286,66 @@ server {
     location / { return 200 "ok"; }
 }
 EOF
-rm -f /etc/nginx/sites-enabled/default 2>/dev/null
-if nginx -t >/dev/null 2>&1; then systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; fi
+then
+  _restore_nginx_legacy
+  _restore_nginx_ws
+  rm -f "$_ws_backup" "$_ng_tmp" "$_ng_backup"; rmdir "$_ng_legacy" 2>/dev/null
+  err "Écriture de la façade nginx impossible."; exit 1
+fi
+if ! mv "$_ng_tmp" /etc/nginx/conf.d/rhaff.conf; then
+  if [ "$_ng_had_old" -eq 1 ]; then cp -a "$_ng_backup" /etc/nginx/conf.d/rhaff.conf 2>/dev/null; else rm -f /etc/nginx/conf.d/rhaff.conf; fi
+  _restore_nginx_legacy
+  _restore_nginx_ws
+  rm -f "$_ws_backup" "$_ng_tmp" "$_ng_backup"; rmdir "$_ng_legacy" 2>/dev/null
+  err "Installation de la façade nginx impossible."; exit 1
+fi
+if ! nginx -t >/dev/null 2>&1; then
+  if [ "$_ng_had_old" -eq 1 ]; then cp -a "$_ng_backup" /etc/nginx/conf.d/rhaff.conf; else rm -f /etc/nginx/conf.d/rhaff.conf; fi
+  _restore_nginx_legacy
+  _restore_nginx_ws
+  rmdir "$_ng_legacy" 2>/dev/null
+  rm -f "$_ws_backup" "$_ng_backup"
+  err "Configuration nginx invalide. Consulte : nginx -t"
+  exit 1
+fi
+systemctl enable nginx >/dev/null 2>&1
+if ! systemctl restart nginx >/dev/null 2>&1 || ! systemctl is-active --quiet nginx; then
+  if [ "$_ng_had_old" -eq 1 ]; then cp -a "$_ng_backup" /etc/nginx/conf.d/rhaff.conf; else rm -f /etc/nginx/conf.d/rhaff.conf; fi
+  _restore_nginx_legacy
+  _restore_nginx_ws
+  rmdir "$_ng_legacy" 2>/dev/null
+  systemctl restart nginx >/dev/null 2>&1 || true
+  rm -f "$_ws_backup" "$_ng_backup"
+  err "nginx n'a pas pu démarrer. Consulte : journalctl -u nginx"
+  exit 1
+fi
+rm -f "$_ws_backup" "$_ng_backup"
+rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/rhaff-http.conf /etc/nginx/conf.d/rhaff-tls.conf 2>/dev/null
+rm -f "$_ng_legacy/sites-enabled-default" "$_ng_legacy/rhaff-http.conf" "$_ng_legacy/rhaff-tls.conf"
+rmdir "$_ng_legacy" 2>/dev/null
+nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1
+
+# Sur un VPS utilisant UFW, ouvrir uniquement les ports réellement publics.
+_fw_ok=1
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 80/tcp >/dev/null 2>&1 || _fw_ok=0
+  ufw allow "$XPORT/tcp" >/dev/null 2>&1 || _fw_ok=0
+  ufw allow 8388/tcp >/dev/null 2>&1 || _fw_ok=0
+  ufw allow 8388/udp >/dev/null 2>&1 || _fw_ok=0
+fi
+if command -v iptables >/dev/null 2>&1; then
+  for _tcp_port in 80 "$XPORT" 8388; do
+    iptables -C INPUT -p tcp --dport "$_tcp_port" -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT -p tcp --dport "$_tcp_port" -j ACCEPT 2>/dev/null || _fw_ok=0
+  done
+  iptables -C INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null \
+    || iptables -I INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null || _fw_ok=0
+else
+  _fw_ok=0
+fi
+command -v netfilter-persistent >/dev/null 2>&1 \
+  && netfilter-persistent save >/dev/null 2>&1 || _fw_ok=0
+[ "$_fw_ok" -eq 1 ] || { err "Ouverture ou persistance du pare-feu Xray impossible."; exit 1; }
 
 if [ "$AUTO" = 1 ]; then
   printf "  ${GRN}✔${NC} Xray prêt (clair:80 · TLS:%s).\n" "$XPORT"

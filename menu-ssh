@@ -202,8 +202,10 @@ uninstall_slowdns() {
   systemctl disable --now nvpanel-slowdns >/dev/null 2>&1
   rm -f /etc/systemd/system/nvpanel-slowdns.service
   iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+  iptables -D INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
   rm -rf /etc/nvpanel/slowdns
   systemctl daemon-reload >/dev/null 2>&1
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
   ok "SlowDNS a été désinstallé."; pause
 }
 
@@ -281,8 +283,11 @@ uninstall_udp() {
   systemctl disable --now nvpanel-udp-custom >/dev/null 2>&1
   rm -f /etc/systemd/system/nvpanel-udp-custom.service
   iptables -D INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+  iptables -D INPUT -p udp --dport 22 -j ACCEPT 2>/dev/null
+  command -v ufw >/dev/null 2>&1 && ufw --force delete allow 22/udp >/dev/null 2>&1
   rm -rf /etc/nvpanel/udp
   systemctl daemon-reload >/dev/null 2>&1
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
   ok "Le module UDP a été désinstallé."; pause
 }
@@ -390,6 +395,9 @@ hy_create(){
       *"ERR exists"*) err "Ce nom d'utilisateur est déjà pris." ;;
       *"ERR notls"*)  err "Domaine ou certificat TLS absent (Paramètres → 1 puis 2)." ;;
       *"ERR args"*)   err "Nom d'utilisateur ou mot de passe vide." ;;
+      *"ERR username"*) err "Nom invalide (lettres, chiffres, _ et - uniquement)." ;;
+      *"ERR password"*) err "Mot de passe invalide (4 caractères minimum, sans espace)." ;;
+      *"ERR service"*) err "Le service Hysteria2 n'a pas pu démarrer." ;;
       *)              err "Création impossible pour l'instant." ;;
     esac
   fi
@@ -424,15 +432,41 @@ hy_delete(){
   hy_header; center " 🗑️ SUPPRIMER UN COMPTE HYSTERIA UDP " "${BOLD}${WHT}"; line
   ask " Utilisateur à supprimer : " u
   local out; out=$(/usr/local/bin/nvpanel-hysteria del "$u" 2>&1)
-  echo "$out" | grep -q "^OK" && ok "Compte supprimé." || err "Utilisateur introuvable."
+  if echo "$out" | grep -q "^OK"; then
+    ok "Compte supprimé."
+  else
+    case "$out" in
+      *"ERR nouser"*)   err "Utilisateur introuvable." ;;
+      *"ERR username"*) err "Nom d'utilisateur invalide." ;;
+      *"ERR busy"*)     err "Une autre modification Hysteria est en cours." ;;
+      *"ERR service"*)  err "Suppression annulée : le service Hysteria n'a pas pu être rechargé." ;;
+      *)                 err "Suppression impossible pour l'instant." ;;
+    esac
+  fi
   pause
 }
 
 hy_uninstall(){
   hy_header; center " 🗑️ DÉSINSTALLER HYSTERIA UDP " "${BOLD}${WHT}"; line
-  confirm " Supprimer Hysteria UDP et tous ses comptes ?" || { pause; return; }
+  printf "   ${RED}➤ Supprimer Hysteria UDP et tous ses comptes ? (o/n) : ${NC}"; ask "" r
+  confirm "$r" || { warn "Annulé."; pause; return; }
   systemctl disable --now hysteria-server >/dev/null 2>&1
-  rm -f /etc/nvpanel/db/hysteria /etc/hysteria/config.yaml
+  if id hysteria >/dev/null 2>&1; then
+    if command -v setfacl >/dev/null 2>&1; then
+      setfacl -R -x u:hysteria /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null
+      find /etc/letsencrypt/live /etc/letsencrypt/archive -type d \
+        -exec setfacl -x d:u:hysteria {} + 2>/dev/null
+    fi
+    userdel -r hysteria >/dev/null 2>&1
+  fi
+  rm -f /etc/nvpanel/db/hysteria /usr/local/bin/hysteria \
+        /etc/systemd/system/hysteria-server.service /etc/systemd/system/hysteria-server@.service
+  rm -rf /etc/hysteria /etc/systemd/system/hysteria-server.service.d \
+         /etc/systemd/system/hysteria-server@.service.d
+  systemctl daemon-reload >/dev/null 2>&1
+  iptables -D INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null
+  command -v ufw >/dev/null 2>&1 && ufw --force delete allow 443/udp >/dev/null 2>&1
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
   ok "Hysteria UDP désinstallé."
   pause
 }

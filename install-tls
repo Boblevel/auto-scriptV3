@@ -7,11 +7,15 @@
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
+umask 077
 
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 banner; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; line
 [ -z "$DOMAIN" ] && { err "Aucun domaine défini (menu-settings → option 1)."; pause; exit 1; }
+[[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+  && [ "${#DOMAIN}" -le 253 ] \
+  || { err "Domaine invalide : $DOMAIN"; pause; exit 1; }
 
 printf " Domaine : ${WHT}%s${NC}\n" "$DOMAIN"
 printf " ${GRY}Si le certificat échoue, tes comptes continueront de fonctionner.${NC}\n\n"
@@ -19,7 +23,7 @@ ask " Continuer ? (o/n) : " r; confirm "$r" || exit 0
 
 export DEBIAN_FRONTEND=noninteractive
 printf "${CYN}➜${NC} Préparation…\n"
-apt-get install -y certbot >/dev/null 2>&1
+apt-get install -y certbot >/dev/null 2>&1 || { err "Installation de certbot échouée."; pause; exit 1; }
 mkdir -p /var/www/certbot
 
 # nginx doit tourner (il sert le challenge sur le port 80) — AUCUNE coupure
@@ -29,16 +33,38 @@ nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || systemctl 
 printf "${CYN}➜${NC} Obtention du certificat Let's Encrypt…\n"
 certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos \
   -m "admin@$DOMAIN" -d "$DOMAIN" >/dev/null 2>&1
+CERTBOT_RC=$?
 
 CERT=/etc/letsencrypt/live/$DOMAIN
-if [ -f "$CERT/fullchain.pem" ]; then
-  touch /etc/nvpanel/tls_on
+if [ "$CERTBOT_RC" -eq 0 ] && [ -f "$CERT/fullchain.pem" ] && [ -f "$CERT/privkey.pem" ]; then
   # régénère la façade nginx : install-xray détecte le certificat officiel
-  [ -x /usr/local/bin/install-xray ] && /usr/local/bin/install-xray auto >/dev/null 2>&1
-  nginx -t >/dev/null 2>&1 && { systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1; }
+  if ! [ -x /usr/local/bin/install-xray ] || ! /usr/local/bin/install-xray auto >/dev/null 2>&1 \
+     || ! nginx -t >/dev/null 2>&1; then
+    err "Certificat obtenu, mais la façade nginx n'a pas pu l'appliquer."
+    pause; exit 1
+  fi
+  touch /etc/nvpanel/tls_on; chmod 600 /etc/nvpanel/tls_on 2>/dev/null
+  systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  cat > /etc/letsencrypt/renewal-hooks/deploy/nvpanel-reload <<'EOF'
+#!/bin/sh
+systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1
+systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl restart hysteria-server >/dev/null 2>&1
+systemctl is-active --quiet nvpanel-sstp 2>/dev/null && systemctl restart nvpanel-sstp >/dev/null 2>&1
+exit 0
+EOF
+  chmod 755 /etc/letsencrypt/renewal-hooks/deploy/nvpanel-reload
+  TLS_OPTIONAL_WARN=""
+  if [ -x /usr/local/bin/nvpanel-hysteria ] && grep -q '^### ' /etc/nvpanel/db/hysteria 2>/dev/null; then
+    /usr/local/bin/nvpanel-hysteria rebuild >/dev/null 2>&1 || TLS_OPTIONAL_WARN="$TLS_OPTIONAL_WARN Hysteria2"
+  fi
+  if systemctl is-active --quiet nvpanel-sstp 2>/dev/null && [ -x /usr/local/bin/install-sstp ]; then
+    /usr/local/bin/install-sstp auto >/dev/null 2>&1 || TLS_OPTIONAL_WARN="$TLS_OPTIONAL_WARN SSTP"
+  fi
   clear; banner; center " ✔  TLS ACTIF " "${BOLD}${GRN}"; line
   ok "HTTPS activé sur $DOMAIN (certificat officiel Let's Encrypt)."
   printf "   ${GRY}Tes comptes Vmess/Vless/Trojan continuent de marcher — désormais avec un vrai certificat.${NC}\n"
+  [ -z "$TLS_OPTIONAL_WARN" ] || warn "Certificat actif, mais redémarrage à vérifier :$TLS_OPTIONAL_WARN."
   printf "   ${GRY}Renouvellement automatique.${NC}\n"
 else
   # Échec : on ne casse RIEN. L'auto-signé reste, les comptes marchent toujours.

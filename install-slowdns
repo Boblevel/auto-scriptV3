@@ -14,22 +14,53 @@ source /etc/nvpanel/lib/ui.sh
 REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 DIR=/etc/nvpanel/slowdns
 mkdir -p "$DIR"
+umask 077
 
 AUTO=0; NS_ARG=""
 [ "$1" = "auto" ] && { AUTO=1; NS_ARG="$2"; }
 
 # --- Récupère le binaire (selon l'architecture) + les clés fixes ---
 case "$(uname -m)" in
-  aarch64|arm64) BIN_SRC="dns-server-arm64" ;;
-  *)             BIN_SRC="dns-server" ;;
+  aarch64|arm64) BIN_SRC="dns-server-arm64"; ELF_MACHINE="b700" ;;
+  x86_64|amd64)  BIN_SRC="dns-server";       ELF_MACHINE="3e00" ;;
+  *) [ "$AUTO" = 0 ] && err "Architecture non supportée : $(uname -m)."; exit 1 ;;
 esac
-dl(){ curl -fsSL "$REPO_RAW/$1" -o "$2" 2>/dev/null; }
-[ -s "$DIR/dns-server" ] || dl "$BIN_SRC" "$DIR/dns-server"
-[ -s "$DIR/server.key" ] || dl server.key "$DIR/server.key"
-[ -s "$DIR/server.pub" ] || dl server.pub "$DIR/server.pub"
-chmod +x "$DIR/dns-server" 2>/dev/null
+is_bin(){
+  [ "$(od -An -N4 -tx1 "$1" 2>/dev/null | tr -d ' \n')" = "7f454c46" ] \
+    && [ "$(od -An -j18 -N2 -tx1 "$1" 2>/dev/null | tr -d ' \n')" = "$ELF_MACHINE" ]
+}
+is_runnable(){
+  is_bin "$1" && chmod 700 "$1" 2>/dev/null \
+    && timeout 5 "$1" -help >/dev/null 2>&1
+}
+is_key(){ [ -f "$1" ] && tr -d '\r\n' < "$1" | grep -qE '^[0-9a-fA-F]{64}$'; }
+if ! is_runnable "$DIR/dns-server"; then
+  _bin_tmp=$(mktemp "$DIR/.dns-server.XXXXXX") || _bin_tmp=""
+  if [ -n "$_bin_tmp" ] \
+     && curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/$BIN_SRC" -o "$_bin_tmp" 2>/dev/null \
+     && is_runnable "$_bin_tmp"; then
+    mv "$_bin_tmp" "$DIR/dns-server" || true
+  fi
+  [ -z "$_bin_tmp" ] || rm -f "$_bin_tmp"
+fi
+if ! is_key "$DIR/server.key" || ! is_key "$DIR/server.pub"; then
+  _key_tmp=$(mktemp "$DIR/.server.key.XXXXXX") || _key_tmp=""
+  _pub_tmp=$(mktemp "$DIR/.server.pub.XXXXXX") || _pub_tmp=""
+  if [ -n "$_key_tmp" ] && [ -n "$_pub_tmp" ] \
+     && curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/server.key" -o "$_key_tmp" 2>/dev/null \
+     && curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/server.pub" -o "$_pub_tmp" 2>/dev/null \
+     && is_key "$_key_tmp" && is_key "$_pub_tmp"; then
+    if mv "$_key_tmp" "$DIR/server.key"; then
+      mv "$_pub_tmp" "$DIR/server.pub" || rm -f "$DIR/server.key"
+    fi
+  fi
+  [ -z "$_key_tmp" ] || rm -f "$_key_tmp"
+  [ -z "$_pub_tmp" ] || rm -f "$_pub_tmp"
+fi
+chmod 700 "$DIR/dns-server" 2>/dev/null
+chmod 600 "$DIR/server.key" "$DIR/server.pub" 2>/dev/null
 
-if [ ! -s "$DIR/dns-server" ] || [ ! -s "$DIR/server.key" ]; then
+if ! is_runnable "$DIR/dns-server" || ! is_key "$DIR/server.key" || ! is_key "$DIR/server.pub"; then
   if [ "$AUTO" = 0 ]; then err "Le module SlowDNS n'a pas pu être installé. Vérifie la connexion du serveur puis réessaie."; pause; fi
   exit 1
 fi
@@ -44,12 +75,41 @@ else
   ask " Nameserver (NS, ex. ns-mondomaine.com) : " NS
 fi
 [ -z "$NS" ] && { [ "$AUTO" = 0 ] && { err "NS requis"; pause; }; exit 1; }
-echo "$NS" > "$DIR/ns"
+NS=$(printf '%s' "$NS" | tr -d '\r\n\t ' | tr 'A-Z' 'a-z')
+if ! [[ "$NS" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] || [ "${#NS}" -gt 253 ]; then
+  [ "$AUTO" = 0 ] && { err "Nameserver invalide (FQDN attendu)."; pause; }
+  exit 1
+fi
+SLOWDNS_WAS_ACTIVE=0; systemctl is-active --quiet nvpanel-slowdns 2>/dev/null && SLOWDNS_WAS_ACTIVE=1
+SLOWDNS_WAS_ENABLED=0; systemctl is-enabled --quiet nvpanel-slowdns 2>/dev/null && SLOWDNS_WAS_ENABLED=1
+SLOWDNS_HAD_UNIT=0; [ -f /etc/systemd/system/nvpanel-slowdns.service ] && SLOWDNS_HAD_UNIT=1
+SLOWDNS_OLD_NS=$(cat "$DIR/ns" 2>/dev/null)
+SD_UNIT_BACKUP=""
+if [ "$SLOWDNS_HAD_UNIT" = 1 ]; then
+  SD_UNIT_BACKUP=$(mktemp "$DIR/.nvpanel-slowdns.service.XXXXXX") || SD_UNIT_BACKUP=""
+  if [ -z "$SD_UNIT_BACKUP" ] \
+     || ! cp -a /etc/systemd/system/nvpanel-slowdns.service "$SD_UNIT_BACKUP" 2>/dev/null; then
+    [ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"
+    [ "$AUTO" = 0 ] && { err "Sauvegarde du service SlowDNS impossible."; pause; }
+    exit 1
+  fi
+fi
 
 # --- Redirection UDP 53 -> 5300 -----------------------------
-iptables -I INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
-iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null \
-  || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+SD_INPUT_ADDED=0; SD_NAT_ADDED=0
+if ! iptables -C INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null; then
+  iptables -I INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null \
+    || { [ "$AUTO" = 0 ] && { err "Ouverture du port SlowDNS échouée."; pause; }; exit 1; }
+  SD_INPUT_ADDED=1
+fi
+if ! iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null; then
+  if ! iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null; then
+    [ "$SD_INPUT_ADDED" = 1 ] && iptables -D INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
+    [ "$AUTO" = 0 ] && { err "Redirection DNS échouée."; pause; }
+    exit 1
+  fi
+  SD_NAT_ADDED=1
+fi
 
 # Sans ceci, cette règle disparaît silencieusement au prochain redémarrage
 # du serveur (iptables -A n'est pas persistant par défaut) : c'était la
@@ -60,15 +120,20 @@ if ! command -v netfilter-persistent >/dev/null 2>&1; then
   echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
   apt-get install -y iptables-persistent >/dev/null 2>&1
 fi
-if command -v netfilter-persistent >/dev/null 2>&1; then
-  netfilter-persistent save >/dev/null 2>&1
-else
-  mkdir -p /etc/iptables 2>/dev/null
-  iptables-save > /etc/iptables/rules.v4 2>/dev/null
+if ! command -v netfilter-persistent >/dev/null 2>&1 \
+   || ! netfilter-persistent save >/dev/null 2>&1; then
+  [ "$SD_NAT_ADDED" = 1 ] && iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+  [ "$SD_INPUT_ADDED" = 1 ] && iptables -D INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
+  [ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"
+  [ "$AUTO" = 0 ] && { err "Persistance du pare-feu SlowDNS impossible."; pause; }
+  exit 1
 fi
 
 # --- Service (forward vers le SSH local sur 22) -------------
-cat > /etc/systemd/system/nvpanel-slowdns.service <<EOF
+printf '%s\n' "$NS" > "$DIR/ns" || { [ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"; exit 1; }
+chmod 600 "$DIR/ns" 2>/dev/null
+_service_tmp=$(mktemp /etc/systemd/system/.nvpanel-slowdns.service.XXXXXX) || _service_tmp=""
+if [ -z "$_service_tmp" ] || ! cat > "$_service_tmp" <<EOF
 [Unit]
 Description=RHAFF SlowDNS (dnstt)
 After=network.target
@@ -79,8 +144,54 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
+then
+  [ -z "$_service_tmp" ] || rm -f "$_service_tmp"
+  if [ -n "$SLOWDNS_OLD_NS" ]; then printf '%s\n' "$SLOWDNS_OLD_NS" > "$DIR/ns"; else rm -f "$DIR/ns"; fi
+  [ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"
+  [ "$AUTO" = 0 ] && { err "Écriture du service SlowDNS impossible."; pause; }
+  exit 1
+fi
+chmod 644 "$_service_tmp" 2>/dev/null
+if ! mv "$_service_tmp" /etc/systemd/system/nvpanel-slowdns.service; then
+  rm -f "$_service_tmp"
+  if [ -n "$SLOWDNS_OLD_NS" ]; then printf '%s\n' "$SLOWDNS_OLD_NS" > "$DIR/ns"; else rm -f "$DIR/ns"; fi
+  [ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"
+  [ "$AUTO" = 0 ] && { err "Installation du service SlowDNS impossible."; pause; }
+  exit 1
+fi
 systemctl daemon-reload
-systemctl enable --now nvpanel-slowdns >/dev/null 2>&1
+systemctl enable nvpanel-slowdns >/dev/null 2>&1
+systemctl restart nvpanel-slowdns >/dev/null 2>&1
+sleep 1
+LISTEN_OK=0
+if command -v ss >/dev/null 2>&1; then
+  ss -H -lun "sport = :5300" 2>/dev/null | grep -q . && LISTEN_OK=1
+else
+  netstat -lun 2>/dev/null | awk '$4 ~ /:5300$/{f=1} END{exit f?0:1}' && LISTEN_OK=1
+fi
+if ! systemctl is-active --quiet nvpanel-slowdns || [ "$LISTEN_OK" -ne 1 ]; then
+  systemctl disable --now nvpanel-slowdns >/dev/null 2>&1
+  if [ "$SLOWDNS_HAD_UNIT" = 1 ] && [ -n "$SD_UNIT_BACKUP" ]; then
+    mv "$SD_UNIT_BACKUP" /etc/systemd/system/nvpanel-slowdns.service 2>/dev/null && SD_UNIT_BACKUP=""
+  else
+    rm -f /etc/systemd/system/nvpanel-slowdns.service
+  fi
+  if [ -n "$SLOWDNS_OLD_NS" ]; then printf '%s\n' "$SLOWDNS_OLD_NS" > "$DIR/ns"; else rm -f "$DIR/ns"; fi
+  systemctl daemon-reload >/dev/null 2>&1
+  if [ "$SLOWDNS_WAS_ACTIVE" = 1 ]; then
+    if [ "$SLOWDNS_WAS_ENABLED" = 1 ]; then systemctl enable nvpanel-slowdns >/dev/null 2>&1
+    else systemctl disable nvpanel-slowdns >/dev/null 2>&1; fi
+    systemctl start nvpanel-slowdns >/dev/null 2>&1
+  else
+    [ "$SD_NAT_ADDED" = 1 ] && iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+    [ "$SD_INPUT_ADDED" = 1 ] && iptables -D INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
+  fi
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+  [ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"
+  [ "$AUTO" = 0 ] && { err "SlowDNS n'a pas démarré (journalctl -u nvpanel-slowdns)."; pause; }
+  exit 1
+fi
+[ -z "$SD_UNIT_BACKUP" ] || rm -f "$SD_UNIT_BACKUP"
 
 if [ "$AUTO" = 1 ]; then
   printf "  ${GRN}✔${NC} SlowDNS prêt (NS: %s)\n" "$NS"

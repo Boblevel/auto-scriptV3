@@ -164,6 +164,8 @@ cleanup_menu() {
 }
 
 uninstall_xray(){
+  local xp
+  xp=$(cat /etc/nvpanel/xport 2>/dev/null); xp=${xp:-443}
   banner; center " 🗑️  DÉSINSTALLER XRAY " "${BOLD}${RED}"; line
   warn "ATTENTION : le cœur Xray gère 4 protocoles à la fois."
   printf "   ${YLW}Vmess · Vless · Trojan · Shadowsocks seront TOUS supprimés,${NC}\n"
@@ -174,8 +176,9 @@ uninstall_xray(){
 
   printf "\n${CYN}➜${NC} Arrêt et retrait de Xray…\n"
   systemctl disable --now xray >/dev/null 2>&1
-  bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) remove --purge >/dev/null 2>&1
-  rm -rf /usr/local/etc/xray /etc/nvpanel/xray
+  rm -f /etc/systemd/system/xray.service /etc/systemd/system/xray@.service /usr/local/bin/xray /etc/logrotate.d/nvpanel-xray
+  rm -rf /etc/systemd/system/xray.service.d /usr/local/etc/xray /usr/local/share/xray /etc/nvpanel/xray /var/log/xray
+  systemctl daemon-reload >/dev/null 2>&1
 
   printf "${CYN}➜${NC} Suppression des clients…\n"
   rm -f /etc/nvpanel/db/vmess /etc/nvpanel/db/vless /etc/nvpanel/db/trojan /etc/nvpanel/db/shadowsocks
@@ -183,6 +186,14 @@ uninstall_xray(){
   printf "${CYN}➜${NC} Retrait de la façade web…\n"
   rm -f /etc/nginx/conf.d/rhaff.conf /etc/nginx/nvpanel-ws.conf
   nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1
+  iptables -D INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null
+  iptables -D INPUT -p tcp --dport "$xp" -j ACCEPT 2>/dev/null
+  iptables -D INPUT -p tcp --dport 8388 -j ACCEPT 2>/dev/null
+  iptables -D INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null
+  if command -v ufw >/dev/null 2>&1; then
+    for _r in 80/tcp "$xp/tcp" 8388/tcp 8388/udp; do ufw --force delete allow "$_r" >/dev/null 2>&1; done
+  fi
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
   ok "Xray a été désinstallé (Vmess, Vless, Trojan, Shadowsocks)."
   pause
@@ -227,5 +238,10 @@ while true; do
   menu_box_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
-  case "$o" in 1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) trial_client ;; 8) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;; esac
+  case "$o" in
+    1) add_client ;; 2) list_clients ;; 3) view_client ;; 4) renew_client ;;
+    5) del_client ;; 6) cleanup_menu ;; 7) trial_client ;;
+    8) setup_menu; command -v xray >/dev/null 2>&1 || break ;;
+    0) break ;; *) warn "Invalide"; sleep 1 ;;
+  esac
 done

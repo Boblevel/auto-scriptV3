@@ -6,6 +6,7 @@ source /etc/nvpanel/lib/ui.sh
 ui_enter; trap ui_leave EXIT INT TERM HUP
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 CONF=/etc/nvpanel/bot.conf
+umask 077
 
 banner; center " BOT TELEGRAM " "${BOLD}${WHT}"; line
 
@@ -36,7 +37,7 @@ entry "3" "⏹️" "Arrêter le bot"
 entry "4" "📄" "Voir le statut / logs"
 entry "0" "⬅️" "Retour"
 line
-ask "$(printf " ${WHT}Choix :${NC} ")" o || break
+ask "$(printf " ${WHT}Choix :${NC} ")" o || exit 0
 
 case "$o" in
   1)
@@ -44,6 +45,8 @@ case "$o" in
     ask " TOKEN : " token
     ask " ID Telegram : " adminid
     [ -z "$token" ] || [ -z "$adminid" ] && { err "Token et ID requis"; pause; exit 1; }
+    [[ "$token" =~ ^[0-9]+:[A-Za-z0-9_-]{20,}$ ]] || { err "Format du token Telegram invalide"; pause; exit 1; }
+    [[ "$adminid" =~ ^-?[0-9]+$ ]] || { err "ID Telegram invalide"; pause; exit 1; }
     cat > "$CONF" <<EOF
 TOKEN=$token
 ADMIN=$adminid

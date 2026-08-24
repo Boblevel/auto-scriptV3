@@ -15,7 +15,9 @@ case "$PROTO" in
   *) err "Protocole inconnu"; exit 1 ;;
 esac
 DB=/etc/nvpanel/db/$PROTO
-mkdir -p /etc/nvpanel/db; touch "$DB"
+umask 077
+mkdir -p /etc/nvpanel/db; chmod 700 /etc/nvpanel/db 2>/dev/null
+touch "$DB"; chmod 600 "$DB" 2>/dev/null
 
 dash(){
   proto_dash "$PROTO" "ppp:$PROTO" ppp
@@ -210,6 +212,7 @@ uninstall_proto(){
       apt-get autoremove -y >/dev/null 2>&1
       rm -f /etc/xl2tpd/xl2tpd.conf /etc/ppp/options.xl2tpd /etc/ipsec.conf /etc/ipsec.secrets /etc/nvpanel/l2tp_psk
       for p in 500 4500 1701; do iptables -D INPUT -p udp --dport $p -j ACCEPT 2>/dev/null; done
+      iptables -D INPUT -p esp -j ACCEPT 2>/dev/null
       iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o "$(ip route 2>/dev/null | awk '/default/{print $5; exit}')" -j MASQUERADE 2>/dev/null
       iptables -D FORWARD -s 10.10.10.0/24 -j ACCEPT 2>/dev/null
       iptables -D FORWARD -d 10.10.10.0/24 -j ACCEPT 2>/dev/null ;;
@@ -220,6 +223,7 @@ uninstall_proto(){
       rm -f /etc/pptpd.conf /etc/ppp/pptpd-options
       iptables -D INPUT -p tcp --dport 1723 -j ACCEPT 2>/dev/null
       iptables -D INPUT -p gre -j ACCEPT 2>/dev/null
+      iptables -D FORWARD -p tcp --syn -s 10.20.20.0/24 -j TCPMSS --set-mss 1356 2>/dev/null
       iptables -t nat -D POSTROUTING -s 10.20.20.0/24 -o "$(ip route 2>/dev/null | awk '/default/{print $5; exit}')" -j MASQUERADE 2>/dev/null
       iptables -D FORWARD -s 10.20.20.0/24 -j ACCEPT 2>/dev/null
       iptables -D FORWARD -d 10.20.20.0/24 -j ACCEPT 2>/dev/null ;;
@@ -228,11 +232,23 @@ uninstall_proto(){
       rm -f /etc/systemd/system/nvpanel-sstp.service /etc/ppp/options.sstpd
       local sp; sp=$(cat /etc/nvpanel/sstp_port 2>/dev/null)
       [ -n "$sp" ] && iptables -D INPUT -p tcp --dport "$sp" -j ACCEPT 2>/dev/null
-      rm -rf /etc/nvpanel/sstp /etc/nvpanel/sstp_port
+      rm -rf /etc/nvpanel/sstp /etc/nvpanel/sstp_port /opt/nvpanel-sstp \
+             /opt/nvpanel-sstp-tools /opt/nvpanel-sstp-python
+      for _old in /opt/.nvpanel-sstp-old.*; do [ -d "$_old" ] && rm -rf "$_old"; done
       iptables -t nat -D POSTROUTING -s 10.30.30.0/24 -o "$(ip route 2>/dev/null | awk '/default/{print $5; exit}')" -j MASQUERADE 2>/dev/null
       iptables -D FORWARD -s 10.30.30.0/24 -j ACCEPT 2>/dev/null
       iptables -D FORWARD -d 10.30.30.0/24 -j ACCEPT 2>/dev/null ;;
   esac
+  if command -v ufw >/dev/null 2>&1; then
+    case "$PROTO" in
+      l2tp)
+        for _r in 500/udp 4500/udp 1701/udp; do ufw --force delete allow "$_r" >/dev/null 2>&1; done
+        ufw --force delete allow proto esp from any >/dev/null 2>&1 ;;
+      pptp) ufw --force delete allow 1723/tcp >/dev/null 2>&1; ufw --force delete allow proto gre from any >/dev/null 2>&1 ;;
+      sstp) [ -n "${sp:-}" ] && ufw --force delete allow "$sp/tcp" >/dev/null 2>&1 ;;
+    esac
+  fi
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
   systemctl daemon-reload >/dev/null 2>&1
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
   ok "$LABEL a été désinstallé."
