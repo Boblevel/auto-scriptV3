@@ -186,12 +186,12 @@ def xray_online(proto):
     # sockets nginx, impossibles à attribuer proprement à un protocole.
     return _int(cli("xonline", proto))
 
-def blocked_count(name):
+def blocked_count(name, field=5):
     # Comptes verrouillés (colonne 5 = L) pour un protocole donné. Le bot ne
     # comptait jusqu'ici que les comptes SSH verrouillés : le total
     # « Bloqués » ne correspondait donc pas à celui du panel dès qu'un
     # compte d'un autre protocole était verrouillé.
-    return _int(sh("awk '/^### /{if($5==\"L\")c++} END{print c+0}' /etc/nvpanel/db/%s 2>/dev/null" % name))
+    return _int(sh("awk -v col=%d '/^### /{if($col==\"L\")c++} END{print c+0}' /etc/nvpanel/db/%s 2>/dev/null" % (field, name)))
 
 def wg_online():
     return _int(sh("wg show wg0 latest-handshakes 2>/dev/null | "
@@ -411,7 +411,8 @@ def do_monitor(chat):
     # d'un autre protocole était verrouillé.
     blocked = (ssh_blocked() + blocked_count("vmess") + blocked_count("vless")
                + blocked_count("trojan") + blocked_count("shadowsocks")
-               + blocked_count("l2tp") + blocked_count("pptp") + blocked_count("sstp"))
+               + blocked_count("l2tp") + blocked_count("pptp") + blocked_count("sstp")
+               + blocked_count("wireguard", 6) + blocked_count("hysteria"))
 
     osn = os_name(); cpu = cores()
     hier, auj, mois = conso_raw()
@@ -596,11 +597,15 @@ def handle_callback(chat, data):
             with open("/etc/nvpanel/db/wireguard") as f:
                 rows = [l.split() for l in f if l.startswith("### ")]
             lignes = []
+            today = time.strftime("%Y-%m-%d")
             for r in rows:
                 if len(r) <= 4:
                     continue
-                ct = wg_time(r[2]) or "\u2014"
-                lignes.append("%-16s %-14s %-12s %s" % (r[1], r[3], fmt_date(r[4]), ct))
+                locked = len(r) > 5 and r[5] == "L"
+                expired = bool(r[4] and r[4] <= today)
+                state = "verrou" if locked else ("expir\u00e9" if expired else "actif")
+                ct = "\u2014" if (locked or expired) else (wg_time(r[2]) or "\u2014")
+                lignes.append("%-14s %-12s %-8s %s" % (r[1], fmt_date(r[4]), state, ct))
             txt = "\n".join(lignes)
         except Exception:
             txt = ""
@@ -672,6 +677,9 @@ def handle_callback(chat, data):
         send(chat, prompts[data], kb=cancel_kb())
 
 def handle_text(chat, text):
+    if not isinstance(text, str) or not text.strip():
+        send(chat, "Envoie un message texte pour continuer, ou /cancel pour annuler.")
+        return
     if text.strip().lower() in ("annuler", "cancel", "/annuler", "/cancel"):
         STATE.pop(chat, None)
         send(chat, "\u274C Action annul\u00e9e.")
@@ -680,6 +688,10 @@ def handle_text(chat, text):
     if not st:
         show_menu(chat); return
     a = st["action"]; parts = text.split()
+    if a in ("lockdo", "unlockdo", "delete", "pppdel", "hydel", "xdel") and not parts:
+        STATE[chat] = st
+        send(chat, "Envoie le nom du compte, ou /cancel pour annuler.")
+        return
     if a == "create":
         if len(parts) < 3: send(chat, "Format : <code>nom motdepasse jours [appareils] [bandwidthGo]</code>"); return
         r = cli("create", *parts[:5])

@@ -11,7 +11,9 @@ QDB=/etc/nvpanel/db/quota
 META=/etc/nvpanel/db/ssh_meta   # user|pass|created|exp  (permet de reconsulter un compte)
 XCONF=/usr/local/etc/xray/config.json
 NDIR=/etc/nvpanel/xray
-mkdir -p /etc/nvpanel/db; touch "$DB" "$LIMDB" "$QDB"
+umask 077
+mkdir -p /etc/nvpanel/db; chmod 700 /etc/nvpanel /etc/nvpanel/db 2>/dev/null
+touch "$DB" "$LIMDB" "$QDB"; chmod 600 "$DB" "$LIMDB" "$QDB" 2>/dev/null
 
 # ---- helpers -----------------------------------------------
 XAPI=127.0.0.1:10085
@@ -21,6 +23,17 @@ XIPSTATE=/etc/nvpanel/db/xips    # proto|compte|ip|premiere_vue|derniere_vue
 XBLOCKSTATE=/etc/nvpanel/db/xblocks # tag|proto|compte|ips_bloquees
 XCREATED=/etc/nvpanel/db/xcreated # proto|compte|date_creation (AAAA-MM-JJ)
 touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED"
+chmod 600 "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED" 2>/dev/null
+find /etc/nvpanel/db -maxdepth 1 -type f -exec chmod 600 {} + 2>/dev/null
+
+_today(){ date +%F; }
+_valid_ssh_user(){ [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; }
+_valid_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$ ]]; }
+_rx(){ printf '%s' "$1" | sed 's/\./[.]/g'; }
+_valid_password(){
+  [ "${#1}" -ge 4 ] && [ "${#1}" -le 128 ] \
+    && printf '%s' "$1" | LC_ALL=C grep -qE '^[A-Za-z0-9@%+=_.!#$^~-]+$'
+}
 
 # Active le service de statistiques dans une configuration qui ne l'a pas
 # encore (serveurs installés avant cette version).
@@ -49,10 +62,10 @@ _xapi_ensure(){
     return 0
   fi
 
-  tmp=$(mktemp) || return 1
+  tmp=$(mktemp "${XCONF}.xapi.XXXXXX") || return 1
   jq '
       .stats = (.stats // {})
-    | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService"]) | unique | map(select(. != "RoutingService"))))
+    | .api = ((.api // {}) | .tag="api" | .services=(((.services // []) + ["StatsService"]) | unique))
     | .policy = (.policy // {})
     | .policy.levels = (.policy.levels // {})
     | .policy.levels."0" = ((.policy.levels."0" // {}) + {"statsUserUplink":true,"statsUserDownlink":true})
@@ -64,23 +77,29 @@ _xapi_ensure(){
     | if ([.routing.rules[]? | select(.outboundTag=="api") | .inboundTag[]?] | index("api")) then . else .routing.rules += [{"type":"field","inboundTag":["api"],"outboundTag":"api"}] end
   ' "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
 
-  a=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$XCONF" 2>/dev/null)
-  b=$(jq '[.inbounds[]?.settings?.clients[]?]|length' "$tmp" 2>/dev/null)
+  a=$(jq '[.inbounds[]?.settings? | ((.clients // []) + (.users // []))[]]|length' "$XCONF" 2>/dev/null)
+  b=$(jq '[.inbounds[]?.settings? | ((.clients // []) + (.users // []))[]]|length' "$tmp" 2>/dev/null)
   [ -n "$a" ] && [ "$a" = "$b" ] || { rm -f "$tmp"; return 1; }
   xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
 
   if ! cmp -s "$tmp" "$XCONF"; then
     cp -a "$XCONF" "$XCONF.before-xapi-v5" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    chmod 600 "$XCONF.before-xapi-v5" 2>/dev/null
     mv "$tmp" "$XCONF" || { rm -f "$tmp"; return 1; }
-    # Le garde Xray conserve une copie de référence : on la synchronise avec
-    # la configuration validée pour qu'il ne restaure pas une version ancienne.
-    mkdir -p /etc/nvpanel/xray
-    cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
-    systemctl restart xray >/dev/null 2>&1 || {
+    if systemctl restart xray >/dev/null 2>&1 && systemctl is-active --quiet xray; then
+      # Le garde Xray conserve une copie de référence : on ne la synchronise
+      # qu'après confirmation que la nouvelle configuration démarre vraiment.
+      mkdir -p /etc/nvpanel/xray
+      cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
+      chmod 600 /etc/nvpanel/xray/config.before-guard.json 2>/dev/null
+    else
       cp -a "$XCONF.before-xapi-v5" "$XCONF" 2>/dev/null
       systemctl restart xray >/dev/null 2>&1 || true
+      mkdir -p /etc/nvpanel/xray
+      cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
+      chmod 600 /etc/nvpanel/xray/config.before-guard.json 2>/dev/null
       return 1
-    }
+    fi
     sig=$(stat -c '%Y:%s' "$XCONF" 2>/dev/null) || return 1
   else
     rm -f "$tmp"
@@ -121,10 +140,10 @@ xsample_run(){
     | awk '{ split($1, p, ">>>"); if (p[2] != "") t[p[2]] += $2 } END { for (u in t) printf "%s %.0f\n", u, t[u] }')
   [ -z "$snap" ] && return 0
   touch "$XSTAT"
-  tmp=$(mktemp) || return 0
+  tmp=$(mktemp "${XSTAT}.XXXXXX") || return 0
   while read -r em tot; do
     [ -z "$em" ] && continue
-    row=$(grep "^$em|" "$XSTAT" 2>/dev/null | head -1)
+    row=$(awk -F'|' -v e="$em" '$1==e{print;exit}' "$XSTAT" 2>/dev/null)
     prev=$(printf '%s' "$row" | cut -d'|' -f2); first=$(printf '%s' "$row" | cut -d'|' -f3)
     last=$(printf '%s' "$row" | cut -d'|' -f4)
     case "$prev"  in ''|*[!0-9]*) prev=0  ;; esac
@@ -154,7 +173,7 @@ xsample_run(){
 # Durée d'activité d'un compte, prête à afficher.
 _conn_since(){
   local row first now d
-  row=$(grep "^$1|" "$XSTAT" 2>/dev/null | head -1)
+  row=$(awk -F'|' -v e="$1" '$1==e{print;exit}' "$XSTAT" 2>/dev/null)
   first=$(printf '%s' "$row" | cut -d'|' -f3)
   case "$first" in ''|0|*[!0-9]*) printf '%s' "—"; return ;; esac
   now=$(date +%s); d=$(( now - first ))
@@ -187,7 +206,7 @@ _x_proto_for_name(){
 
 _x_ip_refresh_sync(){
   command -v journalctl >/dev/null 2>&1 || return 0
-  local now cutoff seen tmp old name ip proto row first last stamp=/run/nvpanel-xip.stamp last_run
+  local now cutoff seen tmp state_tmp old name ip proto row first last stamp=/run/nvpanel-xip.stamp last_run
   local live_ws live_ss xport cutstr
   now=$(date +%s); cutoff=$((now-75))
   cutstr=$(date -d '90 seconds ago' '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
@@ -281,9 +300,13 @@ _x_ip_refresh_sync(){
         awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{f=1} END{exit !f}' "$tmp" 2>/dev/null \
           || printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$([ "$proto" = ss ] && ! grep -Fxq "$ip" "$live_ss" 2>/dev/null && printf '%s' "$last" || printf '%s' "$now")" >> "$tmp"
       done
-  if sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4n -u "$tmp" > "$XIPSTATE.tmp" 2>/dev/null \
-     && mv "$XIPSTATE.tmp" "$XIPSTATE"; then
+  state_tmp=$(mktemp "${XIPSTATE}.XXXXXX")
+  if [ -n "$state_tmp" ] \
+     && sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4n -u "$tmp" > "$state_tmp" 2>/dev/null \
+     && mv "$state_tmp" "$XIPSTATE"; then
     printf '%s\n' "$now" > "$stamp" 2>/dev/null || true
+  else
+    [ -n "$state_tmp" ] && rm -f "$state_tmp"
   fi
   rm -f "$seen" "$tmp" "$live_ws" "$live_ss"
 }
@@ -347,15 +370,17 @@ _x_limit_get(){
 _x_limit_set(){
   local p="$1" n="$2" l="$3" t
   case "$l" in ''|*[!0-9]*) l=0 ;; esac
-  t=$(mktemp) || return 1
-  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XLIMDB" 2>/dev/null > "$t"
-  printf '%s|%s|%s\n' "$p" "$n" "$l" >> "$t"
+  t=$(mktemp "${XLIMDB}.XXXXXX") || return 1
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XLIMDB" 2>/dev/null > "$t" \
+    || { rm -f "$t"; return 1; }
+  printf '%s|%s|%s\n' "$p" "$n" "$l" >> "$t" || { rm -f "$t"; return 1; }
   mv "$t" "$XLIMDB"
 }
 _x_limit_del(){
   local p="$1" n="$2" t
-  t=$(mktemp) || return 0
-  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XLIMDB" 2>/dev/null > "$t"
+  t=$(mktemp "${XLIMDB}.XXXXXX") || return 0
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XLIMDB" 2>/dev/null > "$t" \
+    || { rm -f "$t"; return 1; }
   mv "$t" "$XLIMDB"
 }
 
@@ -364,15 +389,17 @@ _x_created_get(){
 }
 _x_created_set(){
   local p="$1" n="$2" d="$3" t
-  t=$(mktemp) || return 1
-  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XCREATED" 2>/dev/null > "$t"
-  printf '%s|%s|%s\n' "$p" "$n" "$d" >> "$t"
+  t=$(mktemp "${XCREATED}.XXXXXX") || return 1
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XCREATED" 2>/dev/null > "$t" \
+    || { rm -f "$t"; return 1; }
+  printf '%s|%s|%s\n' "$p" "$n" "$d" >> "$t" || { rm -f "$t"; return 1; }
   mv "$t" "$XCREATED"
 }
 _x_created_del(){
   local p="$1" n="$2" t
-  t=$(mktemp) || return 0
-  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XCREATED" 2>/dev/null > "$t"
+  t=$(mktemp "${XCREATED}.XXXXXX") || return 0
+  awk -F'|' -v p="$p" -v n="$n" '!($1==p&&$2==n)' "$XCREATED" 2>/dev/null > "$t" \
+    || { rm -f "$t"; return 1; }
   mv "$t" "$XCREATED"
 }
 
@@ -388,7 +415,7 @@ xlimit_run(){
   [ -f "$XCONF" ] || return 0
   _x_ip_refresh_sync
 
-  local offenders proto name lim db row ex fl count tmp changed=0 today
+  local offenders proto name lim db row ex fl count tmp iptmp changed=0 today
   offenders=$(mktemp) || return 0
   today=$(date +%F)
 
@@ -413,32 +440,31 @@ xlimit_run(){
 
   # Retire tous les comptes fautifs dans une seule copie de config puis ne
   # redémarre Xray qu'une fois. Le nombre des autres clients est préservé.
-  tmp=$(mktemp) || { rm -f "$offenders"; return 0; }
+  tmp=$(mktemp "${XCONF}.device-delete.XXXXXX") || { rm -f "$offenders"; return 0; }
   cp -a "$XCONF" "$tmp" 2>/dev/null || { rm -f "$tmp" "$offenders"; return 0; }
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
-    jq --arg tag "$TAG" --arg e "$name" \
-      '(.inbounds[] | select(.tag==$tag) | .settings.clients) |= map(select(.email != $e))' \
+    jq --arg tag "$TAG" --arg key "$CLIENTS_KEY" --arg e "$name" \
+      '(.inbounds[] | select(.tag==$tag) | .settings[$key]) |= ((. // []) | map(select(.email != $e)))' \
       "$tmp" > "$tmp.next" 2>/dev/null || { rm -f "$tmp.next"; continue; }
     mv "$tmp.next" "$tmp"
     changed=1
   done < "$offenders"
 
   [ "$changed" -eq 1 ] || { rm -f "$tmp" "$offenders"; return 0; }
-  command -v xray >/dev/null 2>&1 && ! xray run -test -c "$tmp" >/dev/null 2>&1 && { rm -f "$tmp" "$offenders"; return 0; }
-  cp -a "$XCONF" "$XCONF.before-device-delete" 2>/dev/null || true
-  mv "$tmp" "$XCONF" || { rm -f "$tmp" "$offenders"; return 0; }
+  _xconf_commit "$tmp" || { rm -f "$offenders"; return 0; }
 
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
-    sed -i "/^### $name /d" "$XDB"
+    sed -i "/^### $(_rx "$name") /d" "$XDB"
     _x_limit_del "$proto" "$name"
     _x_created_del "$proto" "$name"
-    awk -F'|' -v p="$proto" -v n="$name" '!($1==p&&$2==n)' "$XIPSTATE" > "$XIPSTATE.tmp" 2>/dev/null && mv "$XIPSTATE.tmp" "$XIPSTATE"
+    iptmp=$(mktemp "${XIPSTATE}.XXXXXX") || continue
+    awk -F'|' -v p="$proto" -v n="$name" '!($1==p&&$2==n)' "$XIPSTATE" > "$iptmp" 2>/dev/null \
+      && mv "$iptmp" "$XIPSTATE" || rm -f "$iptmp"
     printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$name" "$lim" "$count" >> /var/log/nvpanel-device-delete.log 2>/dev/null || true
   done < "$offenders"
   rm -f "$offenders"
-  systemctl restart xray >/dev/null 2>&1 || true
 }
 
 _udp_cred(){ # $1 = compte  $2 = mot de passe  $3 = limite
@@ -461,17 +487,71 @@ _udp_cred_clear(){
 _ip(){ cat /etc/nvpanel/ip 2>/dev/null; }
 _dom(){ cat /etc/nvpanel/domain 2>/dev/null; }
 _host(){ local d; d=$(_dom); [ -n "$d" ] && printf '%s' "$d" || _ip; }
-_xport(){ cat /etc/nvpanel/xport 2>/dev/null || echo 80; }
+_xport(){ cat /etc/nvpanel/xport 2>/dev/null || echo 443; }
 _sldnskey(){ cat /etc/nvpanel/slowdns/server.pub 2>/dev/null || echo "-"; }
 
 xmeta() {
   case "$1" in
-    vmess)  PORT=8080; PATHW="/vmess";  TAG="vmess-in";  XDB=/etc/nvpanel/db/vmess ;;
-    vless)  PORT=8081; PATHW="/vless";  TAG="vless-in";  XDB=/etc/nvpanel/db/vless ;;
-    trojan) PORT=8082; PATHW="/trojan"; TAG="trojan-in"; XDB=/etc/nvpanel/db/trojan ;;
-    ss)     PORT=8388; PATHW="";        TAG="ss-in";     XDB=/etc/nvpanel/db/shadowsocks ;;
+    vmess)  PORT=8080; PATHW="/vmess";  TAG="vmess-in";  CLIENTS_KEY=clients; XDB=/etc/nvpanel/db/vmess ;;
+    vless)  PORT=8081; PATHW="/vless";  TAG="vless-in";  CLIENTS_KEY=clients; XDB=/etc/nvpanel/db/vless ;;
+    trojan) PORT=8082; PATHW="/trojan"; TAG="trojan-in"; CLIENTS_KEY=clients; XDB=/etc/nvpanel/db/trojan ;;
+    ss)     PORT=8388; PATHW="";        TAG="ss-in";     CLIENTS_KEY=users;   XDB=/etc/nvpanel/db/shadowsocks ;;
     *) return 1 ;;
   esac
+}
+
+_xconf_has(){ # compte [fichier]
+  jq -e --arg tag "$TAG" --arg key "$CLIENTS_KEY" --arg e "$1" \
+    '[.inbounds[]? | select(.tag==$tag) | .settings[$key][]?.email] | index($e) != null' \
+    "${2:-$XCONF}" >/dev/null 2>&1
+}
+
+_xconf_has_any(){ # compte [fichier]
+  jq -e --arg e "$1" \
+    '[.inbounds[]?.settings? | ((.clients // []) + (.users // []))[]?.email] | index($e) != null' \
+    "${2:-$XCONF}" >/dev/null 2>&1
+}
+
+_xconf_commit(){ # fichier temporaire déjà construit
+  local tmp="$1" backup
+  command -v xray >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  xray run -test -c "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  backup=$(mktemp "${XCONF}.backup.XXXXXX") || { rm -f "$tmp"; return 1; }
+  cp -a "$XCONF" "$backup" 2>/dev/null || { rm -f "$tmp" "$backup"; return 1; }
+  chmod 600 "$backup" 2>/dev/null
+  chmod 600 "$tmp" 2>/dev/null
+  mv "$tmp" "$XCONF" || { rm -f "$tmp" "$backup"; return 1; }
+  if systemctl restart xray >/dev/null 2>&1 && systemctl is-active --quiet xray; then
+    rm -f "$backup"
+    mkdir -p "$NDIR"
+    cp -a "$XCONF" "$NDIR/config.before-guard.json" 2>/dev/null || true
+    chmod 600 "$NDIR/config.before-guard.json" 2>/dev/null
+    return 0
+  fi
+  cp -a "$backup" "$XCONF" 2>/dev/null
+  rm -f "$backup"
+  systemctl restart xray >/dev/null 2>&1 || true
+  return 1
+}
+
+_xconf_add(){ # objet client JSON, nom à vérifier
+  local client="$1" name="$2" tmp
+  tmp=$(mktemp "${XCONF}.tmp.XXXXXX") || return 1
+  jq --arg tag "$TAG" --arg key "$CLIENTS_KEY" --argjson client "$client" \
+    '(.inbounds[] | select(.tag==$tag) | .settings[$key]) |= ((. // []) + [$client])' \
+    "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  _xconf_has "$name" "$tmp" || { rm -f "$tmp"; return 1; }
+  _xconf_commit "$tmp"
+}
+
+_xconf_remove(){ # nom du compte
+  local name="$1" tmp
+  tmp=$(mktemp "${XCONF}.tmp.XXXXXX") || return 1
+  jq --arg tag "$TAG" --arg key "$CLIENTS_KEY" --arg e "$name" \
+    '(.inbounds[] | select(.tag==$tag) | .settings[$key]) |= ((. // []) | map(select(.email != $e)))' \
+    "$XCONF" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  _xconf_has "$name" "$tmp" && { rm -f "$tmp"; return 1; }
+  _xconf_commit "$tmp"
 }
 
 # ---- affichage des dates -------------------------------------
@@ -645,6 +725,23 @@ ss_box(){ # name ckey created exp
 
 cmd="$1"; shift 2>/dev/null
 
+# Les commandes qui modifient config.json sont sérialisées : le bot, le panel
+# et les tâches cron peuvent sinon écraser mutuellement leurs changements.
+case "$cmd" in
+  xadd|xdel|xrenew|xlock|xunlock|xlimit|xenforce|xsample|xapi|purge)
+    if command -v flock >/dev/null 2>&1; then
+      exec 9>/run/nvpanel-xray.lock
+      flock -w 30 9 || { echo "ERR busy"; exit 1; }
+    fi ;;
+esac
+case "$cmd" in
+  create|renew|delete|lock|unlock|purge)
+    if command -v flock >/dev/null 2>&1; then
+      exec 8>/run/nvpanel-ssh.lock
+      flock -w 30 8 || { echo "ERR busy"; exit 1; }
+    fi ;;
+esac
+
 case "$cmd" in
   # ---------- SSH ----------
   create)
@@ -654,12 +751,12 @@ case "$cmd" in
     pass=$(printf '%s' "$2" | tr -d '\r\n')
     days="${3:-30}"; lim="${4:-0}"; gb="${5:-0}"
     { [ -z "$user" ] || [ -z "$pass" ]; } && { echo "ERR args"; exit 1; }
-    # Beaucoup d'applications VPN refusent les mots de passe très courts :
-    # on impose 4 caractères minimum pour éviter de livrer un compte inutilisable.
-    [ "${#pass}" -lt 4 ] && { echo "ERR shortpass"; exit 1; }
+    _valid_ssh_user "$user" || { echo "ERR username"; exit 1; }
+    _valid_password "$pass" || { echo "ERR password"; exit 1; }
     id "$user" &>/dev/null && { echo "ERR exists"; exit 1; }
-    [[ "$days" =~ ^[0-9]+$ ]] || days=30
-    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 3650 ] || { echo "ERR days"; exit 1; }
+    [[ "$lim" =~ ^[0-9]+$ ]] && [ "$lim" -le 999 ] || { echo "ERR limit"; exit 1; }
+    [[ "$gb" =~ ^[0-9]+$ ]] && [ "$gb" -le 1000000 ] || { echo "ERR quota"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
     # /etc/shadow ne désactive un compte que le LENDEMAIN de la date donnée à
     # useradd -e (comportement documenté du système, pas de nvpanel) : sans ce
@@ -667,11 +764,14 @@ case "$cmd" in
     # réalité connectable jusqu'à minuit. On donne donc exp-1 jour au système,
     # pour que le blocage réel démarre PILE le jour affiché.
     sys_exp=$(date -d "$exp -1 day" +"%Y-%m-%d")
-    useradd -e "$sys_exp" -s /bin/false -M "$user" &>/dev/null
+    useradd -e "$sys_exp" -s /bin/false -M "$user" &>/dev/null || { echo "ERR useradd"; exit 1; }
     # méthode identique au compte de test qui fonctionnait : on fournit le
     # mot de passe deux fois à passwd (printf = aucune interprétation d'échappement)
-    printf '%s\n%s\n' "$pass" "$pass" | passwd "$user" &>/dev/null
-    passwd -u "$user" &>/dev/null          # s'assure que le compte est déverrouillé
+    if ! printf '%s\n%s\n' "$pass" "$pass" | passwd "$user" &>/dev/null; then
+      userdel -f "$user" >/dev/null 2>&1
+      echo "ERR passwd"; exit 1
+    fi
+    passwd -u "$user" &>/dev/null || { userdel -f "$user" >/dev/null 2>&1; echo "ERR passwd"; exit 1; }
     chage -M 99999 "$user" &>/dev/null     # le mot de passe n'expire jamais
     _udp_cred "$user" "$pass" "$lim"
     echo "### $user $exp" >> "$DB"
@@ -685,23 +785,34 @@ case "$cmd" in
     fi
     echo "OK $user $exp"
     # mémorise les infos pour pouvoir reconsulter le compte plus tard
-    touch "$META"; sed -i "/^$user|/d" "$META"; printf '%s|%s|%s|%s\n' "$user" "$pass" "$cr" "$exp" >> "$META"
+    touch "$META"; chmod 600 "$META" 2>/dev/null
+    sed -i "/^$user|/d" "$META"; printf '%s|%s|%s|%s\n' "$user" "$pass" "$cr" "$exp" >> "$META"
     ssh_box "$user" "$pass" "$cr" "$exp" ;;
   renew)
     user=$(printf '%s' "$1" | tr -d '\r\n\t '); days="$2"
+    _valid_ssh_user "$user" || { echo "ERR username"; exit 1; }
     id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
-    [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 3650 ] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
     # Même correction que dans create : le système ne bloque le compte que le
     # lendemain de la date donnée à chage -E, d'où le -1 jour ici aussi.
     sys_exp=$(date -d "$exp -1 day" +"%Y-%m-%d")
-    chage -E "$sys_exp" "$user"; passwd -u "$user" &>/dev/null
+    chage -E "$sys_exp" "$user" >/dev/null 2>&1 && passwd -u "$user" &>/dev/null \
+      || { echo "ERR renew"; exit 1; }
     sed -i "s/^### $user .*/### $user $exp/" "$DB"
     sed -i "s/^\($user|[^|]*|[^|]*\)|.*/\1|$exp/" "$META" 2>/dev/null
-    sed -i "/^$user /d" /etc/nvpanel/db/quota_used 2>/dev/null
+    _p=$(grep "^$user|" "$META" 2>/dev/null | head -1 | cut -d'|' -f2)
+    _l=$(awk -v x="$user" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null)
+    [ -n "$_p" ] && _udp_cred "$user" "$_p" "${_l:-0}"
+    if [ -x /usr/local/bin/nvpanel-quota ]; then
+      /usr/local/bin/nvpanel-quota reset "$user" >/dev/null 2>&1
+    else
+      sed -i "/^$user /d" /etc/nvpanel/db/quota_used 2>/dev/null
+    fi
     echo "OK $user $exp" ;;
   info)
     user=$(printf '%s' "$1" | tr -d '\r\n\t ')
+    _valid_ssh_user "$user" || { echo "ERR username"; exit 1; }
     id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
     line_meta=$(grep "^$user|" "$META" 2>/dev/null | head -1)
     if [ -n "$line_meta" ]; then
@@ -714,9 +825,11 @@ case "$cmd" in
     ssh_box "$user" "$pass" "$cr" "$ex" ;;
   delete)
     user=$(printf '%s' "$1" | tr -d '\r\n\t ')
+    _valid_ssh_user "$user" || { echo "ERR username"; exit 1; }
     id "$user" &>/dev/null || { echo "ERR nouser"; exit 1; }
+    [ -x /usr/local/bin/nvpanel-quota ] && /usr/local/bin/nvpanel-quota remove "$user" >/dev/null 2>&1
     pkill -KILL -u "$user" 2>/dev/null   # coupe immédiatement les sessions actives
-    userdel -f "$user" &>/dev/null
+    userdel -f "$user" &>/dev/null || { echo "ERR delete"; exit 1; }
     sed -i "/^### $user /d" "$DB"
     sed -i "/^$user|/d" "$META" 2>/dev/null
     sed -i "/^$user /d" "$LIMDB" "$QDB" /etc/nvpanel/db/quota_used 2>/dev/null
@@ -725,12 +838,19 @@ case "$cmd" in
   # Le verrouillage doit couper l'UDP aussi : udp-custom ne consulte pas
   # /etc/shadow, un compte verrouillé par « passwd -l » continuait donc de
   # passer par le module UDP comme si de rien n'était.
-  lock)   u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -l "$u" &>/dev/null; _udp_cred_clear "$u"; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked"; } || echo "ERR nouser" ;;
-  unlock) u=$(printf '%s' "$1" | tr -d '\r\n\t '); id "$u" &>/dev/null && { passwd -u "$u" &>/dev/null; \
-            _p=$(grep "^$u|" "$META" 2>/dev/null | head -1 | cut -d'|' -f2); \
-            _l=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null); \
-            [ -n "$_p" ] && _udp_cred "$u" "$_p" "${_l:-2}"; \
-            echo "OK unlocked"; } || echo "ERR nouser" ;;
+  lock)
+    u=$(printf '%s' "$1" | tr -d '\r\n\t '); _valid_ssh_user "$u" || { echo "ERR username"; exit 1; }
+    id "$u" &>/dev/null || { echo "ERR nouser"; exit 1; }
+    passwd -l "$u" &>/dev/null || { echo "ERR lock"; exit 1; }
+    _udp_cred_clear "$u"; pkill -KILL -u "$u" 2>/dev/null; echo "OK locked" ;;
+  unlock)
+    u=$(printf '%s' "$1" | tr -d '\r\n\t '); _valid_ssh_user "$u" || { echo "ERR username"; exit 1; }
+    id "$u" &>/dev/null || { echo "ERR nouser"; exit 1; }
+    passwd -u "$u" &>/dev/null || { echo "ERR unlock"; exit 1; }
+    _p=$(grep "^$u|" "$META" 2>/dev/null | head -1 | cut -d'|' -f2)
+    _l=$(awk -v x="$u" '$1==x{print $2; exit}' "$LIMDB" 2>/dev/null)
+    [ -n "$_p" ] && _udp_cred "$u" "$_p" "${_l:-2}"
+    echo "OK unlocked" ;;
   list)
     # On liste les comptes DU PANEL (base interne), pas tous les utilisateurs
     # Linux : sinon les comptes système et les comptes supprimés continuaient
@@ -775,54 +895,50 @@ case "$cmd" in
   xadd)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="${3:-30}"; lim="${4:-0}"
     xmeta "$proto" || { echo "ERR proto"; exit 1; }
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
     [ -f "$XCONF" ] || { echo "ERR noxray"; exit 1; }
     touch "$XDB"
     # Répare uniquement une entrée fantôme laissée dans la base locale :
     # si le nom est encore dans XDB mais n'existe plus réellement dans la
     # configuration Xray, on nettoie cette ligne avant la création. Une vraie
     # entrée existante reste protégée contre les doublons.
-    if grep -q "^### $name " "$XDB"; then
-      if jq -e --arg e "$name" '[.inbounds[]?.settings?.clients[]?.email] | index($e) != null' \
-          "$XCONF" >/dev/null 2>&1; then
+    name_rx=$(_rx "$name")
+    if grep -q "^### $name_rx " "$XDB"; then
+      if _xconf_has_any "$name"; then
         echo "ERR exists"; exit 1
       fi
-      sed -i "/^### $name /d" "$XDB"
+      sed -i "/^### $name_rx /d" "$XDB"
       _x_limit_del "$proto" "$name"
       _x_created_del "$proto" "$name"
-    elif jq -e --arg e "$name" '[.inbounds[]?.settings?.clients[]?.email] | index($e) != null' \
-        "$XCONF" >/dev/null 2>&1; then
+    elif _xconf_has_any "$name"; then
       # Client réellement présent dans Xray mais absent de la base du panel :
       # ne jamais injecter un second client portant le même email.
       echo "ERR exists"; exit 1
     fi
-    [[ "$days" =~ ^[0-9]+$ ]] || days=30
-    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 3650 ] || { echo "ERR days"; exit 1; }
+    [[ "$lim" =~ ^[0-9]+$ ]] && [ "$lim" -le 999 ] || { echo "ERR limit"; exit 1; }
     _xapi_ensure >/dev/null 2>&1 || true
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(_today)
-    if [ "$proto" = ss ]; then id=$(openssl rand -base64 32); client="{\"password\":\"$id\",\"email\":\"$name\"}"
+    if [ "$proto" = ss ]; then id=$(openssl rand -base64 32)
     else
       id=$(cat /proc/sys/kernel/random/uuid)
-      case "$proto" in
-        vmess)  client="{\"id\":\"$id\",\"alterId\":0,\"email\":\"$name\"}" ;;
-        vless)  client="{\"id\":\"$id\",\"email\":\"$name\"}" ;;
-        trojan) client="{\"password\":\"$id\",\"email\":\"$name\"}" ;;
-      esac
     fi
+    client=$(_client_json "$proto" "$id" "$name")
     # La base ne doit JAMAIS être écrite avant confirmation que le client est
     # bien présent dans config.json. Si jq échouait, ou si l'entrée portant ce
     # tag était absente, jq renvoyait malgré tout 0 sans rien modifier : le
     # compte apparaissait dans le panel et la fiche remise au client affichait
     # un identifiant que Xray ne connaissait pas — d'où « invalid request user
     # id » côté serveur pour un compte pourtant listé comme actif.
-    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) += [$client]" "$XCONF" > "$XCONF.tmp" 2>/dev/null || {
-      rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
-    jq -e --arg e "$name" '[.inbounds[]?.settings?.clients[]?.email] | index($e) != null' \
-      "$XCONF.tmp" >/dev/null 2>&1 || { rm -f "$XCONF.tmp"; echo "ERR conf"; exit 1; }
-    mv "$XCONF.tmp" "$XCONF"
-    echo "### $name $id $exp" >> "$XDB"
-    _x_created_set "$proto" "$name" "$cr"
-    _x_limit_set "$proto" "$name" "$lim"
-    systemctl restart xray >/dev/null 2>&1
+    _xconf_add "$client" "$name" || { echo "ERR conf"; exit 1; }
+    if ! printf '### %s %s %s\n' "$name" "$id" "$exp" >> "$XDB" \
+       || ! _x_created_set "$proto" "$name" "$cr" \
+       || ! _x_limit_set "$proto" "$name" "$lim"; then
+      sed -i "/^### $name_rx /d" "$XDB" 2>/dev/null
+      _x_created_del "$proto" "$name"; _x_limit_del "$proto" "$name"
+      _xconf_remove "$name" >/dev/null 2>&1 || true
+      echo "ERR database"; exit 1
+    fi
     echo "OK $name $exp"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
   xonline)
@@ -848,13 +964,16 @@ case "$cmd" in
     fi ;;
   xipcount)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo 0; exit 0; }
+    _valid_name "$name" || { echo 0; exit 0; }
     _x_ip_refresh
     _x_ip_count "$proto" "$name" ;;
   xlimit)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); lim="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    grep -q "^### $name " "$XDB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    [[ "$lim" =~ ^[0-9]+$ ]] || { echo "ERR limit"; exit 1; }
-    _x_limit_set "$proto" "$name" "$lim"; xlimit_run; echo "OK $lim" ;;
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
+    grep -q "^### $(_rx "$name") " "$XDB" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    [[ "$lim" =~ ^[0-9]+$ ]] && [ "$lim" -le 999 ] || { echo "ERR limit"; exit 1; }
+    _x_limit_set "$proto" "$name" "$lim" || { echo "ERR database"; exit 1; }
+    xlimit_run; echo "OK $lim" ;;
   xlist)
     proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
     # L'affichage repose directement sur les IP/sockets réellement actives :
@@ -882,42 +1001,53 @@ case "$cmd" in
     xsample_run; xlimit_run ;;
   xapi)
     # activation du service de statistiques (appelé par la mise à jour)
-    _xapi_ensure && echo "OK" || echo "ERR" ;;
+    if _xapi_ensure; then echo "OK"; else echo "ERR"; exit 1; fi ;;
   xdel)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
-    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
-    sed -i "/^### $name /d" "$XDB"; _x_limit_del "$proto" "$name"; _x_created_del "$proto" "$name"; systemctl restart xray >/dev/null 2>&1
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
+    name_rx=$(_rx "$name"); grep -q "^### $name_rx " "$XDB" || { echo "ERR nouser"; exit 1; }
+    if _xconf_has "$name"; then _xconf_remove "$name" || { echo "ERR conf"; exit 1; }; fi
+    sed -i "/^### $name_rx /d" "$XDB"; _x_limit_del "$proto" "$name"; _x_created_del "$proto" "$name"
     echo "OK deleted" ;;
   xrenew)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); days="$3"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
-    [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
+    name_rx=$(_rx "$name"); row=$(grep "^### $name_rx " "$XDB" 2>/dev/null | head -1)
+    [ -n "$row" ] || { echo "ERR nouser"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 3650 ] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
-    sed -i "s/^### $name \([^ ]*\) .*/### $name \1 $exp/" "$XDB"
+    id=$(printf '%s\n' "$row" | awk '{print $3}')
+    if ! _xconf_has "$name"; then
+      cj=$(_client_json "$proto" "$id" "$name")
+      _xconf_add "$cj" "$name" || { echo "ERR conf"; exit 1; }
+    fi
+    sed -i "s/^### $name_rx \([^ ]*\) .*/### $name \1 $exp/" "$XDB"
     echo "OK $name $exp" ;;
   xlock)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    grep -q "^### $name " "$XDB" || { echo "ERR nouser"; exit 1; }
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
+    name_rx=$(_rx "$name"); grep -q "^### $name_rx " "$XDB" || { echo "ERR nouser"; exit 1; }
     # On retire le client de la configuration : il ne peut plus se connecter.
     # Son identifiant reste dans la base, ce qui permet de le réactiver.
-    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$name\"))" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
-    sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2 L|" "$XDB"
-    systemctl restart xray >/dev/null 2>&1
+    if _xconf_has "$name"; then _xconf_remove "$name" || { echo "ERR conf"; exit 1; }; fi
+    sed -i "s|^### $name_rx \([^ ]*\) \([^ ]*\).*|### $name \1 \2 L|" "$XDB"
     echo "OK locked" ;;
   xunlock)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    row=$(grep "^### $name " "$XDB" 2>/dev/null | head -1)
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
+    name_rx=$(_rx "$name"); row=$(grep "^### $name_rx " "$XDB" 2>/dev/null | head -1)
     [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
     id=$(echo "$row" | awk '{print $3}')
-    cj=$(_client_json "$proto" "$id" "$name")
-    jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) += [$cj]" "$XCONF" > "$XCONF.tmp" && mv "$XCONF.tmp" "$XCONF"
-    sed -i "s|^### $name \([^ ]*\) \([^ ]*\).*|### $name \1 \2|" "$XDB"
-    systemctl restart xray >/dev/null 2>&1
+    if ! _xconf_has "$name"; then
+      cj=$(_client_json "$proto" "$id" "$name")
+      _xconf_add "$cj" "$name" || { echo "ERR conf"; exit 1; }
+    fi
+    sed -i "s|^### $name_rx \([^ ]*\) \([^ ]*\).*|### $name \1 \2|" "$XDB"
     echo "OK unlocked" ;;
   xinfo)
     proto="$1"; name=$(printf '%s' "$2" | tr -d '\r\n\t '); xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    row=$(grep "^### $name " "$XDB" 2>/dev/null | head -1)
+    _valid_name "$name" || { echo "ERR username"; exit 1; }
+    row=$(grep "^### $(_rx "$name") " "$XDB" 2>/dev/null | head -1)
     [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
     id=$(echo "$row" | awk '{print $3}'); exp=$(echo "$row" | awk '{print $4}'); cr=$(_x_created_get "$proto" "$name")
     echo "OK $name"
@@ -932,6 +1062,7 @@ case "$cmd" in
         list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($3!="" && $3<=d)) print $2 }' "$DB" 2>/dev/null)
         for u in $list; do
           [ -z "$u" ] && continue
+          [ -x /usr/local/bin/nvpanel-quota ] && /usr/local/bin/nvpanel-quota remove "$u" >/dev/null 2>&1
           pkill -KILL -u "$u" 2>/dev/null
           userdel -f "$u" >/dev/null 2>&1
           sed -i "/^### $u /d" "$DB" 2>/dev/null
@@ -947,13 +1078,13 @@ case "$cmd" in
         list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<=d)) print $2 }' "$XDB" 2>/dev/null)
         for nm in $list; do
           [ -z "$nm" ] && continue
-          jq "(.inbounds[]|select(.tag==\"$TAG\")|.settings.clients) |= map(select(.email!=\"$nm\"))" "$XCONF" > "$XCONF.tmp" 2>/dev/null && mv "$XCONF.tmp" "$XCONF"
-          sed -i "/^### $nm /d" "$XDB" 2>/dev/null
+          _valid_name "$nm" || continue
+          if _xconf_has "$nm"; then _xconf_remove "$nm" || continue; fi
+          sed -i "/^### $(_rx "$nm") /d" "$XDB" 2>/dev/null
           _x_limit_del "$proto" "$nm"
           _x_created_del "$proto" "$nm"
           n=$((n+1))
         done
-        [ "$n" -gt 0 ] && systemctl restart xray >/dev/null 2>&1
         echo "OK $n" ;;
       *) echo "ERR proto"; exit 1 ;;
     esac ;;

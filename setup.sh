@@ -5,6 +5,7 @@
 REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
 BRAND="RHAFF SERVICE"
 CONTACT="t.me/bigrhaff226"
+umask 077
 
 RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\033[1;37m'; GRY='\033[0;90m'; MAG='\033[0;35m'; NC='\033[0m'
 die(){ printf "${RED}✘ %s${NC}\n" "$1"; exit 1; }
@@ -15,28 +16,53 @@ die(){ printf "${RED}✘ %s${NC}\n" "$1"; exit 1; }
 . /etc/os-release 2>/dev/null || die "Distribution inconnue."
 echo "$ID $ID_LIKE" | grep -qiE 'ubuntu|debian' || die "Ubuntu ou Debian requis (détecté : $PRETTY_NAME)."
 RAM_TOT=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x86_64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) die "Architecture non supportée : $(uname -m) (x86_64 ou arm64 requis)." ;;
+esac
+
+valid_domain(){
+  local d="$1" label
+  [ "${#d}" -le 253 ] && [[ "$d" == *.* ]] && [[ "$d" != *..* ]] || return 1
+  IFS='.' read -r -a _labels <<< "$d"
+  for label in "${_labels[@]}"; do
+    [ "${#label}" -ge 1 ] && [ "${#label}" -le 63 ] || return 1
+    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || return 1
+  done
+}
+valid_ipv4(){
+  local ip="$1" octet
+  IFS='.' read -r -a _octets <<< "$ip"
+  [ "${#_octets[@]}" -eq 4 ] || return 1
+  for octet in "${_octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$octet))" -le 255 ] || return 1
+  done
+}
 
 clear
 printf "${CYN}"
 cat <<'ART'
-   ╭──────────────────────────────────────────────────────╮
-   │                                                      │
-   │          R H A F F   S E R V I C E                   │
-   │          MULTI PROTOCOLES · VPS EDITION              │
-   │                                                      │
-   ╰──────────────────────────────────────────────────────╯
+   ┌────────────────────────────────────────────────────┐
+   │        R H A F F   S E R V I C E                     │
+   │        Installation                                  │
+   └────────────────────────────────────────────────────┘
 ART
-printf "${NC}"
-printf "   ${MAG}◆${NC} ${WHT}Installation intelligente${NC}  ${GRY}•${NC}  ${CYN}%s${NC}  ${GRY}•${NC}  ${CYN}%s${NC}\n" "${PRETTY_NAME:-Debian/Ubuntu}" "$(uname -m)"
-printf "   ${GRY}────────────────────────────────────────────────────────${NC}\n"
-printf "   ${GRN}●${NC} Détection système     ${GRN}●${NC} Déploiement sécurisé     ${GRN}●${NC} Contrôles automatiques\n\n"
-[ -n "$RAM_TOT" ] && [ "$RAM_TOT" -lt 900 ] && printf "   ${YLW}⚠ RAM %s Mo — 1 Go minimum recommandé.${NC}\n\n" "$RAM_TOT"
+printf "${NC}\n"
+[ -n "$RAM_TOT" ] && [ "$RAM_TOT" -lt 900 ] && printf "${YLW}! RAM %s Mo — 1 Go minimum recommandé.${NC}\n\n" "$RAM_TOT"
 
 # --- Saisies -------------------------------------------------
 read -rp "   🌐 Nom de domaine (laisser vide si aucun) : " NVDOMAIN
+NVDOMAIN=${NVDOMAIN,,}
+[ -z "$NVDOMAIN" ] || valid_domain "$NVDOMAIN" || die "Nom de domaine invalide (FQDN attendu, ex. vpn.example.com)."
 read -rp "   🔌 Port (Entrée = 443 par défaut) : " NVPORT
 NVPORT=${NVPORT:-443}
-[[ "$NVPORT" =~ ^[0-9]+$ ]] || NVPORT=443
+[[ "$NVPORT" =~ ^[0-9]+$ ]] && [ "$NVPORT" -ge 1 ] && [ "$NVPORT" -le 65535 ] && [ "$NVPORT" -ne 80 ] \
+  || die "Port invalide (1 à 65535, sauf 80 réservé à la façade HTTP)."
+case "$NVPORT" in
+  22|143|1723|4443|7100|7200|7300|8080|8081|8082|8388|10085)
+    die "Le port $NVPORT est réservé à un autre composant du panel." ;;
+esac
 echo
 
 # ---- Barre de progression animée ---------------------------
@@ -55,16 +81,16 @@ fill(){ # $1 target  $2 label
 }
 
 fill 8 "Préparation du système…"
-cat > /etc/resolv.conf <<EOF
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-EOF
-
 export DEBIAN_FRONTEND=noninteractive
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
 fill 20 "Installation des dépendances…"
-apt-get update -y >/dev/null 2>&1
+INSTALL_LOG=/var/log/rhaff-install.log
+apt-get update -y >"$INSTALL_LOG" 2>&1 || die "Mise à jour APT échouée. Détails : $INSTALL_LOG"
 apt-get install -y curl wget jq unzip cron screen socat python3 openssl \
-    net-tools dropbear stunnel4 fail2ban vnstat iptables nginx certbot qrencode >/dev/null 2>&1
+    ca-certificates iproute2 procps util-linux net-tools dropbear stunnel4 \
+    fail2ban vnstat iptables iptables-persistent nginx certbot qrencode >>"$INSTALL_LOG" 2>&1 \
+    || die "Installation des dépendances échouée. Détails : $INSTALL_LOG"
 
 # --- Contrôle des outils indispensables -------------------------------------
 # L'installation groupée ci-dessus est silencieuse : si un dépôt est
@@ -73,9 +99,10 @@ apt-get install -y curl wget jq unzip cron screen socat python3 openssl \
 # Xray renvoyait « ERR conf » sans que la cause soit visible nulle part.
 # On vérifie donc chaque outil vital et on réessaie individuellement.
 _MISSING=""
-for _t in curl jq openssl python3; do
+for _tool_pkg in curl:curl jq:jq openssl:openssl python3:python3 ip:iproute2 ss:iproute2 flock:util-linux nginx:nginx systemctl:systemd crontab:cron iptables:iptables; do
+  _t=${_tool_pkg%%:*}; _pkg=${_tool_pkg##*:}
   command -v "$_t" >/dev/null 2>&1 || {
-    apt-get install -y "$_t" >/dev/null 2>&1
+    apt-get install -y "$_pkg" >/dev/null 2>&1
     command -v "$_t" >/dev/null 2>&1 || _MISSING="$_MISSING $_t"
   }
 done
@@ -105,7 +132,10 @@ if command -v dropbear >/dev/null 2>&1 || dpkg -l 2>/dev/null | grep -q '^ii.*dr
   fi
   systemctl unmask dropbear >/dev/null 2>&1
   systemctl enable dropbear >/dev/null 2>&1
-  systemctl restart dropbear >/dev/null 2>&1
+  systemctl restart dropbear >/dev/null 2>&1 \
+    && systemctl is-active --quiet dropbear \
+    && ss -H -ltn 2>/dev/null | awk '$4 ~ /:143$/{f=1} END{exit f?0:1}' \
+    || die "Dropbear n'a pas pu démarrer sur le port 143. Consulte : journalctl -u dropbear"
 fi
 
 # --- Comptes du panel avec shell /bin/false : Dropbear (et OpenSSH selon
@@ -117,25 +147,28 @@ grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shel
 
 fill 40 "Déploiement du panel…"
 mkdir -p /etc/nvpanel/lib /etc/nvpanel/db
-# Horodatage immuable de la toute première installation. Les mises à jour ne le
-# remplacent jamais : le bilan du trafic peut ainsi afficher la vraie date du VPS.
-if [ ! -s /etc/nvpanel/install_date ]; then
-  date '+%Y-%m-%dT%H:%M:%S%z' > /etc/nvpanel/install_date
-fi
-curl -s ipv4.icanhazip.com > /etc/nvpanel/ip 2>/dev/null || curl -s ifconfig.me > /etc/nvpanel/ip 2>/dev/null
+chmod 700 /etc/nvpanel /etc/nvpanel/lib /etc/nvpanel/db 2>/dev/null
+IPADDR=$(curl -4fsS --connect-timeout 8 --max-time 15 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n ')
+valid_ipv4 "$IPADDR" \
+  || IPADDR=$(curl -4fsS --connect-timeout 8 --max-time 15 https://ifconfig.me/ip 2>/dev/null | tr -d '\r\n ')
+valid_ipv4 "$IPADDR" || die "Impossible de détecter l'adresse IPv4 publique du VPS."
+printf '%s\n' "$IPADDR" > /etc/nvpanel/ip
 [ -n "$NVDOMAIN" ] && echo "$NVDOMAIN" > /etc/nvpanel/domain
 echo "$NVPORT" > /etc/nvpanel/xport
+chmod 600 /etc/nvpanel/ip /etc/nvpanel/domain /etc/nvpanel/xport 2>/dev/null
 
 # Téléchargement SILENCIEUX (détails masqués) — on note juste les manquants
 FAILED=""
 fetch(){
-  local name dest="$2" done=0
+  local name dest="$2" done=0 tmp
+  tmp=$(mktemp "${dest}.XXXXXX") || { FAILED="$FAILED $1"; return; }
   for name in "$1" "$1.txt"; do
-    if curl -fsSL "$REPO_RAW/$name" -o "$dest" 2>/dev/null && [ -s "$dest" ] && ! head -c 200 "$dest" | grep -q '404: Not Found'; then
-      chmod +x "$dest"; done=1; break
+    if curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/$name" -o "$tmp" 2>/dev/null \
+       && [ -s "$tmp" ] && ! head -c 200 "$tmp" | grep -q '404: Not Found'; then
+      if chmod 700 "$tmp" && mv "$tmp" "$dest"; then done=1; break; fi
     fi
   done
-  [ "$done" = 1 ] || FAILED="$FAILED $1"
+  if [ "$done" != 1 ]; then rm -f "$tmp"; FAILED="$FAILED $1"; fi
 }
 for pair in \
   "ui.sh:/etc/nvpanel/lib/ui.sh" "menu:/usr/local/bin/menu" "menu-ssh:/usr/local/bin/menu-ssh" \
@@ -144,7 +177,7 @@ for pair in \
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
-  "nvpanel-conso:/usr/local/bin/nvpanel-conso" "nvpanel-guard:/usr/local/bin/nvpanel-guard" \
+  "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
   "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp" \
   "install-l2tp:/usr/local/bin/install-l2tp" "install-pptp:/usr/local/bin/install-pptp" \
   "install-sstp:/usr/local/bin/install-sstp" \
@@ -154,12 +187,14 @@ for pair in \
   "update.sh:/usr/local/bin/update"; do
   fetch "${pair%%:*}" "${pair##*:}"
 done
+[ -z "$FAILED" ] || die "Composants indispensables non téléchargés :$FAILED"
 ln -sf /usr/local/bin/menu /usr/local/bin/acc 2>/dev/null
 ln -sf /usr/local/bin/menu /usr/local/bin/dgh 2>/dev/null
 ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 
 fill 62 "Configuration des services…"
-( crontab -l 2>/dev/null | grep -v nvpanel-clean; echo "*/10 * * * * /usr/local/bin/nvpanel-clean" ) | crontab - 2>/dev/null
+( crontab -l 2>/dev/null | grep -v nvpanel-clean; echo "*/10 * * * * /usr/local/bin/nvpanel-clean" ) | crontab - 2>/dev/null \
+  || die "Installation de la tâche de nettoyage automatique échouée."
 cat > /etc/systemd/system/nvpanel-limit.service <<EOF
 [Unit]
 Description=RHAFF limite d'appareils
@@ -170,18 +205,44 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
+cat > /etc/systemd/system/nvpanel-xlimit.service <<'EOF'
+[Unit]
+Description=RHAFF SERVICE - limite appareils Xray/SS
+After=network-online.target xray.service nginx.service
+Wants=network-online.target
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 5; done'
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
+EOF
 systemctl daemon-reload 2>/dev/null
-systemctl enable --now nvpanel-limit >/dev/null 2>&1
-# Garde multi-protocoles : service local uniquement, utilisé par Xray, PPP et
-# Hysteria2 pour les limites réelles d'IP/sessions/appareils.
-[ -x /usr/local/bin/nvpanel-guard ] && /usr/local/bin/nvpanel-guard install >/dev/null 2>&1
-( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null
+systemctl enable --now nvpanel-limit >/dev/null 2>&1 || die "Le service de limite SSH n'a pas pu démarrer."
+systemctl enable --now nvpanel-xlimit >/dev/null 2>&1 || die "Le service de limite Xray n'a pas pu démarrer."
+sleep 1
+systemctl is-active --quiet nvpanel-limit || die "Le service de limite SSH s'est arrêté après son démarrage."
+systemctl is-active --quiet nvpanel-xlimit || die "Le service de limite Xray s'est arrêté après son démarrage."
+( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null \
+  || die "Installation de la tâche de quota échouée."
 # compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)
-[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
-( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
+[ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1 \
+  || die "Initialisation du compteur de consommation échouée."
+( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null \
+  || die "Installation de la tâche de consommation échouée."
 # relevé d'activité des comptes Xray : à la minute, pour que la colonne
 # « CONNECTÉ DEPUIS » soit précise sans jamais interroger le réseau
-( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null
+( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null \
+  || die "Installation du relevé d'activité Xray échouée."
+
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 143/tcp >/dev/null 2>&1 || die "Ouverture du port Dropbear dans UFW impossible."
+fi
+iptables -C INPUT -p tcp --dport 143 -j ACCEPT 2>/dev/null \
+  || iptables -I INPUT -p tcp --dport 143 -j ACCEPT 2>/dev/null \
+  || die "Ouverture du port Dropbear dans le pare-feu impossible."
+netfilter-persistent save >/dev/null 2>&1 || die "Impossible de rendre le pare-feu persistant."
 
 # --- Message d'accueil du serveur (MOTD) ---------------------------------
 # Ubuntu et Debian affichent au login un long texte : bannière de la
@@ -195,20 +256,27 @@ touch /root/.hushlogin 2>/dev/null
 
 
 fill 80 "Préparation des protocoles…"
-[ -x /usr/local/bin/install-xray ] && /usr/local/bin/install-xray auto >/dev/null 2>&1
+PROTO_FAILED=""
+if [ -x /usr/local/bin/install-xray ]; then
+  /usr/local/bin/install-xray auto >/dev/null 2>&1 || PROTO_FAILED="$PROTO_FAILED Xray"
+else
+  PROTO_FAILED="$PROTO_FAILED Xray"
+fi
 # UDP (UDPGW) activé d'office : le paquet badvpn vient des dépôts officiels,
 # donc cela fonctionne sur tous les VPS Debian/Ubuntu sans binaire à héberger.
-[ -x /usr/local/bin/install-udp ] && /usr/local/bin/install-udp auto >/dev/null 2>&1
+if [ -x /usr/local/bin/install-udp ]; then
+  /usr/local/bin/install-udp auto >/dev/null 2>&1 || PROTO_FAILED="$PROTO_FAILED UDPGW"
+else
+  PROTO_FAILED="$PROTO_FAILED UDPGW"
+fi
 
 fill 90 "Préparation de SlowDNS…"
-mkdir -p /etc/nvpanel/slowdns
-case "$(uname -m)" in aarch64|arm64) SLDNS_BIN="dns-server-arm64" ;; *) SLDNS_BIN="dns-server" ;; esac
-curl -fsSL "$REPO_RAW/$SLDNS_BIN" -o /etc/nvpanel/slowdns/dns-server 2>/dev/null
-curl -fsSL "$REPO_RAW/server.key" -o /etc/nvpanel/slowdns/server.key 2>/dev/null
-curl -fsSL "$REPO_RAW/server.pub" -o /etc/nvpanel/slowdns/server.pub 2>/dev/null
-chmod +x /etc/nvpanel/slowdns/dns-server 2>/dev/null
-if [ -n "$NVDOMAIN" ] && [ -s /etc/nvpanel/slowdns/dns-server ] && [ -x /usr/local/bin/install-slowdns ]; then
-  /usr/local/bin/install-slowdns auto "ns-$NVDOMAIN" >/dev/null 2>&1
+if [ -n "$NVDOMAIN" ]; then
+  if [ -x /usr/local/bin/install-slowdns ]; then
+    /usr/local/bin/install-slowdns auto "ns-$NVDOMAIN" >/dev/null 2>&1 || PROTO_FAILED="$PROTO_FAILED SlowDNS"
+  else
+    PROTO_FAILED="$PROTO_FAILED SlowDNS"
+  fi
 fi
 
 fill 97 "Finalisation…"
@@ -221,26 +289,23 @@ fi
 fill 100 "Terminé"
 sleep 0.3
 
+[ -z "$PROTO_FAILED" ] || die "Installation incomplète, protocoles en échec :$PROTO_FAILED"
+
 # --- Écran final --------------------------------------------
 IPADDR=$(cat /etc/nvpanel/ip 2>/dev/null)
-INSTALLED=$(date -d "$(cat /etc/nvpanel/install_date 2>/dev/null)" '+%d/%m/%Y à %H:%M:%S %Z' 2>/dev/null)
 clear
 printf "${GRN}"
 cat <<'DONE'
-   ╭──────────────────────────────────────────────────────╮
-   │                                                      │
-   │             ✔  INSTALLATION TERMINÉE                 │
-   │               RHAFF SERVICE                          │
-   │                                                      │
-   ╰──────────────────────────────────────────────────────╯
+   ┌──────────────────────────────────────────────────┐
+   │                                                    │
+   │      ✔   R H A F F   S E R V I C E   installé      │
+   │                                                    │
+   └──────────────────────────────────────────────────┘
 DONE
-printf "${NC}"
-printf "   ${GRN}●${NC} Panel déployé       ${GRN}●${NC} Services préparés       ${GRN}●${NC} Surveillance active\n"
-printf "   ${GRY}────────────────────────────────────────────────────────${NC}\n"
-printf "   ${CYN}🌐 VPS${NC}          : ${WHT}%s${NC}\n" "$IPADDR"
-printf "   ${CYN}🗓 Installation${NC} : ${WHT}%s${NC}\n" "${INSTALLED:-date enregistrée}"
-printf "   ${CYN}⌨ Panel${NC}        : ${WHT}menu${NC}  ${GRY}•${NC}  ${WHT}acc${NC}  ${GRY}•${NC}  ${WHT}dgh${NC}\n"
-printf "   ${GRY}────────────────────────────────────────────────────────${NC}\n\n"
+printf "${NC}\n"
+printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\n"
+printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
+printf "   ${GRY}🌐 IP du serveur : %s${NC}\n\n" "$IPADDR"
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion puis tape : update${NC}\n\n"

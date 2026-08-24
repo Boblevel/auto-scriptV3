@@ -3,15 +3,16 @@
 Panel de gestion premium multi-protocoles — Telegram : **t.me/bigrhaff226**
 
 Panel de gestion de comptes pour VPS **Ubuntu / Debian**
-(toutes versions : Ubuntu 20.04 / 22.04 / 24.04, Debian 10 / 11 / 12).
+(Ubuntu 20.04 / 22.04 / 24.04, Debian 11 / 12 / 13).
 Protocoles : SSH, SlowDNS, UDP, Xray (Vmess / Vless / Trojan), Shadowsocks, WireGuard.
 
 ## Prérequis
 
-- VPS **Ubuntu ou Debian** (Debian 10 / 11 / 12 · Ubuntu 20.04 / 22.04 / 24.04)
+- VPS **Ubuntu ou Debian** (Debian 11 / 12 / 13 · Ubuntu 20.04 / 22.04 / 24.04)
 - Accès **root**
 - **1 Go de RAM minimum**
-- Architecture x86_64 ou ARM (aarch64)
+- Architecture x86_64 ou ARM64 (aarch64). Pour ARM64, le dépôt doit fournir
+  `dns-server-arm64` (et `udp-custom-arm64` pour le module UDP Custom optionnel).
 
 ## Fonctionnalités
 
@@ -20,7 +21,7 @@ Protocoles : SSH, SlowDNS, UDP, Xray (Vmess / Vless / Trojan), Shadowsocks, Wire
 - **Shadowsocks** · **WireGuard**
 - **Bot Telegram** de gestion à distance
 - Limite d'appareils et **quota de bande passante** par compte
-- Suppression automatique des comptes expirés
+- Verrouillage automatique des comptes expirés (fiche conservée pour renouvellement)
 - **HTTPS / TLS** automatique (Let's Encrypt)
 - Suivi de la consommation (jour / mois)
 

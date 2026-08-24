@@ -10,11 +10,33 @@ SECRETS=/etc/ppp/chap-secrets
 DBDIR=/etc/nvpanel/db
 PLIM="$DBDIR/ppp_limit"
 PSTATE=/run/nvpanel-ppp-sessions
-mkdir -p "$DBDIR" /etc/ppp; touch "$SECRETS" "$PLIM"; chmod 600 "$SECRETS"
+umask 077
+mkdir -p "$DBDIR" /etc/ppp; chmod 700 "$DBDIR" 2>/dev/null
+touch "$SECRETS" "$PLIM"; chmod 600 "$SECRETS" "$PLIM" 2>/dev/null
 
 _srv(){ case "$1" in l2tp) echo l2tpd ;; pptp) echo pptpd ;; sstp) echo sstpd ;; *) return 1 ;; esac; }
 _db(){ echo "$DBDIR/$1"; }
 _clean(){ printf '%s' "$1" | tr -d '\r\n\t '; }
+_valid_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$ ]]; }
+_rx(){ printf '%s' "$1" | sed 's/\./[.]/g'; }
+_valid_password(){
+  [ "${#1}" -ge 4 ] && [ "${#1}" -le 128 ] \
+    && printf '%s' "$1" | LC_ALL=C grep -qE '^[A-Za-z0-9@%+=_.!#$^~-]+$'
+}
+_service_active(){
+  case "$1" in
+    l2tp)
+      systemctl is-active --quiet xl2tpd || return 1
+      systemctl is-active --quiet strongswan-starter \
+        || systemctl is-active --quiet strongswan \
+        || systemctl is-active --quiet ipsec ;;
+    pptp) systemctl is-active --quiet pptpd ;;
+    sstp) systemctl is-active --quiet nvpanel-sstp ;;
+    *) return 1 ;;
+  esac
+}
+_secret_active(){ awk -v u="$1" -v s="$2" '$1==u&&$2==s{f=1} END{exit !f}' "$SECRETS" 2>/dev/null; }
+_secret_locked(){ awk -v u="$1" -v s="$2" '$1=="#RHAFFLOCK"&&$2==u&&$3==s{f=1} END{exit !f}' "$SECRETS" 2>/dev/null; }
 # Affichage uniquement (JJ-MM-AAAA) — les dates restent stockées en AAAA-MM-JJ
 # partout ailleurs, les comparaisons de tri en dépendent.
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
@@ -24,11 +46,18 @@ _limit_get(){ awk -F'|' -v p="$1" -v u="$2" '$1==p&&$2==u{v=$3} END{print v+0}' 
 _limit_set(){
   local p="$1" u="$2" l="$3" t
   case "$l" in ''|*[!0-9]*) l=0 ;; esac
-  t=$(mktemp) || return 1
+  t=$(mktemp "${PLIM}.XXXXXX") || return 1
   awk -F'|' -v p="$p" -v u="$u" '!($1==p&&$2==u)' "$PLIM" 2>/dev/null > "$t"
-  printf '%s|%s|%s\n' "$p" "$u" "$l" >> "$t"; mv "$t" "$PLIM"
+  printf '%s|%s|%s\n' "$p" "$u" "$l" >> "$t" || { rm -f "$t"; return 1; }
+  mv "$t" "$PLIM"
 }
-_limit_del(){ local p="$1" u="$2" t; t=$(mktemp) || return 0; awk -F'|' -v p="$p" -v u="$u" '!($1==p&&$2==u)' "$PLIM" 2>/dev/null > "$t"; mv "$t" "$PLIM"; }
+_limit_del(){
+  local p="$1" u="$2" t
+  t=$(mktemp "${PLIM}.XXXXXX") || return 0
+  awk -F'|' -v p="$p" -v u="$u" '!($1==p&&$2==u)' "$PLIM" 2>/dev/null > "$t" \
+    || { rm -f "$t"; return 1; }
+  mv "$t" "$PLIM"
+}
 
 # PPP appelle automatiquement ip-up/ip-down à chaque vraie session. Ces deux
 # hooks enregistrent compte + interface + IP distante. Si une NOUVELLE IP fait
@@ -37,12 +66,14 @@ _limit_del(){ local p="$1" u="$2" t; t=$(mktemp) || return 0; awk -F'|' -v p="$p
 _ensure_hooks(){
   local up=/etc/ppp/ip-up.d/90-nvpanel-device-limit down=/etc/ppp/ip-down.d/90-nvpanel-device-limit
   mkdir -p /etc/ppp/ip-up.d /etc/ppp/ip-down.d
-  if ! grep -q 'RHAFF_PPP_LIMIT_V3_DELETE_ON_EXCESS' "$up" 2>/dev/null; then
+  if ! grep -q 'RHAFF_PPP_LIMIT_V5_DELETE_ON_EXCESS' "$up" 2>/dev/null; then
     cat > "$up" <<'EOF'
 #!/bin/sh
-# RHAFF_PPP_LIMIT_V3_DELETE_ON_EXCESS
+# RHAFF_PPP_LIMIT_V5_DELETE_ON_EXCESS
 LIM=/etc/nvpanel/db/ppp_limit
 STATE=/run/nvpanel-ppp-sessions
+exec 9>/run/nvpanel-ppp-sessions.lock
+flock -w 5 9 || exit 0
 user=${PEERNAME:-}
 iface=${IFNAME:-$1}
 ip=${IPREMOTE:-$5}
@@ -77,6 +108,9 @@ if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then
   if [ "$exists" -eq 0 ] && [ "$n" -ge "$lim" ]; then
     # Le nouvel appareil ferait passer le compte au-dessus de sa limite :
     # suppression complète du compte, puis coupure de la session déclenchante.
+    # Libère le verrou des sessions avant d'appeler nvpanel-ppp, qui le
+    # reprendra pendant sa purge. Cela évite un interblocage avec le panel.
+    flock -u 9 2>/dev/null
     /usr/local/bin/nvpanel-ppp del "$proto" "$user" >/dev/null 2>&1
     printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$lim" "$((n+1))" >> /var/log/nvpanel-device-delete.log 2>/dev/null
     kill "$pid" 2>/dev/null
@@ -91,11 +125,13 @@ exit 0
 EOF
     chmod 755 "$up"
   fi
-  if ! grep -q 'RHAFF_PPP_LIMIT_V2' "$down" 2>/dev/null; then
+  if ! grep -q 'RHAFF_PPP_LIMIT_V3' "$down" 2>/dev/null; then
     cat > "$down" <<'EOF'
 #!/bin/sh
-# RHAFF_PPP_LIMIT_V2
+# RHAFF_PPP_LIMIT_V3
 STATE=/run/nvpanel-ppp-sessions
+exec 9>/run/nvpanel-ppp-sessions.lock
+flock -w 5 9 || exit 0
 iface=${IFNAME:-$1}
 [ -f "$STATE" ] || exit 0
 awk -F'|' -v f="$iface" '$3!=f' "$STATE" > "$STATE.tmp" 2>/dev/null && mv "$STATE.tmp" "$STATE"
@@ -108,7 +144,9 @@ EOF
 _prune_sessions(){
   [ -f "$PSTATE" ] || { touch "$PSTATE" 2>/dev/null; return; }
   local t p u f ip first pid
-  t=$(mktemp) || return
+  exec 7>/run/nvpanel-ppp-sessions.lock
+  flock -w 5 7 || return
+  t=$(mktemp /run/.nvpanel-ppp-sessions.XXXXXX) || return
   while IFS='|' read -r p u f ip first pid; do
     [ -n "$f" ] && [ -d "/sys/class/net/$f" ] && printf '%s|%s|%s|%s|%s|%s\n' "$p" "$u" "$f" "$ip" "$first" "$pid" >> "$t"
   done < "$PSTATE"
@@ -152,63 +190,89 @@ EOF
 }
 
 cmd="$1"; shift 2>/dev/null
+exec 9>/run/nvpanel-ppp.lock
+flock -w 20 9 || { echo "ERR busy"; exit 1; }
 case "$cmd" in
   add)
     proto=$(_clean "$1"); user=$(_clean "$2"); pass=$(_clean "$3"); days="$4"; lim="${5:-0}"
     srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
     [ -z "$user" ] || [ -z "$pass" ] && { echo "ERR args"; exit 1; }
-    [[ "$days" =~ ^[0-9]+$ ]] || days=30
-    [[ "$lim" =~ ^[0-9]+$ ]] || lim=0
+    _valid_name "$user" || { echo "ERR username"; exit 1; }
+    _valid_password "$pass" || { echo "ERR password"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 3650 ] || { echo "ERR days"; exit 1; }
+    [[ "$lim" =~ ^[0-9]+$ ]] && [ "$lim" -le 999 ] || { echo "ERR limit"; exit 1; }
+    _service_active "$proto" || { echo "ERR notinstalled"; exit 1; }
     _ensure_hooks
-    db=$(_db "$proto"); touch "$db"
-    grep -q "^### $user " "$db" && { echo "ERR exists"; exit 1; }
+    db=$(_db "$proto"); touch "$db"; chmod 600 "$db" 2>/dev/null
+    for _pdb in l2tp pptp sstp; do
+      grep -q "^### $(_rx "$user") " "$DBDIR/$_pdb" 2>/dev/null && { echo "ERR exists"; exit 1; }
+    done
+    awk -v u="$user" '$1==u || ($1=="#RHAFFLOCK"&&$2==u){f=1} END{exit !f}' "$SECRETS" 2>/dev/null \
+      && { echo "ERR exists"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d"); cr=$(date +"%Y-%m-%d")
-    printf '%s %s %s *\n' "$user" "$srv" "$pass" >> "$SECRETS"
-    echo "### $user $pass $exp" >> "$db"
-    _limit_set "$proto" "$user" "$lim"
+    printf '%s %s "%s" *\n' "$user" "$srv" "$pass" >> "$SECRETS" || { echo "ERR database"; exit 1; }
+    if ! printf '### %s %s %s\n' "$user" "$pass" "$exp" >> "$db"; then
+      sed -i "/^$(_rx "$user")[[:space:]]\+$srv[[:space:]]/d" "$SECRETS" 2>/dev/null
+      echo "ERR database"; exit 1
+    fi
+    if ! _limit_set "$proto" "$user" "$lim"; then
+      sed -i "/^$(_rx "$user")[[:space:]]\+$srv[[:space:]]/d" "$SECRETS" 2>/dev/null
+      sed -i "/^### $(_rx "$user") /d" "$db" 2>/dev/null
+      echo "ERR database"; exit 1
+    fi
     echo "OK $user $exp"
     _box "$proto" "$user" "$pass" "$cr" "$exp" ;;
   list)
-    proto=$(_clean "$1"); db=$(_db "$proto"); today=$(date +%F)
+    proto=$(_clean "$1"); _srv "$proto" >/dev/null || { echo "ERR proto"; exit 1; }; db=$(_db "$proto"); today=$(date +%F)
     awk -v d="$today" '/^### /{ st=($5=="L")?"verrou":(($4!="" && $4<=d)?"expiré":"actif"); print $2"|"$4"|"st }' "$db" 2>/dev/null ;;
   lock)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    _valid_name "$user" || { echo "ERR username"; exit 1; }
     db=$(_db "$proto")
-    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    user_rx=$(_rx "$user"); grep -q "^### $user_rx " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
     # La ligne d'authentification est mise en commentaire : le compte ne peut
     # plus se connecter, mais ses identifiants sont conservés.
-    sed -i "s|^$user[[:space:]]\+$srv[[:space:]]|#RHAFFLOCK $user $srv |" "$SECRETS"
-    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$db"
+    sed -i "s|^$user_rx[[:space:]]\+$srv[[:space:]]|#RHAFFLOCK $user $srv |" "$SECRETS"
+    _secret_active "$user" "$srv" && { echo "ERR auth"; exit 1; }
+    _secret_locked "$user" "$srv" || { echo "ERR auth"; exit 1; }
+    sed -i "s|^### $user_rx \([^ ]*\) \([^ ]*\).*|### $user \1 \2 L|" "$db"
     _drop_user_sessions "$proto" "$user"
     echo "OK locked" ;;
   unlock)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    _valid_name "$user" || { echo "ERR username"; exit 1; }
     db=$(_db "$proto")
-    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    sed -i "s|^#RHAFFLOCK $user $srv |$user $srv |" "$SECRETS"
-    sed -i "s|^### $user \([^ ]*\) \([^ ]*\).*|### $user \1 \2|" "$db"
+    user_rx=$(_rx "$user"); grep -q "^### $user_rx " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "s|^#RHAFFLOCK $user_rx $srv |$user $srv |" "$SECRETS"
+    _secret_active "$user" "$srv" || { echo "ERR auth"; exit 1; }
+    sed -i "s|^### $user_rx \([^ ]*\) \([^ ]*\).*|### $user \1 \2|" "$db"
     echo "OK unlocked" ;;
   info)
-    proto=$(_clean "$1"); user=$(_clean "$2"); db=$(_db "$proto")
-    row=$(grep "^### $user " "$db" 2>/dev/null | head -1)
+    proto=$(_clean "$1"); user=$(_clean "$2"); _srv "$proto" >/dev/null || { echo "ERR proto"; exit 1; }
+    _valid_name "$user" || { echo "ERR username"; exit 1; }; db=$(_db "$proto")
+    row=$(grep "^### $(_rx "$user") " "$db" 2>/dev/null | head -1)
     [ -z "$row" ] && { echo "ERR nouser"; exit 1; }
     echo "OK $user"
     _box "$proto" "$user" "$(echo "$row" | awk '{print $3}')" "-" "$(echo "$row" | awk '{print $4}')" ;;
   del)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    _valid_name "$user" || { echo "ERR username"; exit 1; }
     db=$(_db "$proto")
-    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    sed -i "/^$user[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
-    sed -i "/^### $user /d" "$db"
+    user_rx=$(_rx "$user"); grep -q "^### $user_rx " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    sed -i "/^$user_rx[[:space:]]\+$srv[[:space:]]/d; /^#RHAFFLOCK $user_rx $srv /d" "$SECRETS"
+    sed -i "/^### $user_rx /d" "$db"
     _limit_del "$proto" "$user"
     _drop_user_sessions "$proto" "$user"
     echo "OK deleted" ;;
   renew)
-    proto=$(_clean "$1"); user=$(_clean "$2"); days="$3"; db=$(_db "$proto")
-    grep -q "^### $user " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
-    [[ "$days" =~ ^[0-9]+$ ]] || { echo "ERR days"; exit 1; }
+    proto=$(_clean "$1"); user=$(_clean "$2"); days="$3"; srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
+    _valid_name "$user" || { echo "ERR username"; exit 1; }; db=$(_db "$proto")
+    user_rx=$(_rx "$user"); grep -q "^### $user_rx " "$db" 2>/dev/null || { echo "ERR nouser"; exit 1; }
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 3650 ] || { echo "ERR days"; exit 1; }
     exp=$(date -d "+$days days" +"%Y-%m-%d")
-    sed -i "s|^### $user \([^ ]*\) .*|### $user \1 $exp|" "$db"
+    sed -i "s|^#RHAFFLOCK $user_rx $srv |$user $srv |" "$SECRETS"
+    _secret_active "$user" "$srv" || { echo "ERR auth"; exit 1; }
+    sed -i "s|^### $user_rx \([^ ]*\) .*|### $user \1 $exp|" "$db"
     echo "OK $user $exp" ;;
   purge)
     proto=$(_clean "$1"); mode=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
@@ -216,15 +280,17 @@ case "$cmd" in
     list=$(awk -v d="$today" -v m="$mode" '/^### /{ if (m=="all" || ($4!="" && $4<=d)) print $2 }' "$db" 2>/dev/null)
     for u in $list; do
       [ -z "$u" ] && continue
-      sed -i "/^$u[[:space:]]\+$srv[[:space:]]/d" "$SECRETS"
-      sed -i "/^### $u /d" "$db"
+      u_rx=$(_rx "$u")
+      sed -i "/^$u_rx[[:space:]]\+$srv[[:space:]]/d; /^#RHAFFLOCK $u_rx $srv /d" "$SECRETS"
+      sed -i "/^### $u_rx /d" "$db"
       _limit_del "$proto" "$u"
       _drop_user_sessions "$proto" "$u"
       n=$((n+1))
     done
     echo "OK $n" ;;
   sessions)
-    proto=$(_clean "$1"); user=$(_clean "$2"); _ensure_hooks; _prune_sessions
+    proto=$(_clean "$1"); user=$(_clean "$2"); _srv "$proto" >/dev/null || { echo "ERR proto"; exit 1; }
+    _valid_name "$user" || { echo "ERR username"; exit 1; }; _ensure_hooks; _prune_sessions
     now=$(date +%s)
     awk -F'|' -v p="$proto" -v u="$user" -v n="$now" '
       $1==p&&$2==u{a[$4]=1; if(first==0||$5<first) first=$5}
@@ -236,7 +302,7 @@ case "$cmd" in
     _ensure_hooks; _prune_sessions
     awk -F'|' 'NF>=6{print $1"|"$2"|"$4"|"$5}' "$PSTATE" 2>/dev/null ;;
   online)
-    proto=$(_clean "$1"); _ensure_hooks; _prune_sessions
+    proto=$(_clean "$1"); [ "$proto" = all ] || _srv "$proto" >/dev/null || { echo "ERR proto"; exit 1; }; _ensure_hooks; _prune_sessions
     if [ "$proto" = "all" ]; then
       awk -F'|' '$1=="l2tp"||$1=="pptp"||$1=="sstp"{a[$1 SUBSEP $2 SUBSEP $4]=1} END{for(i in a){split(i,k,SUBSEP); c[k[1]]++} print "l2tp|" c["l2tp"]+0; print "pptp|" c["pptp"]+0; print "sstp|" c["sstp"]+0}' "$PSTATE" 2>/dev/null
     else

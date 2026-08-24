@@ -376,7 +376,7 @@ stats() {
   # exclu plutôt que d'afficher un faux chiffre.
   online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst ))
 
-  local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst
+  local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
   bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
   bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
   bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
@@ -384,7 +384,9 @@ stats() {
   bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
   bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
   bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
-  blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst ))
+  bl_wg=$(awk '/^### /{if($6=="L")c++} END{print c+0}' /etc/nvpanel/db/wireguard 2>/dev/null)
+  bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
+  blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_wg + bl_hy ))
 
   IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
 
@@ -423,7 +425,8 @@ proto_dash() {
       [ "$total" -gt 0 ] && online=$(nvpanel-cli xonline "$dbf" 2>/dev/null); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
-      online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}') ;;
+      online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
+      blocked=$(awk '/^### /{if($6=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     ppp:*)
       local pp="${mode#ppp:}"
       online=0

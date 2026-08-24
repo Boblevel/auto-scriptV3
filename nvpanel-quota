@@ -16,44 +16,79 @@
 # ============================================================
 QDB=/etc/nvpanel/db/quota
 USED=/etc/nvpanel/db/quota_used
-mkdir -p /etc/nvpanel/db; touch "$QDB" "$USED"
+umask 077
+mkdir -p /etc/nvpanel/db; chmod 700 /etc/nvpanel/db 2>/dev/null
+touch "$QDB" "$USED"; chmod 600 "$QDB" "$USED" 2>/dev/null
 CHAIN=NVPANEL_QUOTA
+exec 9>/run/nvpanel-quota.lock
+flock -w 10 9 || exit 0
 
 action="$1"
 
 ensure_chain() {
-  iptables -L "$CHAIN" -n >/dev/null 2>&1 || {
-    iptables -N "$CHAIN" 2>/dev/null
-    iptables -C OUTPUT -j "$CHAIN" 2>/dev/null || iptables -I OUTPUT -j "$CHAIN" 2>/dev/null
-  }
+  iptables -w 3 -L "$CHAIN" -n >/dev/null 2>&1 || iptables -w 3 -N "$CHAIN" 2>/dev/null
+  iptables -w 3 -C OUTPUT -j "$CHAIN" 2>/dev/null || iptables -w 3 -I OUTPUT -j "$CHAIN" 2>/dev/null
+}
+
+ensure_accounts() {
+  local user max uid
+  while read -r user max; do
+    [ -n "$user" ] || continue
+    uid=$(id -u "$user" 2>/dev/null) || continue
+    iptables -w 3 -C "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null || \
+      iptables -w 3 -A "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+  done < <(awk 'NF {print $1, $2}' "$QDB" 2>/dev/null)
 }
 
 # add <user> : crée la règle de comptage pour l'UID du compte
 if [ "$action" = "add" ]; then
   ensure_chain
   uid=$(id -u "$2" 2>/dev/null) || exit 0
-  iptables -C "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null || \
-    iptables -A "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+  sed -i "/^$2 /d" "$USED" 2>/dev/null
+  while iptables -w 3 -D "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null; do :; done
+  iptables -w 3 -A "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
+  exit 0
+fi
+
+# remove <user> : retire la règle avant la suppression du compte Linux. Cela
+# évite qu'un UID recyclé hérite du compteur d'un ancien client.
+if [ "$action" = "remove" ]; then
+  user="$2"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || exit 1
+  ensure_chain
+  uid=$(id -u "$user" 2>/dev/null) || { sed -i "/^$user /d" "$USED" 2>/dev/null; exit 0; }
+  while iptables -w 3 -D "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null; do :; done
+  sed -i "/^$user /d" "$USED" 2>/dev/null
   exit 0
 fi
 
 # reset <user> : remet le compteur du compte à zéro
 if [ "$action" = "reset" ]; then
-  [ -n "$2" ] && sed -i "/^$2 /d" "$USED" 2>/dev/null
+  user="$2"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || exit 1
+  sed -i "/^$user /d" "$USED" 2>/dev/null
+  ensure_chain
+  uid=$(id -u "$user" 2>/dev/null) || exit 0
+  while iptables -w 3 -D "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null; do :; done
+  iptables -w 3 -A "$CHAIN" -m owner --uid-owner "$uid" -j RETURN 2>/dev/null
   exit 0
 fi
 
 # ---- check (appelé par cron) --------------------------------
 ensure_chain
+ensure_accounts
 
-# 1) On relève tous les compteurs d'un coup, PUIS on les remet à zéro.
-SNAP=$(iptables -L "$CHAIN" -vxn 2>/dev/null | awk '
+# 1) On relève et remet à zéro dans la même opération iptables (-L -Z) :
+# aucun paquet arrivé entre deux commandes séparées ne peut être effacé sans
+# avoir été inclus dans l'instantané.
+SNAP_RAW=$(iptables -w 3 -L "$CHAIN" -Z -vxn 2>/dev/null) || exit 1
+SNAP=$(printf '%s\n' "$SNAP_RAW" | awk '
   /owner UID match/ {
     for (i = 1; i <= NF; i++) if ($i == "match") { print $(i+1), $2; break }
   }')
-iptables -Z "$CHAIN" >/dev/null 2>&1
 
 # 2) On ajoute le delta de chaque compte à son total cumulé.
+TO_LOCK=""
 while read -r user max; do
   [ -z "$user" ] && continue
   [ -z "$max" ] && continue
@@ -74,8 +109,20 @@ while read -r user max; do
 
   # 3) Verrouillage au dépassement (0 = illimité).
   if [ "$max" -gt 0 ] 2>/dev/null && [ "$total" -ge "$max" ] 2>/dev/null; then
+    TO_LOCK="$TO_LOCK $user"
+  fi
+done < <(awk 'NF {print $1, $2}' "$QDB")
+
+# Ne pas conserver le verrou quota pendant l'appel à nvpanel-cli : une
+# suppression de compte prend le verrou SSH puis demande le verrou quota.
+# Libérer ici garantit un ordre sans interblocage entre les deux opérations.
+flock -u 9 2>/dev/null
+for user in $TO_LOCK; do
+  if [ -x /usr/local/bin/nvpanel-cli ]; then
+    /usr/local/bin/nvpanel-cli lock "$user" >/dev/null 2>&1
+  else
     passwd -l "$user" >/dev/null 2>&1
     pkill -KILL -u "$user" 2>/dev/null
   fi
-done < <(awk 'NF {print $1, $2}' "$QDB")
+done
 exit 0

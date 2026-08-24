@@ -5,23 +5,28 @@
 #  Le trafic propre du serveur (apt, mises à jour du script,
 #  test de vitesse, certbot...) n'est PAS compté.
 #
-#  Principe : deux chaînes iptables -w 3 qui ne comptent que
+#  Principe : trois chaînes iptables -w 3 qui ne comptent que
 #    - INPUT  : paquets ARRIVANT sur un port de service
 #    - OUTPUT : paquets PARTANT d'un port de service
+#    - FORWARD: paquets routés via WireGuard ou une interface PPP
 #  Un téléchargement fait par le serveur est OUTPUT vers le
 #  port 443 DISTANT (et non depuis notre port 443) : ignoré.
 # ============================================================
 DBDIR=/etc/nvpanel/db
 DB="$DBDIR/conso"
+umask 077
 # Version des règles de comptage. À incrémenter dès qu'on change ce qui est
 # compté : l'historique accumulé par l'ancienne méthode est alors effacé,
 # sinon des valeurs erronées (dizaines de Go fantômes) resteraient affichées.
-RULES_VER=6
+RULES_VER=8
 VERF="$DBDIR/conso.ver"
 LASTF="$DBDIR/conso.last"   # derniers compteurs bruts lus
 CIN=NVCONSO_IN
 COUT=NVCONSO_OUT
+CFWD=NVCONSO_FWD
+CONSO_TAGS="ssh_bundle vmess vless trojan shadowsocks hysteria wg ppp"
 mkdir -p "$DBDIR"; touch "$DB"
+chmod 700 "$DBDIR" 2>/dev/null; chmod 600 "$DB" 2>/dev/null
 
 # Changement de méthode de comptage → on repart d'un historique propre.
 # Sans cela, les valeurs erronées accumulées par l'ancienne méthode
@@ -29,11 +34,15 @@ mkdir -p "$DBDIR"; touch "$DB"
 if [ "$(cat "$VERF" 2>/dev/null)" != "$RULES_VER" ]; then
   : > "$DB" 2>/dev/null
   rm -f "$LASTF" 2>/dev/null
+  for _tag in $CONSO_TAGS; do
+    rm -f "$DBDIR/conso_$_tag" "$DBDIR/conso_$_tag.tmp" "$DBDIR/.conso.last.$_tag" 2>/dev/null
+  done
   # Les compteurs iptables encore en place contiennent l'ancien cumul : sans
   # cette remise à zéro, le premier relevé après mise à jour le réinjecterait
   # d'un seul coup dans le nouvel historique pourtant vidé.
   iptables -w 3 -Z "$CIN"  2>/dev/null
   iptables -w 3 -Z "$COUT" 2>/dev/null
+  iptables -w 3 -Z "$CFWD" 2>/dev/null
   printf '%s' "$RULES_VER" > "$VERF" 2>/dev/null
 fi
 
@@ -62,8 +71,13 @@ setup_chains(){
 
   iptables -w 3 -N "$CIN"  2>/dev/null; iptables -w 3 -F "$CIN"  2>/dev/null
   iptables -w 3 -N "$COUT" 2>/dev/null; iptables -w 3 -F "$COUT" 2>/dev/null
-  iptables -w 3 -C INPUT  -j "$CIN"  2>/dev/null || iptables -w 3 -I INPUT  -j "$CIN"  2>/dev/null
-  iptables -w 3 -C OUTPUT -j "$COUT" 2>/dev/null || iptables -w 3 -I OUTPUT -j "$COUT" 2>/dev/null
+  iptables -w 3 -N "$CFWD" 2>/dev/null; iptables -w 3 -F "$CFWD" 2>/dev/null
+  while iptables -w 3 -D INPUT   -j "$CIN"  2>/dev/null; do :; done
+  while iptables -w 3 -D OUTPUT  -j "$COUT" 2>/dev/null; do :; done
+  while iptables -w 3 -D FORWARD -j "$CFWD" 2>/dev/null; do :; done
+  iptables -w 3 -I INPUT   -j "$CIN"  2>/dev/null
+  iptables -w 3 -I OUTPUT  -j "$COUT" 2>/dev/null
+  iptables -w 3 -I FORWARD -j "$CFWD" 2>/dev/null
 
   # ------------------------------------------------------------------
   # On ne compte QUE des flux qui ne peuvent appartenir qu'à un client VPN.
@@ -86,19 +100,31 @@ setup_chains(){
     iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null
   done
 
-  # 2) Xray / Shadowsocks : le trafic client transite par la boucle locale
-  #    entre nginx et Xray. Rien d'autre n'emprunte ces ports.
+  # 2) Xray WebSocket transite par la boucle locale entre nginx et Xray.
+  #    Shadowsocks écoute directement sur son port public et est traité juste
+  #    après avec ses deux transports TCP/UDP.
   #    Une règle par port (au lieu d'un multiport groupé) : chaque port est
   #    dédié à UN SEUL protocole (8080 vmess, 8081 vless, 8082 trojan,
-  #    8388 shadowsocks), ce qui permet de les étiqueter séparément pour
+  #    puis 8388 pour Shadowsocks), ce qui permet de les étiqueter séparément pour
   #    que chaque menu affiche uniquement sa propre consommation. Le
   #    trafic total compté reste rigoureusement identique.
   local _xp _xt
-  for _xp in 8080:vmess 8081:vless 8082:trojan 8388:shadowsocks; do
+  for _xp in 8080:vmess 8081:vless 8082:trojan; do
     _xt="${_xp#*:}"; _xp="${_xp%%:*}"
     iptables -w 3 -A "$COUT" -o lo -p tcp --dport "$_xp" -m comment --comment "$_xt" -j RETURN 2>/dev/null
     iptables -w 3 -A "$COUT" -o lo -p tcp --sport "$_xp" -m comment --comment "$_xt" -j RETURN 2>/dev/null
   done
+  # Shadowsocks écoute directement sur 8388 (il ne passe pas par nginx/lo).
+  # TCP et UDP doivent donc être comptés sur les chaînes publiques.
+  iptables -w 3 -A "$CIN"  -p tcp --dport 8388 -m comment --comment "shadowsocks" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -p tcp --sport 8388 -m comment --comment "shadowsocks" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$CIN"  -p udp --dport 8388 -m comment --comment "shadowsocks" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -p udp --sport 8388 -m comment --comment "shadowsocks" -j RETURN 2>/dev/null
+
+  # Hysteria2 utilise exclusivement UDP/443 ; le trafic TCP/443 de nginx
+  # reste exclu ici pour ne pas compter deux fois les flux Xray WebSocket.
+  iptables -w 3 -A "$CIN"  -p udp --dport 443 -m comment --comment "hysteria" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -p udp --sport 443 -m comment --comment "hysteria" -j RETURN 2>/dev/null
 
   # 3) WireGuard et PPP (L2TP / PPTP / SSTP) : interfaces dédiées aux clients.
   #    L2TP, PPTP et SSTP utilisent tous l'interface ppp+ : le noyau ne
@@ -109,18 +135,37 @@ setup_chains(){
   iptables -w 3 -A "$COUT" -o wg0 -m comment --comment "wg" -j RETURN 2>/dev/null
   iptables -w 3 -A "$CIN"  -i "ppp+" -m comment --comment "ppp" -j RETURN 2>/dev/null
   iptables -w 3 -A "$COUT" -o "ppp+" -m comment --comment "ppp" -j RETURN 2>/dev/null
+  # Le trafic Internet de ces VPN traverse FORWARD, jamais INPUT/OUTPUT.
+  iptables -w 3 -A "$CFWD" -i wg0 -m comment --comment "wg" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$CFWD" -o wg0 -m comment --comment "wg" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$CFWD" -i "ppp+" -m comment --comment "ppp" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$CFWD" -o "ppp+" -m comment --comment "ppp" -j RETURN 2>/dev/null
 
   # 4) SlowDNS et UDP : ports exclusivement réservés aux tunnels, regroupés
   #    avec SSH sous "ssh_bundle" (même menu 01 dans le panel).
-  UDP="5300,7100,7200,7300"
+  UDP="5300"
   local uc; uc=$(grep -oP '"listen"\s*:\s*":?\K[0-9]+' /etc/nvpanel/udp/config.json 2>/dev/null | head -1)
   [ -n "$uc" ] && UDP="$UDP,$uc"
   iptables -w 3 -A "$CIN"  -p udp -m multiport --dports "$UDP" -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null
   iptables -w 3 -A "$COUT" -p udp -m multiport --sports "$UDP" -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null
+  # BadVPN UDPGW écoute en TCP sur localhost (7100/7200/7300), pas en UDP.
+  iptables -w 3 -A "$COUT" -o lo -p tcp -m multiport --dports 7100,7200,7300 -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null
+  iptables -w 3 -A "$COUT" -o lo -p tcp -m multiport --sports 7100,7200,7300 -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null
   # Les compteurs viennent d'être vidés : le dernier relevé doit valoir 0,
   # sinon le prochain poll calculerait une différence négative puis repartirait
   # de travers.
   printf '0' > "$LASTF" 2>/dev/null
+  local _tag
+  for _tag in $CONSO_TAGS; do
+    printf '0' > "$DBDIR/.conso.last.$_tag" 2>/dev/null
+  done
+  iptables -w 3 -C INPUT -j "$CIN" 2>/dev/null \
+    && iptables -w 3 -C OUTPUT -j "$COUT" 2>/dev/null \
+    && iptables -w 3 -C FORWARD -j "$CFWD" 2>/dev/null \
+    && iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vmess' \
+    && iptables -w 3 -S "$CIN" 2>/dev/null | grep -q -- '--comment shadowsocks' \
+    && iptables -w 3 -S "$CFWD" 2>/dev/null | grep -q -- '--comment wg' \
+    || return 1
   return 0
 }
 
@@ -171,15 +216,30 @@ _has_account(){
   return 1
 }
 
+_has_tag_account(){
+  case "$1" in
+    ssh_bundle) grep -q '^### ' "$DBDIR/ssh" 2>/dev/null ;;
+    vmess|vless|trojan) grep -q '^### ' "$DBDIR/$1" 2>/dev/null ;;
+    shadowsocks) grep -q '^### ' "$DBDIR/shadowsocks" 2>/dev/null ;;
+    hysteria) grep -q '^### ' "$DBDIR/hysteria" 2>/dev/null ;;
+    wg) grep -q '^### ' "$DBDIR/wireguard" 2>/dev/null ;;
+    ppp)
+      grep -q '^### ' "$DBDIR/l2tp" 2>/dev/null || \
+      grep -q '^### ' "$DBDIR/pptp" 2>/dev/null || \
+      grep -q '^### ' "$DBDIR/sstp" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
 # Lit les compteurs des chaînes et ajoute à l'historique la DIFFÉRENCE avec le
 # dernier relevé. Extrait de poll() pour pouvoir être appelé AUSSI avant un
 # flush : sans cela tout le trafic accumulé depuis le dernier relevé était
 # définitivement perdu (voir setup_chains).
 # N'assure PAS le verrou : l'appelant doit déjà le détenir.
 _accumulate(){
-  local raw last delta today cur i o
-  i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT")
-  raw=$(( i + o ))
+  local raw last delta today cur i o f
+  i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT"); f=$(_chain_bytes "$CFWD")
+  raw=$(( i + o + f ))
 
   # On NE remet PLUS les compteurs à zéro. On mémorise leur dernière valeur
   # brute et on n'ajoute que la DIFFÉRENCE.
@@ -218,20 +278,17 @@ _accumulate(){
   return 0
 }
 
-# Liste des étiquettes de protocole posées dans setup_chains.
-CONSO_TAGS="ssh_bundle vmess vless trojan shadowsocks wg ppp"
-
 # Même principe que _accumulate (delta depuis le dernier relevé, jamais de
 # remise à zéro directe), mais pour UNE étiquette de protocole, dans son
 # propre fichier d'historique. N'a AUCUN effet sur $DB / $LASTF (le total
 # global du menu d'accueil) : c'est un suivi entièrement séparé, ajouté
 # à côté de l'existant plutôt qu'à sa place.
 _accumulate_tag(){
-  local tag="$1" lastf dbf raw last delta today cur ti to
+  local tag="$1" lastf dbf raw last delta today cur ti to tf
   lastf="$DBDIR/.conso.last.$tag"
   dbf="$DBDIR/conso_$tag"
-  ti=$(_tag_bytes "$CIN" "$tag"); to=$(_tag_bytes "$COUT" "$tag")
-  raw=$(( ti + to ))
+  ti=$(_tag_bytes "$CIN" "$tag"); to=$(_tag_bytes "$COUT" "$tag"); tf=$(_tag_bytes "$CFWD" "$tag")
+  raw=$(( ti + to + tf ))
   last=$(cat "$lastf" 2>/dev/null); last=${last:-0}
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   if [ "$raw" -ge "$last" ] 2>/dev/null; then
@@ -240,7 +297,7 @@ _accumulate_tag(){
     delta="$raw"
   fi
   printf '%s' "$raw" > "$lastf" 2>/dev/null
-  _has_account || return 0
+  _has_tag_account "$tag" || return 0
   [ "$delta" -le 0 ] 2>/dev/null && return 0
   today=$(date +%F)
   cur=$(awk -F'|' -v d="$today" '$1==d{print $2}' "$dbf" 2>/dev/null | tail -1)
@@ -281,7 +338,11 @@ poll(){
      ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vmess' || \
      ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vless' || \
      ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment trojan' || \
-     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment shadowsocks'; then
+     ! iptables -w 3 -S "$CIN"  2>/dev/null | grep -q -- '--dport 8388.*--comment shadowsocks' || \
+     ! iptables -w 3 -S "$CIN"  2>/dev/null | grep -q -- '--dport 443.*--comment hysteria' || \
+     ! iptables -w 3 -S "$CFWD" 2>/dev/null | grep -q -- '-i wg0.*--comment wg' || \
+     ! iptables -w 3 -S "$CFWD" 2>/dev/null | grep -q -- '-i ppp+.*--comment ppp' || \
+     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--dports 7100,7200,7300.*--comment ssh_bundle'; then
     setup_chains
   fi
   ensure_accounts
@@ -296,10 +357,12 @@ poll(){
   # compteur se fige alors silencieusement, sans erreur visible). Un
   # delete-puis-réinsertion est idempotent et sans risque : il ne fait que
   # garantir que le renvoi reste bien la toute première règle.
-  iptables -w 3 -D INPUT  -j "$CIN"  2>/dev/null
+  while iptables -w 3 -D INPUT  -j "$CIN"  2>/dev/null; do :; done
   iptables -w 3 -I INPUT  -j "$CIN"  2>/dev/null
-  iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null
+  while iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null; do :; done
   iptables -w 3 -I OUTPUT -j "$COUT" 2>/dev/null
+  while iptables -w 3 -D FORWARD -j "$CFWD" 2>/dev/null; do :; done
+  iptables -w 3 -I FORWARD -j "$CFWD" 2>/dev/null
   _accumulate_all
   ) 201>"$DBDIR/.conso.lock"
   return 0
@@ -347,19 +410,23 @@ reset_all(){
   # 2) on remet les compteurs iptables à zéro
   iptables -w 3 -Z "$CIN"  2>/dev/null
   iptables -w 3 -Z "$COUT" 2>/dev/null
+  iptables -w 3 -Z "$CFWD" 2>/dev/null
   # 3) on recrée les chaînes : garantit qu'aucun compteur résiduel ne subsiste
   setup_chains >/dev/null 2>&1
   iptables -w 3 -Z "$CIN"  2>/dev/null
   iptables -w 3 -Z "$COUT" 2>/dev/null
+  iptables -w 3 -Z "$CFWD" 2>/dev/null
   : > "$DB" 2>/dev/null
   return 0
 }
 
 remove_all(){
-  iptables -w 3 -D INPUT  -j "$CIN"  2>/dev/null
-  iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null
+  while iptables -w 3 -D INPUT   -j "$CIN"  2>/dev/null; do :; done
+  while iptables -w 3 -D OUTPUT  -j "$COUT" 2>/dev/null; do :; done
+  while iptables -w 3 -D FORWARD -j "$CFWD" 2>/dev/null; do :; done
   iptables -w 3 -F "$CIN"  2>/dev/null; iptables -w 3 -X "$CIN"  2>/dev/null
   iptables -w 3 -F "$COUT" 2>/dev/null; iptables -w 3 -X "$COUT" 2>/dev/null
+  iptables -w 3 -F "$CFWD" 2>/dev/null; iptables -w 3 -X "$CFWD" 2>/dev/null
   return 0
 }
 
@@ -368,7 +435,7 @@ remove_all(){
 debug_rules(){
   command -v iptables >/dev/null 2>&1 || { echo "iptables absent"; return 1; }
   local c
-  for c in "$CIN" "$COUT"; do
+  for c in "$CIN" "$COUT" "$CFWD"; do
     printf '\n=== %s ===\n' "$c"
     iptables -w 3 -nvxL "$c" 2>/dev/null | awk 'NR>2 {
       b=$2; u="o";

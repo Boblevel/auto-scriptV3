@@ -12,32 +12,105 @@ NDIR=/etc/nvpanel/wg
 SRV_IP=$(cat /etc/nvpanel/ip 2>/dev/null)
 NET="10.66.66"
 PORT=51820
+umask 077
 mkdir -p /etc/nvpanel/db "$NDIR"
-touch "$DB"
+chmod 700 /etc/nvpanel/db "$NDIR" 2>/dev/null
+touch "$DB"; chmod 600 "$DB" 2>/dev/null
+
+valid_peer_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; }
+valid_days(){ [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 3650 ]; }
+with_wg_lock(){
+  (
+    exec 8>/run/nvpanel-wg.lock
+    flock -w 30 8 || { err "WireGuard est déjà en cours de modification."; pause; return 1; }
+    "$@"
+  )
+}
+
+wg_remove_conf_peer(){ # nom exact, sans interprétation regex
+  local tmp
+  tmp=$(mktemp /etc/wireguard/.wg0.conf.XXXXXX) || return 1
+  awk -v n="$1" '
+    function flush(){ if (buf!="" && !drop) printf "%s",buf; buf=""; drop=0 }
+    /^\[Peer\]$/ { flush(); peer=1; buf=$0 ORS; next }
+    { if (peer) { buf=buf $0 ORS; if ($0=="# " n) drop=1 } else print }
+    END { flush() }
+  ' "$WGCONF" > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null
+  mv "$tmp" "$WGCONF"
+}
+
+wg_add_conf_peer(){ # nom clé_publique IP
+  awk -v n="$1" '$0=="# " n{f=1} END{exit f?0:1}' "$WGCONF" 2>/dev/null && return 0
+  printf '\n[Peer]\n# %s\nPublicKey = %s\nAllowedIPs = %s/32\n' "$1" "$2" "$3" >> "$WGCONF"
+  chmod 600 "$WGCONF" 2>/dev/null
+}
+
+wg_db_delete(){
+  local tmp
+  tmp=$(mktemp "${DB}.XXXXXX") || return 1
+  awk -v n="$1" '!($1=="###" && $2==n)' "$DB" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$DB"
+}
 
 header(){ banner; _edge "┏" "┓" "GESTION WIREGUARD"; proto_dash wireguard wg wg; bot; }
 
 install_wg() {
   header; printf "${CYN}➜${NC} Installation de WireGuard…\n"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y wireguard qrencode >/dev/null 2>&1
+  apt-get install -y wireguard wireguard-tools qrencode iptables >/dev/null 2>&1 \
+    || { err "Installation des paquets WireGuard échouée."; pause; return 1; }
+  command -v wg >/dev/null 2>&1 || { err "Commande wg introuvable après installation."; pause; return 1; }
   mkdir -p /etc/wireguard
   local spriv spub ifc
-  spriv=$(wg genkey); spub=$(printf '%s' "$spriv" | wg pubkey)
-  echo "$spub" > "$NDIR/server.pub"
   ifc=$(ip route | awk '/default/{print $5; exit}')
-  cat > "$WGCONF" <<EOF
+  [ -n "$ifc" ] || { err "Interface réseau par défaut introuvable."; pause; return 1; }
+  if [ ! -s "$WGCONF" ]; then
+    spriv=$(wg genkey) || { err "Génération de clé WireGuard échouée."; pause; return 1; }
+    spub=$(printf '%s' "$spriv" | wg pubkey) || { err "Clé publique WireGuard invalide."; pause; return 1; }
+    echo "$spub" > "$NDIR/server.pub"
+    cat > "$WGCONF" <<EOF
 [Interface]
 Address = $NET.1/24
 ListenPort = $PORT
 PrivateKey = $spriv
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $ifc -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $ifc -j MASQUERADE
+PostUp = iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport $PORT -j ACCEPT; iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT; iptables -C FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -C POSTROUTING -s $NET.0/24 -o $ifc -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s $NET.0/24 -o $ifc -j MASQUERADE
+PostDown = iptables -D INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null; iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -s $NET.0/24 -o $ifc -j MASQUERADE
 EOF
+  else
+    # Une réinstallation conserve la clé serveur et tous les peers existants.
+    awk -F' *= *' '$1=="Address" && $2=="10.66.66.1/24"{f=1} END{exit !f}' "$WGCONF" \
+      || { err "$WGCONF existe mais n'appartient pas à RHAFF SERVICE."; pause; return 1; }
+    spriv=$(awk -F' *= *' '$1=="PrivateKey"{print $2; exit}' "$WGCONF")
+    [ -n "$spriv" ] || { err "Clé privée absente de $WGCONF."; pause; return 1; }
+    spub=$(printf '%s' "$spriv" | wg pubkey 2>/dev/null) || { err "Clé serveur WireGuard invalide."; pause; return 1; }
+    echo "$spub" > "$NDIR/server.pub"
+    if grep -q '^PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o [^ ]* -j MASQUERADE$' "$WGCONF"; then
+      iptables -t nat -D POSTROUTING -o "$ifc" -j MASQUERADE 2>/dev/null
+    fi
+    sed -i "s|^PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o [^ ]* -j MASQUERADE$|PostUp = iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null \\|\\| iptables -I INPUT -p udp --dport $PORT -j ACCEPT; iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null \\|\\| iptables -A FORWARD -i wg0 -j ACCEPT; iptables -C FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \\|\\| iptables -A FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -C POSTROUTING -s $NET.0/24 -o $ifc -j MASQUERADE 2>/dev/null \\|\\| iptables -t nat -A POSTROUTING -s $NET.0/24 -o $ifc -j MASQUERADE|" "$WGCONF"
+    sed -i "s|^PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o [^ ]* -j MASQUERADE$|PostDown = iptables -D INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null; iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -s $NET.0/24 -o $ifc -j MASQUERADE|" "$WGCONF"
+  fi
+  chmod 600 "$WGCONF" "$NDIR/server.pub" 2>/dev/null
   sed -i 's/^#\?net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
   grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
   sysctl -p >/dev/null 2>&1
-  systemctl enable --now wg-quick@wg0 >/dev/null 2>&1
+  [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" = 1 ] \
+    || { err "Le noyau de ce VPS refuse le routage IPv4 requis par WireGuard."; pause; return 1; }
+  systemctl enable wg-quick@wg0 >/dev/null 2>&1
+  systemctl restart wg-quick@wg0 >/dev/null 2>&1 \
+    && systemctl is-active --quiet wg-quick@wg0 \
+    || { err "WireGuard n'a pas pu démarrer. Consulte : journalctl -u wg-quick@wg0"; pause; return 1; }
+  local fw_ok=1
+  iptables -C INPUT -p udp --dport "$PORT" -j ACCEPT 2>/dev/null \
+    || iptables -I INPUT -p udp --dport "$PORT" -j ACCEPT 2>/dev/null || fw_ok=0
+  iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || fw_ok=0
+  iptables -C FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || fw_ok=0
+  iptables -t nat -C POSTROUTING -s $NET.0/24 -o "$ifc" -j MASQUERADE 2>/dev/null || fw_ok=0
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw allow "$PORT/udp" >/dev/null 2>&1 || fw_ok=0
+  fi
+  [ "$fw_ok" -eq 1 ] \
+    || { err "Le pare-feu de ce VPS n'a pas appliqué toutes les règles WireGuard."; pause; return 1; }
   ok "WireGuard installé (port $PORT/udp)."; sleep 1
 }
 
@@ -45,13 +118,25 @@ ensure_wg() {
   if ! command -v wg >/dev/null 2>&1 || [ ! -f "$WGCONF" ]; then
     ask " WireGuard n'est pas installé. L'installer ? (o/n) : " r
     confirm "$r" && install_wg || return 1
+  elif ! systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then
+    systemctl restart wg-quick@wg0 >/dev/null 2>&1 || { err "WireGuard est installé mais ne démarre pas (journalctl -u wg-quick@wg0)."; pause; return 1; }
   fi
+  if [ ! -s "$NDIR/server.pub" ]; then
+    _spriv=$(awk -F' *= *' '$1=="PrivateKey"{print $2; exit}' "$WGCONF")
+    [ -n "$_spriv" ] && printf '%s' "$_spriv" | wg pubkey > "$NDIR/server.pub" 2>/dev/null
+  fi
+  [ -s "$NDIR/server.pub" ] || { err "Clé publique serveur WireGuard introuvable."; pause; return 1; }
 }
 
 next_ip() {
-  local last
-  last=$(awk '{print $4}' "$DB" | awk -F. '{print $4}' | sort -n | tail -1)
-  echo $(( ${last:-1} + 1 ))
+  local n
+  for n in $(seq 2 254); do
+    if ! awk -v ip="$NET.$n" '$1=="###" && $4==ip{f=1} END{exit f?0:1}' "$DB" 2>/dev/null \
+       && ! awk -F' *= *' -v ip="$NET.$n/32" '$1=="AllowedIPs" && $2==ip{f=1} END{exit f?0:1}' "$WGCONF" 2>/dev/null; then
+      echo "$n"; return 0
+    fi
+  done
+  return 1
 }
 
 add_peer() {
@@ -60,28 +145,42 @@ add_peer() {
   else
   header; ask " Nom du client : " name
   [ -z "$name" ] && { err "Nom vide"; pause; return; }
+  valid_peer_name "$name" || { err "Nom invalide (lettres, chiffres, _ et - uniquement)."; pause; return; }
   grep -q "^### $name " "$DB" && { err "Existe déjà"; pause; return; }
-  ask " Durée (jours) : " days; [[ "$days" =~ ^[0-9]+$ ]] || days=30
+  ask " Durée (jours) : " days; valid_days "$days" || { err "Durée invalide (1 à 3650 jours)."; pause; return; }
   fi
+  valid_peer_name "$name" || { err "Nom de client invalide."; pause; return; }
+  valid_days "$days" || { err "Durée invalide."; pause; return; }
   grep -q "^### $name " "$DB" && { err "Existe déjà"; pause; return; }
+  awk -v n="$name" '$0=="# " n{f=1} END{exit !f}' "$WGCONF" 2>/dev/null \
+    && { err "Ce client existe déjà dans wg0.conf."; pause; return; }
   local ppriv ppub ip exp spub
-  ppriv=$(wg genkey); ppub=$(printf '%s' "$ppriv" | wg pubkey)
-  ip="$NET.$(next_ip)"; exp=$(date -d "+$days days" +"%Y-%m-%d")
+  ppriv=$(wg genkey 2>/dev/null) || { err "Génération de la clé client échouée."; pause; return; }
+  ppub=$(printf '%s' "$ppriv" | wg pubkey 2>/dev/null) || { err "Génération de la clé publique client échouée."; pause; return; }
+  [ -n "$ppriv" ] && [ -n "$ppub" ] || { err "Clés WireGuard client invalides."; pause; return; }
+  _octet=$(next_ip) || { err "Le réseau WireGuard est complet (253 clients maximum)."; pause; return; }
+  ip="$NET.$_octet"; exp=$(date -d "+$days days" +"%Y-%m-%d")
   spub=$(cat "$NDIR/server.pub")
 
-  cat >> "$WGCONF" <<EOF
+  if ! cat >> "$WGCONF" <<EOF
 
 [Peer]
 # $name
 PublicKey = $ppub
 AllowedIPs = $ip/32
 EOF
-  wg set wg0 peer "$ppub" allowed-ips "$ip/32" 2>/dev/null
-  echo "### $name $ppub $ip $exp" >> "$DB"
+  then
+    err "Enregistrement du peer dans wg0.conf échoué."; pause; return
+  fi
+  chmod 600 "$WGCONF" 2>/dev/null
+  wg set wg0 peer "$ppub" allowed-ips "$ip/32" 2>/dev/null || {
+    wg_remove_conf_peer "$name" >/dev/null 2>&1
+    err "Ajout du peer dans WireGuard échoué."; pause; return
+  }
 
   local conf="$NDIR/$name.conf"
   local _bn; _bn=$(head -1 /etc/banner 2>/dev/null | tr -d '\r\n')
-  cat > "$conf" <<EOF
+  if ! cat > "$conf" <<EOF
 # ${_bn:-RHAFF SERVICE} - $name
 [Interface]
 PrivateKey = $ppriv
@@ -94,6 +193,15 @@ Endpoint = $SRV_IP:$PORT
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
+  then
+    wg set wg0 peer "$ppub" remove >/dev/null 2>&1; wg_remove_conf_peer "$name" >/dev/null 2>&1
+    err "Création du fichier client échouée."; pause; return
+  fi
+  chmod 600 "$conf" 2>/dev/null
+  if ! printf '### %s %s %s %s\n' "$name" "$ppub" "$ip" "$exp" >> "$DB"; then
+    wg set wg0 peer "$ppub" remove >/dev/null 2>&1; wg_remove_conf_peer "$name" >/dev/null 2>&1; rm -f "$conf"
+    err "Enregistrement du client échoué."; pause; return
+  fi
 
   clear; header; ok "Client WireGuard créé (expire $(_fmtd "$exp"))"
   echo
@@ -104,8 +212,8 @@ EOF
 }
 
 list_peers() {
-  local page=0 size=4 total pages start end i nm pub ip exp ct st color choice today
-  mapfile -t _rows_wg < <(awk '/^### /{print $2"|"$3"|"$4"|"$5}' "$DB" 2>/dev/null)
+  local page=0 size=4 total pages start end i nm pub ip exp fl ct st color choice today
+  mapfile -t _rows_wg < <(awk '/^### /{print $2"|"$3"|"$4"|"$5"|"$6}' "$DB" 2>/dev/null)
   total=${#_rows_wg[@]}; [ "$total" -eq 0 ] && { header; warn "Aucun client WireGuard."; pause; return; }
   pages=$(( (total + size - 1) / size )); today=$(date +%F)
   while true; do
@@ -115,8 +223,10 @@ list_peers() {
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r nm pub ip exp <<< "${_rows_wg[$i]}"; ct=$(_wg_time "$pub")
-      if [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then st="expiré"; color="$RED"; ct="—"; else st="actif"; color="$GRN"; fi
+      IFS='|' read -r nm pub ip exp fl <<< "${_rows_wg[$i]}"; ct=$(_wg_time "$pub")
+      if [ "$fl" = "L" ]; then st="verrou"; color="$YLW"; ct="—"
+      elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then st="expiré"; color="$RED"; ct="—"
+      else st="actif"; color="$GRN"; fi
       if [ -n "$ct" ] && [ "$ct" != "—" ]; then
         ct=${ct// /}
         printf "${CYN}┃${NC} %-12.12s %-12.12s %-11s ${color}%-7s${NC} %s ${CYN}· 1/1 IP${NC}" "$nm" "${ip:-?}" "$(_fmtd "${exp:-?}")" "$st" "$ct"
@@ -145,15 +255,18 @@ trial_peer() {
 
 pick_peer() {
   PICK=""
-  mapfile -t _pl < <(awk '/^### /{print $2"|"$4"|"$5}' "$DB" 2>/dev/null)
+  mapfile -t _pl < <(awk '/^### /{print $2"|"$4"|"$5"|"$6}' "$DB" 2>/dev/null)
   if [ "${#_pl[@]}" -eq 0 ]; then err "Aucun client WireGuard."; pause; return 1; fi
-  local page=0 size=6 total=${#_pl[@]} pages start end i nm ip ex n today st color
+  local page=0 size=6 total=${#_pl[@]} pages start end i nm ip ex fl n today st color
   pages=$(( (total + size - 1) / size )); today=$(date +%F)
   while true; do
     header; printf "   ${GRY}Clients WireGuard · page %d/%d :${NC}\n" "$((page+1))" "$pages"
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r nm ip ex <<< "${_pl[$i]}"; if [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; }; then st="expiré"; color="$RED"; else st="actif"; color="$GRN"; fi
+      IFS='|' read -r nm ip ex fl <<< "${_pl[$i]}"
+      if [ "$fl" = "L" ]; then st="verrou"; color="$YLW"
+      elif [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; }; then st="expiré"; color="$RED"
+      else st="actif"; color="$GRN"; fi
       printf "   ${WHT}%2d${NC}) %-16s ${GRY}%-14s exp %s${NC}  ${color}%s${NC}\n" "$((i+1))" "$nm" "$ip" "$(_fmtd "$ex")" "$st"
     done
     echo; if [ "$pages" -gt 1 ]; then ask "   ➤ N° | n suivante | p précédente | 0 retour : " n; else ask "   ➤ Numéro (0 = annuler) : " n; fi
@@ -167,10 +280,23 @@ pick_peer() {
 del_peer() {
   header; pick_peer || return; name="$PICK"
   printf "   ${YLW}Supprimer '%s' ? (o/n) : ${NC}" "$name"; ask "" c; confirm "$c" || { pause; return; }
-  local pub; pub=$(awk -v n="$name" '$2==n{print $3}' "$DB")
-  wg set wg0 peer "$pub" remove 2>/dev/null
-  sed -i "/^# $name$/,/^AllowedIPs/d" "$WGCONF"
-  sed -i "/^### $name /d" "$DB"
+  local pub ip had_conf=0 had_runtime=0
+  pub=$(awk -v n="$name" '$2==n{print $3}' "$DB")
+  ip=$(awk -v n="$name" '$2==n{print $4}' "$DB")
+  awk -v n="$name" '$0=="# " n{f=1} END{exit !f}' "$WGCONF" 2>/dev/null && had_conf=1
+  wg show wg0 peers 2>/dev/null | grep -Fxq "$pub" && had_runtime=1
+  if [ "$had_runtime" = 1 ] && ! wg set wg0 peer "$pub" remove 2>/dev/null; then
+    err "Retrait du peer actif échoué."; pause; return
+  fi
+  wg_remove_conf_peer "$name" || {
+    [ "$had_runtime" = 1 ] && wg set wg0 peer "$pub" allowed-ips "$ip/32" >/dev/null 2>&1 || true
+    err "Mise à jour de wg0.conf échouée."; pause; return
+  }
+  wg_db_delete "$name" || {
+    [ "$had_conf" = 1 ] && wg_add_conf_peer "$name" "$pub" "$ip" >/dev/null 2>&1 || true
+    [ "$had_runtime" = 1 ] && wg set wg0 peer "$pub" allowed-ips "$ip/32" >/dev/null 2>&1 || true
+    err "Mise à jour de la base WireGuard échouée."; pause; return
+  }
   rm -f "$NDIR/$name.conf"
   ok "$name supprimé"; pause
 }
@@ -178,9 +304,27 @@ del_peer() {
 renew_peer() {
   header; pick_peer || return; name="$PICK"
   ask " Ajouter (jours) : " days
-  [[ "$days" =~ ^[0-9]+$ ]] || { err "Invalide"; pause; return; }
-  local exp; exp=$(date -d "+$days days" +"%Y-%m-%d")
-  sed -i "s|^### $name \([^ ]*\) \([^ ]*\) .*|### $name \1 \2 $exp|" "$DB"
+  valid_days "$days" || { err "Durée invalide (1 à 3650 jours)."; pause; return; }
+  local exp row pub ip fl tmp had_conf=0 had_runtime=0
+  row=$(awk -v n="$name" '$1=="###"&&$2==n{print; exit}' "$DB")
+  pub=$(printf '%s\n' "$row" | awk '{print $3}'); ip=$(printf '%s\n' "$row" | awk '{print $4}'); fl=$(printf '%s\n' "$row" | awk '{print $6}')
+  exp=$(date -d "+$days days" +"%Y-%m-%d")
+  awk -v n="$name" '$0=="# " n{f=1} END{exit !f}' "$WGCONF" 2>/dev/null && had_conf=1
+  wg show wg0 peers 2>/dev/null | grep -Fxq "$pub" && had_runtime=1
+  wg_add_conf_peer "$name" "$pub" "$ip" || { err "Mise à jour de wg0.conf échouée."; pause; return; }
+  wg set wg0 peer "$pub" allowed-ips "$ip/32" 2>/dev/null || {
+    [ "$had_conf" = 0 ] && wg_remove_conf_peer "$name" >/dev/null 2>&1
+    err "Réactivation du peer échouée."; pause; return
+  }
+  tmp=$(mktemp "${DB}.XXXXXX") || { err "Mise à jour de la base échouée."; pause; return; }
+  awk -v n="$name" -v e="$exp" '{if($1=="###"&&$2==n){print $1,$2,$3,$4,e}else print}' "$DB" > "$tmp" \
+    && chmod 600 "$tmp" && mv "$tmp" "$DB" \
+    || {
+      rm -f "$tmp"
+      [ "$had_runtime" = 0 ] && wg set wg0 peer "$pub" remove >/dev/null 2>&1
+      [ "$had_conf" = 0 ] && wg_remove_conf_peer "$name" >/dev/null 2>&1
+      err "Mise à jour de la base échouée."; pause; return
+    }
   ok "$name prolongé jusqu'au $(_fmtd "$exp")"; pause
 }
 
@@ -197,10 +341,19 @@ uninstall_wg(){
   local ifc; ifc=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
   iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o "$ifc" -j MASQUERADE 2>/dev/null
   iptables -D INPUT -p udp --dport 51820 -j ACCEPT 2>/dev/null
-  rm -rf /etc/wireguard "$NDIR" "$DB"
+  iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null
+  iptables -D FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+  command -v ufw >/dev/null 2>&1 && ufw --force delete allow 51820/udp >/dev/null 2>&1
+  command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+  rm -f "$WGCONF" "$DB"
+  rm -rf "$NDIR"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get purge -y wireguard wireguard-tools >/dev/null 2>&1
-  apt-get autoremove -y >/dev/null 2>&1
+  if rmdir /etc/wireguard 2>/dev/null; then
+    apt-get purge -y wireguard wireguard-tools >/dev/null 2>&1
+    apt-get autoremove -y >/dev/null 2>&1
+  else
+    warn "D'autres fichiers WireGuard ont été conservés dans /etc/wireguard."
+  fi
   systemctl daemon-reload >/dev/null 2>&1
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
   ok "WireGuard a été désinstallé."
@@ -222,15 +375,15 @@ setup_menu(){
     bot
     ask "$(printf " ${WHT}➤ Choix :${NC} ")" c
     case "$c" in
-      1) install_wg ;;
-      2) uninstall_wg ;;
+      1) with_wg_lock install_wg ;;
+      2) with_wg_lock uninstall_wg ;;
       0) break ;;
       *) warn "Invalide"; sleep 1 ;;
     esac
   done
 }
 
-ensure_wg || exit 0
+with_wg_lock ensure_wg || exit 0
 view_peer() {
   header; pick_peer || return; name="$PICK"
   local conf="$NDIR/$name.conf"
@@ -248,7 +401,7 @@ view_peer() {
 cleanup_menu() {
   while true; do
     banner; _edge "┏" "┓" "NETTOYAGE WIREGUARD"
-    local tot exp today c r nm pub n
+    local tot exp today c r nm pub ip n had_conf had_runtime
     today=$(date +%F)
     tot=$(grep -c '^### ' "$DB" 2>/dev/null); tot=${tot:-0}
     exp=$(awk -v d="$today" '/^### /{ if ($5!="" && $5<=d) c++ } END{print c+0}' "$DB" 2>/dev/null)
@@ -277,9 +430,22 @@ cleanup_menu() {
         for nm in $list; do
           [ -z "$nm" ] && continue
           pub=$(awk -v x="$nm" '$2==x{print $3}' "$DB")
-          [ -n "$pub" ] && wg set wg0 peer "$pub" remove 2>/dev/null
-          sed -i "/^# $nm$/,/^AllowedIPs/d" "$WGCONF" 2>/dev/null
-          sed -i "/^### $nm /d" "$DB" 2>/dev/null
+          ip=$(awk -v x="$nm" '$2==x{print $4}' "$DB")
+          had_conf=0; had_runtime=0
+          awk -v x="$nm" '$0=="# " x{f=1} END{exit !f}' "$WGCONF" 2>/dev/null && had_conf=1
+          wg show wg0 peers 2>/dev/null | grep -Fxq "$pub" && had_runtime=1
+          if [ "$had_runtime" = 1 ] && ! wg set wg0 peer "$pub" remove 2>/dev/null; then
+            continue
+          fi
+          if ! wg_remove_conf_peer "$nm" 2>/dev/null; then
+            [ "$had_runtime" = 1 ] && [ -n "$pub" ] && [ -n "$ip" ] && wg set wg0 peer "$pub" allowed-ips "$ip/32" >/dev/null 2>&1
+            continue
+          fi
+          if ! wg_db_delete "$nm" 2>/dev/null; then
+            [ "$had_conf" = 1 ] && wg_add_conf_peer "$nm" "$pub" "$ip" >/dev/null 2>&1 || true
+            [ "$had_runtime" = 1 ] && [ -n "$pub" ] && [ -n "$ip" ] && wg set wg0 peer "$pub" allowed-ips "$ip/32" >/dev/null 2>&1
+            continue
+          fi
           rm -f "$NDIR/$nm.conf"
           n=$((n+1))
         done
@@ -305,8 +471,9 @@ while true; do
   menu_box_bot
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" o || break
   case "$o" in
-    1) add_peer ;; 2) list_peers ;; 3) view_peer ;;
-    4) renew_peer ;; 5) del_peer ;; 6) cleanup_menu ;; 7) trial_peer ;; 8) setup_menu ;;
+    1) with_wg_lock add_peer ;; 2) list_peers ;; 3) view_peer ;;
+    4) with_wg_lock renew_peer ;; 5) with_wg_lock del_peer ;; 6) with_wg_lock cleanup_menu ;; 7) with_wg_lock trial_peer ;;
+    8) setup_menu; [ -f "$WGCONF" ] || break ;;
     0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

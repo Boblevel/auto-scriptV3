@@ -5,7 +5,9 @@
 #  Format d'une ligne :  utilisateur  nombre_max
 # ============================================================
 DB=/etc/nvpanel/db/limit
+umask 077
 [ -f "$DB" ] || touch "$DB"
+chmod 600 "$DB" 2>/dev/null
 
 # Liste « pid adresse » des connexions ENTRANTES appartenant à un compte,
 # les plus anciennes d'abord.
@@ -26,12 +28,14 @@ DB=/etc/nvpanel/db/limit
 #    toutes les 20 secondes.
 ssh_ports() {
   local dp
-  dp=$(grep -oP '^DROPBEAR_PORT=\K[0-9]+' /etc/default/dropbear 2>/dev/null | tail -n1)
+  dp=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
+  case "$dp" in ''|*[!0-9]*) dp="" ;; esac
   printf '22 143 %s' "${dp:-}"
 }
 
 sessions_of() {
-  local ports; ports=" $(ssh_ports) "
+  local ports wanted_uid; ports=" $(ssh_ports) "
+  wanted_uid=$(id -u "$1" 2>/dev/null) || return 0
   ss -tnp state established 2>/dev/null | awk -v p="$ports" '
     /pid=/ {
       local_ep = $3; peer = $4
@@ -43,14 +47,8 @@ sessions_of() {
         print pid, peer
       }
     }' | sort -n | while read -r pid ip; do
-      owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
-      [ "$owner" = "$1" ] || continue
-      # SlowDNS termine son tunnel sur SSH en localhost : dans ce cas l'IP
-      # publique du téléphone n'est plus visible au niveau SSH. On limite donc
-      # honnêtement le nombre de SESSIONS authentifiées (une identité par PID)
-      # au lieu de considérer 127.0.0.1 comme un faux appareil unique.
-      case "$ip" in 127.0.0.1|::1|\[::1\]) ip="session:$pid" ;; esac
-      printf '%s %s\n' "$pid" "${ip:-session:$pid}"
+      owner_uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
+      [ "$owner_uid" = "$wanted_uid" ] && printf '%s %s\n' "$pid" "$ip"
     done
 }
 

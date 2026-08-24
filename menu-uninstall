@@ -43,19 +43,8 @@ if [ -f /etc/nvpanel/db/ssh ]; then
     userdel -f "$u" 2>/dev/null
   done < /etc/nvpanel/db/ssh
 fi
-# Filet de sécurité : balaie aussi les comptes fantômes déjà orphelins
-# (créés par une désinstallation précédente, avant ce correctif, qui ne
-# tuait pas la session avant userdel). Signature exacte des comptes du
-# panel : shell /bin/false, UID 1000-59999 (nvpanel-cli create).
-while IFS=: read -r gu _ guid _ _ _ gshell; do
-  if [ "$gshell" = "/bin/false" ] && [ "$guid" -ge 1000 ] 2>/dev/null && [ "$guid" -lt 60000 ] 2>/dev/null; then
-    pkill -KILL -u "$gu" 2>/dev/null
-    userdel -f "$gu" 2>/dev/null
-  fi
-done < /etc/passwd
-
 # 2) Services systemd
-for s in nvpanel-slowdns nvpanel-udp-custom nvpanel-limit nvpanel-bot \
+for s in nvpanel-slowdns nvpanel-udp-custom nvpanel-limit nvpanel-xlimit nvpanel-bot \
          nvpanel-badvpn-7100 nvpanel-badvpn-7200 nvpanel-badvpn-7300 wg-quick@wg0; do
   systemctl stop "$s" >/dev/null 2>&1
   systemctl disable "$s" >/dev/null 2>&1
@@ -70,7 +59,7 @@ rm -f /etc/nvpanel/bot.conf 2>/dev/null
 rm -f /root/.hushlogin 2>/dev/null
 
 # 3) Tâches cron
-( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|nvpanel-conso|rhaff-backup' ) | crontab - 2>/dev/null
+( crontab -l 2>/dev/null | grep -v -E 'nvpanel-clean|nvpanel-quota|nvpanel-conso|nvpanel-cli xsample|rhaff-backup' ) | crontab - 2>/dev/null
 
 # 4) Règles iptables + configs nginx
 iptables -F NVPANEL_QUOTA 2>/dev/null
@@ -82,13 +71,64 @@ for u in xl2tpd pptpd nvpanel-sstp strongswan-starter strongswan hysteria-server
 done
 # Hysteria2 : son service et sa configuration survivaient à la désinstallation
 # et occupaient encore le port UDP 443 lors de la réinstallation suivante.
+if id hysteria >/dev/null 2>&1; then
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -R -x u:hysteria /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null
+    find /etc/letsencrypt/live /etc/letsencrypt/archive -type d \
+      -exec setfacl -x d:u:hysteria {} + 2>/dev/null
+  fi
+  userdel -r hysteria >/dev/null 2>&1
+fi
 rm -rf /etc/hysteria
-rm -f /etc/systemd/system/nvpanel-sstp.service
+rm -rf /etc/systemd/system/hysteria-server.service.d /etc/systemd/system/hysteria-server@.service.d
+rm -f /usr/local/bin/hysteria /etc/systemd/system/hysteria-server.service \
+      /etc/systemd/system/hysteria-server@.service /etc/systemd/system/nvpanel-sstp.service
+SSTP_PORT=$(cat /etc/nvpanel/sstp_port 2>/dev/null); SSTP_PORT=${SSTP_PORT:-4443}
+XPORT=$(cat /etc/nvpanel/xport 2>/dev/null); XPORT=${XPORT:-443}
+rm -f /etc/pptpd.conf /etc/ipsec.conf /etc/ipsec.secrets /etc/xl2tpd/xl2tpd.conf
 rm -f /etc/ppp/options.xl2tpd /etc/ppp/options.sstpd /etc/ppp/pptpd-options
-rm -rf /etc/nvpanel/sstp /etc/nvpanel/l2tp_psk /etc/nvpanel/sstp_port
+rm -f /etc/ppp/ip-up.d/90-nvpanel-device-limit /etc/ppp/ip-down.d/90-nvpanel-device-limit
+rm -rf /etc/nvpanel/sstp /etc/nvpanel/l2tp_psk /etc/nvpanel/sstp_port \
+       /opt/nvpanel-sstp /opt/nvpanel-sstp-tools /opt/nvpanel-sstp-python
+for SSTP_OLD in /opt/.nvpanel-sstp-old.*; do [ -d "$SSTP_OLD" ] && rm -rf "$SSTP_OLD"; done
+for SSTP_FAILED in /opt/.nvpanel-sstp-failed.*; do [ -d "$SSTP_FAILED" ] && rm -rf "$SSTP_FAILED"; done
 sed -i '/[[:space:]]\(l2tpd\|pptpd\|sstpd\)[[:space:]]/d' /etc/ppp/chap-secrets 2>/dev/null
 [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso remove 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null
+iptables -D INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p udp --dport 22 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p tcp --dport 8388 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p udp --dport 51820 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p tcp --dport 1723 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p gre -j ACCEPT 2>/dev/null
+iptables -D INPUT -p esp -j ACCEPT 2>/dev/null
+iptables -D INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null
+iptables -D INPUT -p tcp --dport "$XPORT" -j ACCEPT 2>/dev/null
+for p in 500 4500 1701; do iptables -D INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null; done
+iptables -D INPUT -p tcp --dport "$SSTP_PORT" -j ACCEPT 2>/dev/null
+IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
+for net in 10.10.10 10.20.20 10.30.30; do
+  [ -n "$IFACE" ] && iptables -t nat -D POSTROUTING -s "$net.0/24" -o "$IFACE" -j MASQUERADE 2>/dev/null
+  iptables -D FORWARD -s "$net.0/24" -j ACCEPT 2>/dev/null
+  iptables -D FORWARD -d "$net.0/24" -j ACCEPT 2>/dev/null
+done
+[ -n "$IFACE" ] && iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
+iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null
+iptables -D FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+iptables -D FORWARD -p tcp --syn -s 10.20.20.0/24 -j TCPMSS --set-mss 1356 2>/dev/null
+command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+if command -v ufw >/dev/null 2>&1; then
+  for rule in 22/udp 443/udp 8388/tcp 8388/udp 51820/udp 1723/tcp "$SSTP_PORT/tcp" 500/udp 4500/udp 1701/udp; do
+    ufw --force delete allow "$rule" >/dev/null 2>&1
+  done
+  ufw --force delete allow 80/tcp >/dev/null 2>&1
+  ufw --force delete allow "$XPORT/tcp" >/dev/null 2>&1
+  ufw --force delete allow proto gre from any >/dev/null 2>&1
+  ufw --force delete allow proto esp from any >/dev/null 2>&1
+fi
 rm -f /etc/nginx/conf.d/nvpanel.conf /etc/nginx/conf.d/rhaff-http.conf \
       /etc/nginx/conf.d/rhaff-tls.conf /etc/nginx/conf.d/rhaff.conf /etc/nginx/nvpanel-ws.conf
 systemctl reload nginx 2>/dev/null
@@ -96,12 +136,16 @@ systemctl reload nginx 2>/dev/null
 # 5) WireGuard (config créée par le script)
 rm -f /etc/wireguard/wg0.conf
 
-# 6) Cœur Xray (purge automatique s'il est présent)
+# 6) Cœur Xray installé par le panel
 if command -v xray >/dev/null 2>&1; then
   printf "${YLW}➜ Suppression du cœur Xray…${NC}\n"
-  bash <(curl -sL https://github.com/XTLS/Xray-install/raw/main/install-release.sh) remove --purge >/dev/null 2>&1
 fi
-rm -rf /usr/local/etc/xray
+systemctl disable --now xray >/dev/null 2>&1
+rm -f /etc/systemd/system/xray.service /etc/systemd/system/xray@.service
+rm -rf /etc/systemd/system/xray.service.d /usr/local/etc/xray /usr/local/share/xray /var/log/xray
+rm -f /usr/local/bin/xray /etc/logrotate.d/nvpanel-xray
+rm -f /etc/letsencrypt/renewal-hooks/deploy/nvpanel-reload
+systemctl daemon-reload >/dev/null 2>&1
 
 # 7) Binaires, raccourcis et données
 rm -f /usr/local/bin/{menu,acc,dgh,menu-ssh,menu-xray,menu-ss,menu-wg,menu-bot,menu-settings,menu-uninstall,uninstall,update} \

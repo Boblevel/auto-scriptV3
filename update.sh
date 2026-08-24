@@ -5,6 +5,7 @@
 #  aux comptes/config, régénère la façade nginx, relance le menu.
 # ============================================================
 REPO_RAW="https://raw.githubusercontent.com/Boblevel/auto-scriptV3/main"
+umask 077
 RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\033[1;37m'; GRY='\033[0;90m'; MAG='\033[0;35m'; NC='\033[0m'
 [ "$EUID" -ne 0 ] && { printf "${RED}✘ Lance en root (sudo su -).${NC}\n"; exit 1; }
 [ -d /etc/nvpanel ] || { printf "${RED}✘ RHAFF SERVICE n'est pas installé.${NC}\n"; exit 1; }
@@ -51,13 +52,32 @@ progress_to(){
 }
 progress_to 1 "Préparation"
 
+# Les outils sont requis avant le téléchargement et avant la migration Xray.
+export DEBIAN_FRONTEND=noninteractive
+dpkg -s ca-certificates >/dev/null 2>&1 || apt-get install -y ca-certificates >/dev/null 2>&1
+for _tool_pkg in curl:curl jq:jq openssl:openssl python3:python3 flock:util-linux iptables:iptables ip:iproute2 ss:iproute2 crontab:cron; do
+  _tool=${_tool_pkg%%:*}; _pkg=${_tool_pkg##*:}
+  command -v "$_tool" >/dev/null 2>&1 || apt-get install -y "$_pkg" >/dev/null 2>&1
+done
+if ! command -v netfilter-persistent >/dev/null 2>&1; then
+  echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null
+  echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
+  apt-get install -y iptables-persistent >/dev/null 2>&1
+fi
+_MISSING=""
+for _t in curl jq openssl python3 flock iptables ip ss crontab netfilter-persistent; do
+  command -v "$_t" >/dev/null 2>&1 || _MISSING="$_MISSING $_t"
+done
+[ -z "$_MISSING" ] || { printf "\n${RED}✘ Outils indispensables absents :%s${NC}\n" "$_MISSING"; exit 1; }
+
 # ---- Téléchargement silencieux -----------------------------
 FAILED=""; CHANGED=0
 fetch(){
   local name dest="$2" ok=0 tmp
-  tmp=$(mktemp)
+  tmp=$(mktemp "${dest}.XXXXXX") || { FAILED="$FAILED $1"; return; }
   for name in "$1" "$1.txt"; do
-    if curl -fsSL "$REPO_RAW/$name" -o "$tmp" 2>/dev/null && [ -s "$tmp" ] && ! head -c 200 "$tmp" | grep -q '404: Not Found'; then
+    if curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/$name" -o "$tmp" 2>/dev/null \
+       && [ -s "$tmp" ] && ! head -c 200 "$tmp" | grep -q '404: Not Found'; then
       ok=1; break
     fi
   done
@@ -65,9 +85,13 @@ fetch(){
     # Ne compte (et n'écrase) que si le contenu a réellement changé — c'est
     # ce qui permet de distinguer « déjà à jour » d'une vraie mise à jour.
     if [ -f "$dest" ] && cmp -s "$tmp" "$dest" 2>/dev/null; then
-      rm -f "$tmp"
+      rm -f "$tmp"; chmod 700 "$dest" 2>/dev/null || FAILED="$FAILED $1"
     else
-      mv "$tmp" "$dest"; chmod +x "$dest"; CHANGED=$((CHANGED+1))
+      if chmod 700 "$tmp" && mv "$tmp" "$dest"; then
+        CHANGED=$((CHANGED+1))
+      else
+        rm -f "$tmp"; FAILED="$FAILED $1"
+      fi
     fi
   else
     rm -f "$tmp"
@@ -106,26 +130,44 @@ ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 
 progress_to 80 "Mise à jour des services"
 systemctl daemon-reload >/dev/null 2>&1
+CONFIG_FAILED=""
 # Dropbear : Ubuntu livre NO_START=1, le service ne démarre jamais sans ceci
 if dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
   touch /etc/default/dropbear
+  _dropbear_port=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
+  case "$_dropbear_port" in ''|*[!0-9]*) _dropbear_port=143 ;; esac
+  [ "$_dropbear_port" -ge 1 ] 2>/dev/null && [ "$_dropbear_port" -le 65535 ] 2>/dev/null || _dropbear_port=143
+  # Le port 22 livré par défaut entre en conflit avec OpenSSH. Tout autre port
+  # valide choisi depuis le panel est conservé pendant la mise à jour.
+  [ "$_dropbear_port" = 22 ] && _dropbear_port=143
   # Se déclenche aussi si le port est resté sur 22 (paquet Debian 12 qui le
   # livre déjà décommenté) : avant, on ne réparait que si le service était
   # inactif ou NO_START=1, or Dropbear tournait déjà (sur le mauvais port),
   # donc cette réparation ne s'exécutait jamais sur ces installations.
   if grep -q '^NO_START=1' /etc/default/dropbear \
      || ! systemctl is-active --quiet dropbear 2>/dev/null \
-     || grep -q '^DROPBEAR_PORT=22' /etc/default/dropbear; then
+     || ! grep -q '^DROPBEAR_PORT=' /etc/default/dropbear \
+     || grep -Eq '^DROPBEAR_PORT="?22"?[[:space:]]*$' /etc/default/dropbear; then
     sed -i '/^NO_START=/d' /etc/default/dropbear
     echo 'NO_START=0' >> /etc/default/dropbear
     sed -i '/^DROPBEAR_PORT=/d' /etc/default/dropbear
-    echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
+    echo "DROPBEAR_PORT=$_dropbear_port" >> /etc/default/dropbear
     grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
     systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket' && systemctl disable --now dropbear.socket >/dev/null 2>&1
     systemctl unmask dropbear >/dev/null 2>&1
     systemctl enable dropbear >/dev/null 2>&1
     systemctl restart dropbear >/dev/null 2>&1
   fi
+  if ! systemctl is-active --quiet dropbear \
+     || ! ss -H -ltn 2>/dev/null | awk -v p=":$_dropbear_port" '$4 ~ p"$"{f=1} END{exit f?0:1}'; then
+    CONFIG_FAILED="$CONFIG_FAILED Dropbear"
+  fi
+else
+  _dropbear_port=143
+fi
+iptables -C INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow "$_dropbear_port/tcp" >/dev/null 2>&1
 fi
 # Comptes du panel avec shell /bin/false : sans /bin/false dans /etc/shells,
 # Dropbear rejette l'authentification par mot de passe ("invalid shell,
@@ -148,19 +190,23 @@ touch /root/.hushlogin 2>/dev/null
 [ -n "${SUDO_USER:-}" ] && [ -d "/home/${SUDO_USER}" ] && \
   touch "/home/${SUDO_USER}/.hushlogin" 2>/dev/null
 
-if command -v xray >/dev/null 2>&1 && [ -x /usr/local/bin/install-xray ]; then
-  /usr/local/bin/install-xray auto >/dev/null 2>&1
+if [ -x /usr/local/bin/install-xray ]; then
+  /usr/local/bin/install-xray auto >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED Xray"
+else
+  CONFIG_FAILED="$CONFIG_FAILED Xray"
 fi
 # compteur de consommation CLIENTS (exclut le trafic propre du serveur)
 if [ -x /usr/local/bin/nvpanel-conso ]; then
-  /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
-  ( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null
+  /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED consommation"
+  ( crontab -l 2>/dev/null | grep -v nvpanel-conso; echo "*/5 * * * * /usr/local/bin/nvpanel-conso poll" ) | crontab - 2>/dev/null \
+    || CONFIG_FAILED="$CONFIG_FAILED cron-consommation"
 fi
 # statistiques par compte Xray : ajoutées à une configuration existante sans
 # jamais toucher aux clients déjà créés, puis relevé d'activité à la minute
 if [ -x /usr/local/bin/nvpanel-cli ]; then
-  /usr/local/bin/nvpanel-cli xapi >/dev/null 2>&1
-  ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null
+  /usr/local/bin/nvpanel-cli xapi >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED API-Xray"
+  ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null \
+    || CONFIG_FAILED="$CONFIG_FAILED cron-Xray"
 
   # La limite Xray/Shadowsocks doit réagir en quelques secondes. Ce service
   # n'agit ni sur SSH ni sur SlowDNS.
@@ -180,7 +226,9 @@ RestartSec=2
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload >/dev/null 2>&1
-  systemctl enable --now nvpanel-xlimit >/dev/null 2>&1
+  systemctl enable --now nvpanel-xlimit >/dev/null 2>&1 \
+    && systemctl is-active --quiet nvpanel-xlimit \
+    || CONFIG_FAILED="$CONFIG_FAILED limite-Xray"
 fi
 # udp-custom : bascule de l'ancien port 36712 vers l'UDP 22, afin que le client
 # saisisse le même port pour SSH, SlowDns et UDP Custom
@@ -192,12 +240,7 @@ if [ -f /etc/nvpanel/udp/config.json ] && grep -q '":36712"' /etc/nvpanel/udp/co
   systemctl restart nvpanel-udp-custom >/dev/null 2>&1
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1
 fi
-# Réparation des outils indispensables : sur certains serveurs, l'installation
-# initiale d'un paquet a pu échouer sans le signaler (jq absent = création de
-# compte Xray impossible).
-for _t in curl jq openssl python3; do
-  command -v "$_t" >/dev/null 2>&1 || apt-get install -y "$_t" >/dev/null 2>&1
-done
+netfilter-persistent save >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED pare-feu"
 progress_to 100 "Mise à jour terminée"
 printf "\n"
 
@@ -225,6 +268,10 @@ if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Mise à jour partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion du serveur et relance : update${NC}\n\n"
 fi
+if [ -n "$CONFIG_FAILED" ]; then
+  printf "   ${YLW}⚠ Configuration non appliquée :%s.${NC}\n" "$CONFIG_FAILED"
+  printf "   ${GRY}  Consulte les journaux systemd, corrige la cause puis relance : update${NC}\n\n"
+fi
 # Le bot partage les mêmes commandes que le panel. S'il tourne déjà, on le
 # redémarre après la mise à jour afin qu'il charge immédiatement les fichiers
 # qui viennent d'être remplacés, sans modifier son état activé/désactivé.
@@ -239,7 +286,9 @@ while IFS= read -r -s -t 0.01 -n 512 _ 2>/dev/null; do :; done
 # Lancé depuis le panel : signale au menu principal qu'il doit se remplacer
 # par la nouvelle version une fois le sous-menu Paramètres refermé. On évite
 # ainsi tout empilement de menus tout en rechargeant immédiatement les fichiers.
-if [ -n "${NVPANEL_UI:-}" ]; then
+if [ -n "$FAILED$CONFIG_FAILED" ]; then
+  exit 1
+elif [ -n "${NVPANEL_UI:-}" ]; then
   : > /tmp/nvpanel-relaunch
   exit 0
 fi
