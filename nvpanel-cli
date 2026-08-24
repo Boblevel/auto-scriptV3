@@ -35,6 +35,26 @@ _valid_password(){
     && printf '%s' "$1" | LC_ALL=C grep -qE '^[A-Za-z0-9@%+=_.!#$^~-]+$'
 }
 
+# L'installateur officiel lance généralement Xray avec User=nobody. Les
+# fichiers temporaires sont créés en 600 par umask 077 ; après un mv, Xray ne
+# pouvait donc plus lire config.json et chaque création finissait par ERR conf.
+_xconf_permissions(){
+  local service_user service_group
+  service_user=$(systemctl show -p User --value xray 2>/dev/null)
+  service_user=${service_user:-root}
+  if id "$service_user" >/dev/null 2>&1; then
+    service_group=$(systemctl show -p Group --value xray 2>/dev/null)
+    service_group=${service_group:-$(id -gn "$service_user" 2>/dev/null)}
+    [ -n "$service_group" ] || return 1
+    chown root:"$service_group" "$(dirname "$XCONF")" "$XCONF" 2>/dev/null || return 1
+    chmod 750 "$(dirname "$XCONF")" 2>/dev/null || return 1
+    chmod 640 "$XCONF" 2>/dev/null || return 1
+  else
+    chown root:root "$XCONF" 2>/dev/null || return 1
+    chmod 644 "$XCONF" 2>/dev/null || return 1
+  fi
+}
+
 # Active le service de statistiques dans une configuration qui ne l'a pas
 # encore (serveurs installés avant cette version).
 # Les clients ne sont JAMAIS touchés : seules les clés manquantes sont
@@ -86,6 +106,11 @@ _xapi_ensure(){
     cp -a "$XCONF" "$XCONF.before-xapi-v5" 2>/dev/null || { rm -f "$tmp"; return 1; }
     chmod 600 "$XCONF.before-xapi-v5" 2>/dev/null
     mv "$tmp" "$XCONF" || { rm -f "$tmp"; return 1; }
+    if ! _xconf_permissions; then
+      cp -a "$XCONF.before-xapi-v5" "$XCONF" 2>/dev/null
+      _xconf_permissions >/dev/null 2>&1 || true
+      return 1
+    fi
     if systemctl restart xray >/dev/null 2>&1 && systemctl is-active --quiet xray; then
       # Le garde Xray conserve une copie de référence : on ne la synchronise
       # qu'après confirmation que la nouvelle configuration démarre vraiment.
@@ -94,6 +119,7 @@ _xapi_ensure(){
       chmod 600 /etc/nvpanel/xray/config.before-guard.json 2>/dev/null
     else
       cp -a "$XCONF.before-xapi-v5" "$XCONF" 2>/dev/null
+      _xconf_permissions >/dev/null 2>&1 || true
       systemctl restart xray >/dev/null 2>&1 || true
       mkdir -p /etc/nvpanel/xray
       cp -a "$XCONF" /etc/nvpanel/xray/config.before-guard.json 2>/dev/null || true
@@ -403,14 +429,13 @@ _x_created_del(){
   mv "$t" "$XCREATED"
 }
 
-# Applique la politique de dépassement : dès que le nombre d'IP/appareils
-# distincts observés dépasse la limite, le compte Xray/SS complet est supprimé.
+# Applique la politique de dépassement : le client est retiré de la
+# configuration active et marqué verrouillé, mais sa fiche, son identifiant et
+# sa date sont conservés pour permettre une vérification ou une réactivation.
 xlimit_run(){
-  # RHAFF_XLIMIT_V6_DELETE_ON_EXCESS
-  # Politique demandée : si un compte dépasse sa limite d'appareils, le
-  # compte COMPLET est supprimé. Aucune règle RoutingService/API n'est
-  # nécessaire : la décision repose uniquement sur les IP réellement vues
-  # dans les logs Xray, déjà suivies par _x_ip_refresh_sync.
+  # RHAFF_XLIMIT_V7_LOCK_ON_EXCESS
+  # La décision repose uniquement sur les IP réellement vues dans les logs
+  # Xray. Le dépassement ne doit jamais détruire les données du client.
   command -v jq >/dev/null 2>&1 || return 0
   [ -f "$XCONF" ] || return 0
   _x_ip_refresh_sync
@@ -440,7 +465,7 @@ xlimit_run(){
 
   # Retire tous les comptes fautifs dans une seule copie de config puis ne
   # redémarre Xray qu'une fois. Le nombre des autres clients est préservé.
-  tmp=$(mktemp "${XCONF}.device-delete.XXXXXX") || { rm -f "$offenders"; return 0; }
+  tmp=$(mktemp "${XCONF}.device-lock.XXXXXX") || { rm -f "$offenders"; return 0; }
   cp -a "$XCONF" "$tmp" 2>/dev/null || { rm -f "$tmp" "$offenders"; return 0; }
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
@@ -456,13 +481,12 @@ xlimit_run(){
 
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
-    sed -i "/^### $(_rx "$name") /d" "$XDB"
-    _x_limit_del "$proto" "$name"
-    _x_created_del "$proto" "$name"
+    name_rx=$(_rx "$name")
+    sed -i "s|^### $name_rx \([^ ]*\) \([^ ]*\).*|### $name \1 \2 L|" "$XDB"
     iptmp=$(mktemp "${XIPSTATE}.XXXXXX") || continue
     awk -F'|' -v p="$proto" -v n="$name" '!($1==p&&$2==n)' "$XIPSTATE" > "$iptmp" 2>/dev/null \
       && mv "$iptmp" "$XIPSTATE" || rm -f "$iptmp"
-    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$name" "$lim" "$count" >> /var/log/nvpanel-device-delete.log 2>/dev/null || true
+    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$name" "$lim" "$count" >> /var/log/nvpanel-device-lock.log 2>/dev/null || true
   done < "$offenders"
   rm -f "$offenders"
 }
@@ -521,6 +545,11 @@ _xconf_commit(){ # fichier temporaire déjà construit
   chmod 600 "$backup" 2>/dev/null
   chmod 600 "$tmp" 2>/dev/null
   mv "$tmp" "$XCONF" || { rm -f "$tmp" "$backup"; return 1; }
+  if ! _xconf_permissions; then
+    cp -a "$backup" "$XCONF" 2>/dev/null
+    rm -f "$backup"
+    return 1
+  fi
   if systemctl restart xray >/dev/null 2>&1 && systemctl is-active --quiet xray; then
     rm -f "$backup"
     mkdir -p "$NDIR"
@@ -530,6 +559,7 @@ _xconf_commit(){ # fichier temporaire déjà construit
   fi
   cp -a "$backup" "$XCONF" 2>/dev/null
   rm -f "$backup"
+  _xconf_permissions >/dev/null 2>&1 || true
   systemctl restart xray >/dev/null 2>&1 || true
   return 1
 }

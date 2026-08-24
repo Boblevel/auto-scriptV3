@@ -11,6 +11,25 @@ RED='\033[0;31m'; GRN='\033[0;32m'; CYN='\033[0;36m'; YLW='\033[0;33m'; WHT='\03
 [ -d /etc/nvpanel ] || { printf "${RED}✘ RHAFF SERVICE n'est pas installé.${NC}\n"; exit 1; }
 rm -f /tmp/nvpanel-relaunch 2>/dev/null
 
+# Sauvegarde automatique avant toute mise à jour. Une mise à jour ne doit plus
+# pouvoir modifier les comptes ou statistiques sans point de restauration.
+BACKUP_DIR=/var/backups/rhaff
+BACKUP_FILE="$BACKUP_DIR/pre-update-$(date +%F-%H%M%S).tar.gz"
+mkdir -p "$BACKUP_DIR" || { printf "${RED}✘ Création du dossier de sauvegarde impossible.${NC}\n"; exit 1; }
+chmod 700 "$BACKUP_DIR" 2>/dev/null
+_backup_paths=()
+for _path in etc/nvpanel usr/local/etc/xray etc/nginx/conf.d/rhaff.conf \
+             etc/nginx/nvpanel-ws.conf etc/wireguard etc/ppp etc/hysteria \
+             etc/default/dropbear; do
+  [ -e "/$_path" ] && _backup_paths+=("$_path")
+done
+[ "${#_backup_paths[@]}" -gt 0 ] \
+  || { printf "${RED}✘ Aucune donnée du panel à sauvegarder.${NC}\n"; exit 1; }
+tar -czf "$BACKUP_FILE" -C / "${_backup_paths[@]}" 2>/dev/null \
+  && tar -tzf "$BACKUP_FILE" >/dev/null 2>&1 \
+  && chmod 600 "$BACKUP_FILE" \
+  || { rm -f "$BACKUP_FILE"; printf "${RED}✘ Sauvegarde avant mise à jour échouée.${NC}\n"; exit 1; }
+
 clear
 printf "${CYN}"
 cat <<'ART'
@@ -272,6 +291,7 @@ if [ -n "$CONFIG_FAILED" ]; then
   printf "   ${YLW}⚠ Configuration non appliquée :%s.${NC}\n" "$CONFIG_FAILED"
   printf "   ${GRY}  Consulte les journaux systemd, corrige la cause puis relance : update${NC}\n\n"
 fi
+printf "   ${GRY}Sauvegarde avant mise à jour :${NC} %s\n\n" "$BACKUP_FILE"
 # Le bot partage les mêmes commandes que le panel. S'il tourne déjà, on le
 # redémarre après la mise à jour afin qu'il charge immédiatement les fichiers
 # qui viennent d'être remplacés, sans modifier son état activé/désactivé.

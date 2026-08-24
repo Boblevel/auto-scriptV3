@@ -90,6 +90,17 @@ EOF
 fi
 chmod 600 /etc/hysteria/config.yaml 2>/dev/null
 
+_hy_user=$(systemctl show -p User --value hysteria-server 2>/dev/null); _hy_user=${_hy_user:-hysteria}
+id "$_hy_user" >/dev/null 2>&1 || _hy_user=root
+_hy_group=$(systemctl show -p Group --value hysteria-server 2>/dev/null)
+_hy_group=${_hy_group:-$(id -gn "$_hy_user" 2>/dev/null)}
+[ -n "$_hy_group" ] \
+  || { err "Groupe du service Hysteria2 introuvable."; exit 1; }
+chown root:"$_hy_group" /etc/hysteria /etc/hysteria/config.yaml 2>/dev/null \
+  && chmod 750 /etc/hysteria \
+  && chmod 640 /etc/hysteria/config.yaml \
+  || { err "Droits de lecture de la configuration Hysteria2 impossibles."; exit 1; }
+
 systemctl enable hysteria-server >/dev/null 2>&1 \
   || { err "Activation du service Hysteria2 impossible."; exit 1; }
 

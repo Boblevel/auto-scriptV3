@@ -26,6 +26,19 @@ _valid_password(){
 # partout ailleurs, les comparaisons de tri en dépendent.
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
 
+_conf_permissions(){
+  local service_user service_group
+  service_user=$(systemctl show -p User --value hysteria-server 2>/dev/null)
+  service_user=${service_user:-hysteria}
+  id "$service_user" >/dev/null 2>&1 || service_user=root
+  service_group=$(systemctl show -p Group --value hysteria-server 2>/dev/null)
+  service_group=${service_group:-$(id -gn "$service_user" 2>/dev/null)}
+  [ -n "$service_group" ] || return 1
+  chown root:"$service_group" "$(dirname "$CONF")" "$CONF" 2>/dev/null || return 1
+  chmod 750 "$(dirname "$CONF")" 2>/dev/null || return 1
+  chmod 640 "$CONF" 2>/dev/null || return 1
+}
+
 _rebuild(){
   local domain cert tmp today active
   domain=$(cat /etc/nvpanel/domain 2>/dev/null)
@@ -55,8 +68,8 @@ _rebuild(){
     echo "    url: https://news.ycombinator.com/"
     echo "    rewriteHost: true"
   } > "$tmp" || { rm -f "$tmp"; return 1; }
-  chmod 600 "$tmp" 2>/dev/null
   mv "$tmp" "$CONF" || { rm -f "$tmp"; return 1; }
+  _conf_permissions || return 2
   #   0 = configuration écrite et service démarré
   #   1 = certificat TLS absent (rien n'a été écrit)
   #   2 = configuration écrite mais service non démarré

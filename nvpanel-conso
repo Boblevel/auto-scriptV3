@@ -16,8 +16,8 @@ DBDIR=/etc/nvpanel/db
 DB="$DBDIR/conso"
 umask 077
 # Version des règles de comptage. À incrémenter dès qu'on change ce qui est
-# compté : l'historique accumulé par l'ancienne méthode est alors effacé,
-# sinon des valeurs erronées (dizaines de Go fantômes) resteraient affichées.
+# compté. Une migration remet uniquement les compteurs bruts à zéro :
+# l'historique commercial déjà enregistré ne doit jamais être supprimé.
 RULES_VER=8
 VERF="$DBDIR/conso.ver"
 LASTF="$DBDIR/conso.last"   # derniers compteurs bruts lus
@@ -28,14 +28,13 @@ CONSO_TAGS="ssh_bundle vmess vless trojan shadowsocks hysteria wg ppp"
 mkdir -p "$DBDIR"; touch "$DB"
 chmod 700 "$DBDIR" 2>/dev/null; chmod 600 "$DB" 2>/dev/null
 
-# Changement de méthode de comptage → on repart d'un historique propre.
-# Sans cela, les valeurs erronées accumulées par l'ancienne méthode
-# (dizaines de Go jamais consommés) resteraient affichées indéfiniment.
+# Changement de méthode de comptage : on conserve l'historique et on repart
+# seulement de nouvelles références brutes. Le vidage de $DB effectué par les
+# anciennes versions supprimait toute la consommation lors d'une mise à jour.
 if [ "$(cat "$VERF" 2>/dev/null)" != "$RULES_VER" ]; then
-  : > "$DB" 2>/dev/null
   rm -f "$LASTF" 2>/dev/null
   for _tag in $CONSO_TAGS; do
-    rm -f "$DBDIR/conso_$_tag" "$DBDIR/conso_$_tag.tmp" "$DBDIR/.conso.last.$_tag" 2>/dev/null
+    rm -f "$DBDIR/.conso.last.$_tag" 2>/dev/null
   done
   # Les compteurs iptables encore en place contiennent l'ancien cumul : sans
   # cette remise à zéro, le premier relevé après mise à jour le réinjecterait

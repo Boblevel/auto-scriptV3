@@ -34,6 +34,22 @@ if ! command -v xray >/dev/null 2>&1; then
 fi
 command -v jq >/dev/null 2>&1 || { err "jq est requis."; exit 1; }
 command -v openssl >/dev/null 2>&1 || { err "openssl est requis."; exit 1; }
+
+_secure_xray_config(){
+  _xray_user=$(systemctl show -p User --value xray 2>/dev/null)
+  _xray_user=${_xray_user:-root}
+  if id "$_xray_user" >/dev/null 2>&1; then
+    _xray_group=$(systemctl show -p Group --value xray 2>/dev/null)
+    _xray_group=${_xray_group:-$(id -gn "$_xray_user" 2>/dev/null)}
+    [ -n "$_xray_group" ] || return 1
+    chown root:"$_xray_group" "$XDIR" "$XDIR/config.json" 2>/dev/null || return 1
+    chmod 750 "$XDIR" 2>/dev/null || return 1
+    chmod 640 "$XDIR/config.json" 2>/dev/null || return 1
+  else
+    chown root:root "$XDIR/config.json" 2>/dev/null || return 1
+    chmod 644 "$XDIR/config.json" 2>/dev/null || return 1
+  fi
+}
 command -v nginx >/dev/null 2>&1 || apt-get install -y nginx >/dev/null 2>&1
 command -v nginx >/dev/null 2>&1 || { err "Installation de nginx échouée."; exit 1; }
 
@@ -148,8 +164,8 @@ if ! cmp -s "$_xcfg_tmp" "$XDIR/config.json"; then
 else
   rm -f "$_xcfg_tmp"
 fi
-chmod 600 "$XDIR/config.json" "$NDIR/ss_key" 2>/dev/null
-_xray_user=$(systemctl show -p User --value xray 2>/dev/null); _xray_user=${_xray_user:-root}
+chmod 600 "$NDIR/ss_key" "$XDIR/config.json.before-rhaff-fix" 2>/dev/null
+_secure_xray_config || { err "Droits de lecture de la configuration Xray impossibles."; exit 1; }
 if id "$_xray_user" >/dev/null 2>&1; then chown "$_xray_user" /var/log/xray /var/log/xray/access.log /var/log/xray/error.log 2>/dev/null; fi
 chmod 750 /var/log/xray; chmod 640 /var/log/xray/access.log /var/log/xray/error.log 2>/dev/null
 cat > /etc/logrotate.d/nvpanel-xray <<'EOF'
@@ -168,6 +184,7 @@ systemctl enable xray >/dev/null 2>&1
 if ! systemctl restart xray >/dev/null 2>&1 || ! systemctl is-active --quiet xray; then
   if [ "$_xcfg_changed" -eq 1 ] && [ -s "$XDIR/config.json.before-rhaff-fix" ]; then
     cp -a "$XDIR/config.json.before-rhaff-fix" "$XDIR/config.json" 2>/dev/null
+    _secure_xray_config >/dev/null 2>&1 || true
     systemctl restart xray >/dev/null 2>&1 || true
   fi
   err "Xray n'a pas pu démarrer. Consulte : journalctl -u xray"

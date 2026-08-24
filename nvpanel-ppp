@@ -61,15 +61,15 @@ _limit_del(){
 
 # PPP appelle automatiquement ip-up/ip-down à chaque vraie session. Ces deux
 # hooks enregistrent compte + interface + IP distante. Si une NOUVELLE IP fait
-# dépasser la limite, le compte complet est supprimé et toutes ses sessions
-# sont coupées (politique RHAFF demandée).
+# dépasser la limite, le compte est verrouillé et ses sessions sont coupées ;
+# sa fiche reste disponible pour contrôle ou réactivation.
 _ensure_hooks(){
   local up=/etc/ppp/ip-up.d/90-nvpanel-device-limit down=/etc/ppp/ip-down.d/90-nvpanel-device-limit
   mkdir -p /etc/ppp/ip-up.d /etc/ppp/ip-down.d
-  if ! grep -q 'RHAFF_PPP_LIMIT_V5_DELETE_ON_EXCESS' "$up" 2>/dev/null; then
+  if ! grep -q 'RHAFF_PPP_LIMIT_V6_LOCK_ON_EXCESS' "$up" 2>/dev/null; then
     cat > "$up" <<'EOF'
 #!/bin/sh
-# RHAFF_PPP_LIMIT_V5_DELETE_ON_EXCESS
+# RHAFF_PPP_LIMIT_V6_LOCK_ON_EXCESS
 LIM=/etc/nvpanel/db/ppp_limit
 STATE=/run/nvpanel-ppp-sessions
 exec 9>/run/nvpanel-ppp-sessions.lock
@@ -107,12 +107,12 @@ if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then
   n=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{a[$4]=1} END{for(i in a)c++; print c+0}' "$STATE")
   if [ "$exists" -eq 0 ] && [ "$n" -ge "$lim" ]; then
     # Le nouvel appareil ferait passer le compte au-dessus de sa limite :
-    # suppression complète du compte, puis coupure de la session déclenchante.
+    # verrouillage du compte, puis coupure de la session déclenchante.
     # Libère le verrou des sessions avant d'appeler nvpanel-ppp, qui le
-    # reprendra pendant sa purge. Cela évite un interblocage avec le panel.
+    # reprendra pendant le verrouillage. Cela évite un interblocage avec le panel.
     flock -u 9 2>/dev/null
-    /usr/local/bin/nvpanel-ppp del "$proto" "$user" >/dev/null 2>&1
-    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$lim" "$((n+1))" >> /var/log/nvpanel-device-delete.log 2>/dev/null
+    /usr/local/bin/nvpanel-ppp lock "$proto" "$user" >/dev/null 2>&1
+    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$lim" "$((n+1))" >> /var/log/nvpanel-device-lock.log 2>/dev/null
     kill "$pid" 2>/dev/null
     exit 0
   fi
