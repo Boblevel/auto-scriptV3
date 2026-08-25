@@ -161,6 +161,49 @@ lock_toggle() {
   pause
 }
 
+blocked_accounts() {
+  local label="${1:-SSH}" today page=0 size=6 total pages start end i n u exp out
+  today=$(date +%F)
+  mapfile -t _blocked_ssh < <(
+    while read -r _ u exp; do
+      [ -n "$u" ] || continue
+      { [ -z "$exp" ] || [ "$exp" \> "$today" ]; } || continue
+      passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}' && printf '%s|%s\n' "$u" "$exp"
+    done < "$DB"
+  )
+  total=${#_blocked_ssh[@]}
+  if [ "$total" -eq 0 ]; then
+    header; warn "Aucun compte $label bloqué / verrouillé."; pause; return
+  fi
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    header
+    printf "   ${GRY}Comptes $label bloqués · page %d/%d :${NC}\n" "$((page+1))" "$pages"
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r u exp <<< "${_blocked_ssh[$i]}"
+      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${RED}verrouillé${NC}\n" "$((i+1))" "$u" "$(_fmtd "${exp:-?}")"
+    done
+    echo
+    if [ "$pages" -gt 1 ]; then
+      ask "   ➤ N° à déverrouiller | n suivante | p précédente | 0 retour : " n
+    else
+      ask "   ➤ N° à déverrouiller (0 = retour) : " n
+    fi
+    case "${n,,}" in
+      n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;;
+      p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;;
+    esac
+    [[ "$n" =~ ^[0-9]+$ ]] || { warn "Invalide"; sleep 1; continue; }
+    [ "$n" -eq 0 ] && return
+    [ "$n" -ge 1 ] && [ "$n" -le "$total" ] || { warn "Hors liste"; sleep 1; continue; }
+    u="${_blocked_ssh[$((n-1))]%%|*}"
+    out=$(nvpanel-cli unlock "$u" 2>&1)
+    if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi
+    pause; return
+  done
+}
+
 view_account() {
   header; pick_user || return; user="$PICK"
   out=$(nvpanel-cli info "$user")
@@ -186,11 +229,13 @@ slowdns_menu() {
   fi
   echo; entry "1" "⬇️" "Installer / réinstaller"
   entry "2" "🗑️" "Désinstaller"
+  entry "3" "🔓" "Comptes bloqués / déverrouiller"
   entry "0" "⬅️" "Retour"; line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
   case "$s" in
     1) install-slowdns ;;
     2) uninstall_slowdns ;;
+    3) blocked_accounts "SlowDNS" ;;
   esac
 }
 
@@ -354,6 +399,7 @@ hysteria_menu() {
     compact_menu_entry "3" "🗑️" "Supprimer un compte"
     compact_menu_entry "4" "⬇️" "Installer / réinstaller"
     compact_menu_entry "5" "🗑️" "Désinstaller"
+    compact_menu_entry "6" "🔓" "Comptes bloqués / déverrouiller"
     compact_menu_entry "0" "⬅️" "Retour"
     bot
     ask "$(printf " ${WHT}Choix :${NC} ")" h || break
@@ -369,8 +415,41 @@ hysteria_menu() {
            pause
          fi ;;
       5) hy_uninstall ;;
+      6) hy_blocked ;;
       0) break ;; *) warn "Invalide"; sleep 1 ;;
     esac
+  done
+}
+
+hy_blocked(){
+  local today page=0 size=6 total pages start end i choice u exp out
+  today=$(date +%F)
+  mapfile -t _blocked_hy < <(/usr/local/bin/nvpanel-hysteria list 2>/dev/null | awk -F'|' -v d="$today" '$3=="verrou" && ($2=="" || $2>d){print $1"|"$2}')
+  total=${#_blocked_hy[@]}
+  if [ "$total" -eq 0 ]; then hy_header; warn "Aucun compte Hysteria bloqué / verrouillé."; pause; return; fi
+  pages=$(( (total + size - 1) / size ))
+  while true; do
+    hy_header
+    printf "   ${GRY}Comptes bloqués · page %d/%d :${NC}\n" "$((page+1))" "$pages"
+    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
+    for ((i=start; i<end; i++)); do
+      IFS='|' read -r u exp <<< "${_blocked_hy[$i]}"
+      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${RED}verrouillé${NC}\n" "$((i+1))" "$u" "$(_fmtd "${exp:-?}")"
+    done
+    echo
+    if [ "$pages" -gt 1 ]; then ask "   ➤ N° à déverrouiller | n suivante | p précédente | 0 retour : " choice
+    else ask "   ➤ N° à déverrouiller (0 = retour) : " choice; fi
+    case "${choice,,}" in
+      n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;;
+      p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;;
+    esac
+    [[ "$choice" =~ ^[0-9]+$ ]] || { warn "Invalide"; sleep 1; continue; }
+    [ "$choice" -eq 0 ] && return
+    [ "$choice" -ge 1 ] && [ "$choice" -le "$total" ] || { warn "Hors liste"; sleep 1; continue; }
+    u="${_blocked_hy[$((choice-1))]%%|*}"
+    out=$(/usr/local/bin/nvpanel-hysteria unlock "$u" 2>&1)
+    if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi
+    pause; return
   done
 }
 
@@ -487,6 +566,7 @@ while true; do
   compact_menu_entry "9" "⚡" "Hysteria UDP"
   compact_menu_entry "10" "🧹" "Nettoyage des comptes"
   compact_menu_entry "11" "🎁" "Compte test 24 h"
+  compact_menu_entry "12" "🔓" "Comptes bloqués / déverrouiller"
   compact_menu_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
@@ -496,6 +576,7 @@ while true; do
     7) slowdns_menu ;;   8) udp_status ;;    9) hysteria_menu ;;
     10) cleanup_menu ;;
     11) trial_account ;;
+    12) blocked_accounts "SSH" ;;
     0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done
