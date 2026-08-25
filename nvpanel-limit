@@ -36,19 +36,43 @@ ssh_ports() {
 sessions_of() {
   local ports wanted_uid; ports=" $(ssh_ports) "
   wanted_uid=$(id -u "$1" 2>/dev/null) || return 0
-  ss -tnp state established 2>/dev/null | awk -v p="$ports" '
+
+  ss -Htnp state established 2>/dev/null | awk -v p="$ports" '
     /pid=/ {
-      local_ep = $3; peer = $4
-      lport = local_ep; sub(/^.*:/, "", lport)
-      if (index(p, " " lport " ") == 0) next
-      if (match($0, /pid=[0-9]+/)) {
-        pid = substr($0, RSTART + 4, RLENGTH - 4)
-        sub(/:[0-9]+$/, "", peer)
-        print pid, peer
+      local_ep=$3
+      endpoint=$4
+      lport=local_ep
+      sub(/^.*:/,"",lport)
+      if(index(p," " lport " ")==0) next
+
+      peer=endpoint
+      if(peer ~ /^\[/) {
+        sub(/^\[/,"",peer)
+        sub(/\]:[0-9]+$/,"",peer)
+      } else {
+        sub(/:[0-9]+$/,"",peer)
       }
-    }' | sort -n | while read -r pid ip; do
+
+      line=$0
+      while(match(line,/pid=[0-9]+/)) {
+        pid=substr(line,RSTART+4,RLENGTH-4)
+        print pid"|"peer"|"endpoint
+        line=substr(line,RSTART+RLENGTH)
+      }
+    }' | sort -u | while IFS='|' read -r pid ip endpoint; do
       owner_uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
-      [ "$owner_uid" = "$wanted_uid" ] && printf '%s %s\n' "$pid" "$ip"
+      [ "$owner_uid" = "$wanted_uid" ] || continue
+
+      # SSH/Dropbear direct : une IP distante = un appareil.
+      # SlowDNS arrive réellement dans sshd depuis 127.0.0.1 ; dnstt ne fournit
+      # pas l'IP Internet du client à sshd. On compte donc chaque endpoint local
+      # distinct comme une session/appareil SlowDNS au lieu de fusionner tous
+      # les utilisateurs sous la fausse "IP client" 127.0.0.1.
+      case "$ip" in
+        127.0.0.1|::1) key="slowdns:${endpoint}" ;;
+        *) key="$ip" ;;
+      esac
+      printf '%s %s\n' "$pid" "$key"
     done
 }
 
@@ -57,18 +81,22 @@ while true; do
     [ -z "$user" ] && continue
     [[ "$max" =~ ^[0-9]+$ ]] || continue
     [ "$max" -le 0 ] && continue
+
     list=$(sessions_of "$user")
     [ -z "$list" ] && continue
-    # les « max » premières adresses vues sont conservées, les suivantes
-    # correspondent à des appareils en trop et sont déconnectées
-    kept=""; n=0
-    while read -r pid ip; do
-      [ -z "$pid" ] && continue
-      case " $kept " in
-        *" $ip "*) ;;
-        *) if [ "$n" -lt "$max" ]; then kept="$kept $ip"; n=$((n+1)); else kill -9 "$pid" 2>/dev/null; fi ;;
-      esac
-    done <<< "$list"
+
+    devices=$(printf '%s\n' "$list" | awk '{a[$2]=1} END{for(k in a)n++; print n+0}')
+    [ "${devices:-0}" -gt "$max" ] 2>/dev/null || continue
+
+    # Dépassement réel : verrouillage COMPLET immédiat. nvpanel-cli applique
+    # aussi les effets associés au compte SSH (UDP credential clear) et coupe
+    # toutes ses sessions : il ne peut plus se reconnecter avant déverrouillage.
+    if /usr/local/bin/nvpanel-cli lock "$user" >/dev/null 2>&1; then
+      printf '%s|ssh|%s|%s|%s\n' "$(date '+%F %T')" "$user" "$max" "$devices" \
+        >> /var/log/nvpanel-device-lock.log 2>/dev/null || true
+    fi
   done < "$DB"
-  sleep 20
+
+  # Réaction quasi immédiate sans attendre les anciennes 20 secondes.
+  sleep 1
 done

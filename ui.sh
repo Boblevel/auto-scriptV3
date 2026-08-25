@@ -269,8 +269,12 @@ _online_uniq_port() {
 _ssh_sessions_raw() {
   # Une session SSH réelle est une socket dont le PORT LOCAL est celui
   # d'OpenSSH/Dropbear et dont le processus authentifié appartient au compte.
-  # Les connexions sortantes créées par le tunnel (sites visités sur :443)
-  # ne doivent jamais être prises pour l'IP du client.
+  # Les connexions SORTANTES du tunnel (vers :443/:5222/etc.) sont exclues.
+  #
+  # SlowDNS termine localement sur 127.0.0.1:22 : le binaire dnstt ne transmet
+  # pas l'IP Internet du client à sshd. Dans ce seul cas, chaque endpoint local
+  # réel (IP:port source) représente une session SlowDNS distincte ; on le garde
+  # comme clé de session au lieu de prétendre que 127.0.0.1 est l'IP du client.
   local dp ports port
   dp=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
   case "$dp" in ''|*[!0-9]*) dp="" ;; esac
@@ -280,46 +284,35 @@ _ssh_sessions_raw() {
     ss -Htnp state established "( sport = :$port )" 2>/dev/null
   done | awk '
     /pid=/ {
-      peer=$4
+      endpoint=$4
+      peer=endpoint
       if(peer ~ /^\[/) { sub(/^\[/,"",peer); sub(/\]:[0-9]+$/,"",peer) }
       else sub(/:[0-9]+$/,"",peer)
-      if(match($0,/pid=[0-9]+/)) {
-        pid=substr($0,RSTART+4,RLENGTH-4)
-        print pid"|"peer
+      line=$0
+      while(match(line,/pid=[0-9]+/)) {
+        pid=substr(line,RSTART+4,RLENGTH-4)
+        print pid"|"peer"|"endpoint
+        line=substr(line,RSTART+RLENGTH)
       }
-    }' | sort -u | while IFS='|' read -r pid ip; do
+    }' | sort -u | while IFS='|' read -r pid ip endpoint; do
       [ -n "$pid" ] && [ -n "$ip" ] || continue
       uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
       case "$uid" in ''|*[!0-9]*) continue ;; esac
       u=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1)
       [ -n "$u" ] || continue
       grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null || continue
-      printf '%s|%s\n' "$u" "$ip"
+      case "$ip" in
+        127.0.0.1|::1) key="slowdns:${endpoint}" ;;
+        *) key="$ip" ;;
+      esac
+      printf '%s|%s\n' "$u" "$key"
     done | sort -u
 }
 
+# Pas de cache ancien : la liste, le total et la limite SSH/SlowDNS doivent
+# refléter les mêmes sessions réellement établies au moment de l'affichage.
 _ssh_sessions() {
-  # Même principe que pour Xray/consommation : le scan ss+ps reste la source
-  # réelle, mais il ne doit plus figer l'écran ~0,5 s à chaque navigation.
-  local cache=/run/nvpanel-ssh-sessions.cache lock=/run/nvpanel-ssh-sessions.lock
-  local now mt age tmp
-  now=$(date +%s)
-  if [ -f "$cache" ]; then
-    cat "$cache" 2>/dev/null
-    mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
-    if [ "$age" -ge 2 ] 2>/dev/null; then
-      (
-        mkdir "$lock" 2>/dev/null || exit 0
-        trap 'rmdir "$lock" 2>/dev/null' EXIT
-        tmp="${cache}.${BASHPID}"
-        _ssh_sessions_raw > "$tmp" 2>/dev/null && mv "$tmp" "$cache"
-      ) </dev/null >/dev/null 2>&1 &
-    fi
-    return
-  fi
-  tmp="${cache}.${BASHPID}"
-  _ssh_sessions_raw | tee "$tmp"
-  mv "$tmp" "$cache" 2>/dev/null || true
+  _ssh_sessions_raw
 }
 
 _ssh_online() { _ssh_sessions | wc -l; }

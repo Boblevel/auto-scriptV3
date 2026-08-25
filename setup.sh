@@ -212,7 +212,7 @@ After=network-online.target xray.service nginx.service
 Wants=network-online.target
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 1; done'
 Restart=always
 RestartSec=2
 [Install]

@@ -195,7 +195,12 @@ fi
 grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shells
 # Le bot Telegram n'est PAS redémarré ici : c'est à toi de le faire
 # depuis le menu (Bot Telegram → « Redémarrer le bot »).
-systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
+if [ -x /usr/local/bin/nvpanel-limit ]; then
+  systemctl enable nvpanel-limit >/dev/null 2>&1 \
+    && systemctl restart nvpanel-limit >/dev/null 2>&1 \
+    && systemctl is-active --quiet nvpanel-limit \
+    || CONFIG_FAILED="$CONFIG_FAILED limite-SSH"
+fi
 
 progress_to 90 "Application de la configuration"
 
@@ -240,7 +245,7 @@ if [ -x /usr/local/bin/nvpanel-cli ]; then
   ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null \
     || CONFIG_FAILED="$CONFIG_FAILED cron-Xray"
 
-  # La limite Xray/Shadowsocks doit réagir en quelques secondes. Ce service
+  # La limite Xray/Shadowsocks doit réagir immédiatement au dépassement. Ce service
   # n'agit ni sur SSH ni sur SlowDNS.
   cat > /etc/systemd/system/nvpanel-xlimit.service <<'UNIT'
 [Unit]
@@ -250,7 +255,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 1; done'
 Restart=always
 RestartSec=2
 
@@ -258,7 +263,8 @@ RestartSec=2
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload >/dev/null 2>&1
-  systemctl enable --now nvpanel-xlimit >/dev/null 2>&1 \
+  systemctl enable nvpanel-xlimit >/dev/null 2>&1 \
+    && systemctl restart nvpanel-xlimit >/dev/null 2>&1 \
     && systemctl is-active --quiet nvpanel-xlimit \
     || CONFIG_FAILED="$CONFIG_FAILED limite-Xray"
 fi
