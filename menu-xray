@@ -105,35 +105,17 @@ pick_client() {
 }
 
 blocked_clients() {
-  local today page=0 size=6 total pages start end i choice name exp out
-  today=$(date +%F)
-  mapfile -t _blocked_x < <(nvpanel-cli xlist "$PROTO" 2>/dev/null | awk -F'|' -v d="$today" '$3=="verrou" && ($2=="" || $2>d){print $1"|"$2}')
-  total=${#_blocked_x[@]}
-  if [ "$total" -eq 0 ]; then header; warn "Aucun client ${PROTO^^} bloqué / verrouillé."; pause; return; fi
-  pages=$(( (total + size - 1) / size ))
-  while true; do
-    header
-    printf "   ${GRY}Clients bloqués · page %d/%d :${NC}\n" "$((page+1))" "$pages"
-    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
-    for ((i=start; i<end; i++)); do
-      IFS='|' read -r name exp <<< "${_blocked_x[$i]}"
-      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${RED}verrouillé${NC}\n" "$((i+1))" "$name" "$(_fmtd "${exp:-?}")"
-    done
-    echo
-    if [ "$pages" -gt 1 ]; then ask "   ➤ N° à déverrouiller | n suivante | p précédente | 0 retour : " choice
-    else ask "   ➤ N° à déverrouiller (0 = retour) : " choice; fi
-    case "${choice,,}" in
-      n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;;
-      p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;;
-    esac
-    [[ "$choice" =~ ^[0-9]+$ ]] || { warn "Invalide"; sleep 1; continue; }
-    [ "$choice" -eq 0 ] && return
-    [ "$choice" -ge 1 ] && [ "$choice" -le "$total" ] || { warn "Hors liste"; sleep 1; continue; }
-    name="${_blocked_x[$((choice-1))]%%|*}"
+  local name st out
+  header; pick_client || return; name="$PICK"
+  st=$(nvpanel-cli xlist "$PROTO" 2>/dev/null | awk -F'|' -v n="$name" '$1==n{print $3; exit}')
+  if [ "$st" = "verrou" ]; then
     out=$(nvpanel-cli xunlock "$PROTO" "$name" 2>&1)
     if echo "$out" | grep -q '^OK'; then ok "$name déverrouillé"; else err "Échec : $out"; fi
-    pause; return
-  done
+  else
+    out=$(nvpanel-cli xlock "$PROTO" "$name" 2>&1)
+    if echo "$out" | grep -q '^OK'; then ok "$name verrouillé"; else err "Échec : $out"; fi
+  fi
+  pause
 }
 
 del_client() {
@@ -275,19 +257,19 @@ while true; do
   menu_box_entry "2" "📋" "Lister les clients"
   menu_box_entry "3" "🔍" "Revoir un client"
   menu_box_entry "4" "♻️" "Prolonger un client"
-  menu_box_entry "5" "🗑️" "Supprimer un client"
-  menu_box_entry "6" "🧹" "Nettoyage des comptes"
-  menu_box_entry "7" "🎁" "Compte test 24 h"
-  menu_box_entry "8" "⚙️" "Installer / désinstaller"
-  menu_box_entry "9" "🔓" "Comptes bloqués / déverrouiller"
+  menu_box_entry "5" "🔓" "Verrouiller / déverrouiller"
+  menu_box_entry "6" "🗑️" "Supprimer un client"
+  menu_box_entry "7" "🧹" "Nettoyage des comptes"
+  menu_box_entry "8" "🎁" "Compte test 24 h"
+  menu_box_entry "9" "⚙️" "Installer / désinstaller"
   menu_box_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
   case "$o" in
     1) add_client ;; 2) list_clients ;; 3) view_client ;;
-    4) renew_client ;; 5) del_client ;; 6) cleanup_menu ;; 7) trial_client ;;
-    8) setup_menu; command -v xray >/dev/null 2>&1 || break ;;
-    9) blocked_clients ;;
+    4) renew_client ;; 5) blocked_clients ;; 6) del_client ;; 7) cleanup_menu ;;
+    8) trial_client ;;
+    9) setup_menu; command -v xray >/dev/null 2>&1 || break ;;
     0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

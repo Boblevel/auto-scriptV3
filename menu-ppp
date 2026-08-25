@@ -135,35 +135,17 @@ list_all(){
 }
 
 blocked_accounts(){
-  local today page=0 size=6 total pages start end i choice u exp out
-  today=$(date +%F)
-  mapfile -t _blocked_ppp < <(nvpanel-ppp list "$PROTO" 2>/dev/null | awk -F'|' -v d="$today" '$3=="verrou" && ($2=="" || $2>d){print $1"|"$2}')
-  total=${#_blocked_ppp[@]}
-  if [ "$total" -eq 0 ]; then header; warn "Aucun compte $LABEL bloqué / verrouillé."; pause; return; fi
-  pages=$(( (total + size - 1) / size ))
-  while true; do
-    header
-    printf "   ${GRY}Comptes bloqués · page %d/%d :${NC}\n" "$((page+1))" "$pages"
-    start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
-    for ((i=start; i<end; i++)); do
-      IFS='|' read -r u exp <<< "${_blocked_ppp[$i]}"
-      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${RED}verrouillé${NC}\n" "$((i+1))" "$u" "$(_fmtd "${exp:-?}")"
-    done
-    echo
-    if [ "$pages" -gt 1 ]; then ask "   ➤ N° à déverrouiller | n suivante | p précédente | 0 retour : " choice
-    else ask "   ➤ N° à déverrouiller (0 = retour) : " choice; fi
-    case "${choice,,}" in
-      n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;;
-      p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;;
-    esac
-    [[ "$choice" =~ ^[0-9]+$ ]] || { warn "Invalide"; sleep 1; continue; }
-    [ "$choice" -eq 0 ] && return
-    [ "$choice" -ge 1 ] && [ "$choice" -le "$total" ] || { warn "Hors liste"; sleep 1; continue; }
-    u="${_blocked_ppp[$((choice-1))]%%|*}"
+  local u st out
+  header; pick || return; u="$PICK"
+  st=$(nvpanel-ppp list "$PROTO" 2>/dev/null | awk -F'|' -v n="$u" '$1==n{print $3; exit}')
+  if [ "$st" = "verrou" ]; then
     out=$(nvpanel-ppp unlock "$PROTO" "$u" 2>&1)
     if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi
-    pause; return
-  done
+  else
+    out=$(nvpanel-ppp lock "$PROTO" "$u" 2>&1)
+    if echo "$out" | grep -q '^OK'; then ok "$u verrouillé"; else err "Échec : $out"; fi
+  fi
+  pause
 }
 
 view(){
@@ -318,16 +300,16 @@ while true; do
   compact_menu_entry "2" "📋" "Lister les comptes"
   compact_menu_entry "3" "🔍" "Revoir un compte"
   compact_menu_entry "4" "♻️" "Prolonger un compte"
-  compact_menu_entry "5" "🗑️" "Supprimer un compte"
-  compact_menu_entry "6" "🧹" "Nettoyage des comptes"
-  compact_menu_entry "7" "🎁" "Compte test 24 h"
-  compact_menu_entry "8" "⚙️" "Installer / désinstaller"
-  compact_menu_entry "9" "🔓" "Comptes bloqués / déverrouiller"
+  compact_menu_entry "5" "🔓" "Verrouiller / déverrouiller"
+  compact_menu_entry "6" "🗑️" "Supprimer un compte"
+  compact_menu_entry "7" "🧹" "Nettoyage des comptes"
+  compact_menu_entry "8" "🎁" "Compte test 24 h"
+  compact_menu_entry "9" "⚙️" "Installer / désinstaller"
   compact_menu_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" o || break
   case "$o" in
-    1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) del ;;
-    6) cleanup_menu ;; 7) trial ;; 8) setup_menu ;; 9) blocked_accounts ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
+    1) create ;; 2) list_all ;; 3) view ;; 4) renew ;; 5) blocked_accounts ;;
+    6) del ;; 7) cleanup_menu ;; 8) trial ;; 9) setup_menu ;; 0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done

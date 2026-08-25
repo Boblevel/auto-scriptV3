@@ -229,13 +229,11 @@ slowdns_menu() {
   fi
   echo; entry "1" "⬇️" "Installer / réinstaller"
   entry "2" "🗑️" "Désinstaller"
-  entry "3" "🔓" "Comptes bloqués / déverrouiller"
   entry "0" "⬅️" "Retour"; line
   ask "$(printf " ${WHT}➤ Choix :${NC} ")" s
   case "$s" in
     1) install-slowdns ;;
     2) uninstall_slowdns ;;
-    3) blocked_accounts "SlowDNS" ;;
   esac
 }
 
@@ -396,49 +394,48 @@ hysteria_menu() {
     menu_box_top
     compact_menu_entry "1" "➕" "Créer un compte"
     compact_menu_entry "2" "📋" "Lister les comptes"
-    compact_menu_entry "3" "🗑️" "Supprimer un compte"
-    compact_menu_entry "4" "⬇️" "Installer / réinstaller"
-    compact_menu_entry "5" "🗑️" "Désinstaller"
-    compact_menu_entry "6" "🔓" "Comptes bloqués / déverrouiller"
+    compact_menu_entry "3" "🔓" "Verrouiller / déverrouiller"
+    compact_menu_entry "4" "🗑️" "Supprimer un compte"
+    compact_menu_entry "5" "⬇️" "Installer / réinstaller"
+    compact_menu_entry "6" "🗑️" "Désinstaller"
     compact_menu_entry "0" "⬅️" "Retour"
     bot
     ask "$(printf " ${WHT}Choix :${NC} ")" h || break
     case "$h" in
-      1) hy_create ;; 2) hy_list ;; 3) hy_delete ;;
+      1) hy_create ;; 2) hy_list ;; 3) hy_blocked ;; 4) hy_delete ;;
       # Sans ce test, quand le composant n'était pas présent sur le serveur la
       # commande échouait en silence : l'option semblait « refuser » de lancer
       # l'installation, sans le moindre message.
-      4) if [ -x /usr/local/bin/install-hysteria ]; then
+      5) if [ -x /usr/local/bin/install-hysteria ]; then
            /usr/local/bin/install-hysteria
          else
            err "Composant d'installation absent. Tape « update » puis réessaie."
            pause
          fi ;;
-      5) hy_uninstall ;;
-      6) hy_blocked ;;
+      6) hy_uninstall ;;
       0) break ;; *) warn "Invalide"; sleep 1 ;;
     esac
   done
 }
 
 hy_blocked(){
-  local today page=0 size=6 total pages start end i choice u exp out
-  today=$(date +%F)
-  mapfile -t _blocked_hy < <(/usr/local/bin/nvpanel-hysteria list 2>/dev/null | awk -F'|' -v d="$today" '$3=="verrou" && ($2=="" || $2>d){print $1"|"$2}')
+  local page=0 size=6 total pages start end i choice u exp st color out
+  mapfile -t _blocked_hy < <(/usr/local/bin/nvpanel-hysteria list 2>/dev/null)
   total=${#_blocked_hy[@]}
-  if [ "$total" -eq 0 ]; then hy_header; warn "Aucun compte Hysteria bloqué / verrouillé."; pause; return; fi
+  if [ "$total" -eq 0 ]; then hy_header; warn "Aucun compte Hysteria."; pause; return; fi
   pages=$(( (total + size - 1) / size ))
   while true; do
     hy_header
-    printf "   ${GRY}Comptes bloqués · page %d/%d :${NC}\n" "$((page+1))" "$pages"
+    printf "   ${GRY}Comptes Hysteria · page %d/%d :${NC}\n" "$((page+1))" "$pages"
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r u exp <<< "${_blocked_hy[$i]}"
-      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${RED}verrouillé${NC}\n" "$((i+1))" "$u" "$(_fmtd "${exp:-?}")"
+      IFS='|' read -r u exp st <<< "${_blocked_hy[$i]}"
+      case "$st" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${color}%s${NC}\n" "$((i+1))" "$u" "$(_fmtd "${exp:-?}")" "$st"
     done
     echo
-    if [ "$pages" -gt 1 ]; then ask "   ➤ N° à déverrouiller | n suivante | p précédente | 0 retour : " choice
-    else ask "   ➤ N° à déverrouiller (0 = retour) : " choice; fi
+    if [ "$pages" -gt 1 ]; then ask "   ➤ N° à verrouiller / déverrouiller | n suivante | p précédente | 0 retour : " choice
+    else ask "   ➤ N° à verrouiller / déverrouiller (0 = retour) : " choice; fi
     case "${choice,,}" in
       n) [ "$pages" -gt 1 ] && [ "$page" -lt $((pages-1)) ] && page=$((page+1)); continue ;;
       p) [ "$pages" -gt 1 ] && [ "$page" -gt 0 ] && page=$((page-1)); continue ;;
@@ -446,9 +443,14 @@ hy_blocked(){
     [[ "$choice" =~ ^[0-9]+$ ]] || { warn "Invalide"; sleep 1; continue; }
     [ "$choice" -eq 0 ] && return
     [ "$choice" -ge 1 ] && [ "$choice" -le "$total" ] || { warn "Hors liste"; sleep 1; continue; }
-    u="${_blocked_hy[$((choice-1))]%%|*}"
-    out=$(/usr/local/bin/nvpanel-hysteria unlock "$u" 2>&1)
-    if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi
+    IFS='|' read -r u exp st <<< "${_blocked_hy[$((choice-1))]}"
+    if [ "$st" = "verrou" ]; then
+      out=$(/usr/local/bin/nvpanel-hysteria unlock "$u" 2>&1)
+      if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi
+    else
+      out=$(/usr/local/bin/nvpanel-hysteria lock "$u" 2>&1)
+      if echo "$out" | grep -q '^OK'; then ok "$u verrouillé"; else err "Échec : $out"; fi
+    fi
     pause; return
   done
 }
@@ -559,14 +561,13 @@ while true; do
   compact_menu_entry "2" "📋" "Lister les comptes"
   compact_menu_entry "3" "🔍" "Revoir un compte"
   compact_menu_entry "4" "♻️" "Prolonger / réactiver"
-  compact_menu_entry "5" "🔒" "Verrouiller / déverrouiller"
+  compact_menu_entry "5" "🔓" "Verrouiller / déverrouiller"
   compact_menu_entry "6" "🗑️" "Supprimer un compte"
   compact_menu_entry "7" "🌐" "SlowDNS"
   compact_menu_entry "8" "📡" "UDP (badvpn / udp-custom)"
   compact_menu_entry "9" "⚡" "Hysteria UDP"
   compact_menu_entry "10" "🧹" "Nettoyage des comptes"
   compact_menu_entry "11" "🎁" "Compte test 24 h"
-  compact_menu_entry "12" "🔓" "Comptes bloqués / déverrouiller"
   compact_menu_entry "0" "⬅️" "Retour"
   menu_box_bot
   ask "$(printf " ${WHT}Choix :${NC} ")" o || break
@@ -576,7 +577,6 @@ while true; do
     7) slowdns_menu ;;   8) udp_status ;;    9) hysteria_menu ;;
     10) cleanup_menu ;;
     11) trial_account ;;
-    12) blocked_accounts "SSH" ;;
     0) break ;; *) warn "Invalide"; sleep 1 ;;
   esac
 done
