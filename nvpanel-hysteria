@@ -10,6 +10,8 @@
 # ============================================================
 DB=/etc/nvpanel/db/hysteria
 CONF=/etc/hysteria/config.yaml
+HAPI_SECRET=/etc/nvpanel/hysteria_api_secret
+HAPI_URL=http://127.0.0.1:9999
 umask 077
 mkdir -p /etc/nvpanel/db; chmod 700 /etc/nvpanel/db 2>/dev/null
 touch "$DB"; chmod 600 "$DB" 2>/dev/null
@@ -40,13 +42,20 @@ _conf_permissions(){
 }
 
 _rebuild(){
-  local domain cert tmp today active
+  local domain cert tmp today active api_secret
   domain=$(cat /etc/nvpanel/domain 2>/dev/null)
   [[ "$domain" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
     && [ "${#domain}" -le 253 ] || return 1
   cert="/etc/letsencrypt/live/$domain"
   [ -f "$cert/fullchain.pem" ] && [ -f "$cert/privkey.pem" ] || return 1
   mkdir -p /etc/hysteria
+  if [ ! -s "$HAPI_SECRET" ]; then
+    umask 077
+    openssl rand -hex 24 > "$HAPI_SECRET" 2>/dev/null || return 2
+    chmod 600 "$HAPI_SECRET" 2>/dev/null || return 2
+  fi
+  api_secret=$(head -n1 "$HAPI_SECRET" 2>/dev/null)
+  [ -n "$api_secret" ] || return 2
   tmp=$(mktemp /etc/hysteria/.config.yaml.XXXXXX) || return 1
   today=$(date +%F)
   active=$(awk -v d="$today" '/^### / && $5!="L" && $4>d{n++} END{print n+0}' "$DB")
@@ -67,6 +76,9 @@ _rebuild(){
     echo "  proxy:"
     echo "    url: https://news.ycombinator.com/"
     echo "    rewriteHost: true"
+    echo "trafficStats:"
+    echo "  listen: 127.0.0.1:9999"
+    echo "  secret: $api_secret"
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$CONF" || { rm -f "$tmp"; return 1; }
   _conf_permissions || return 2
@@ -198,9 +210,19 @@ case "$cmd" in
     rm -f "$db_backup"
     echo "OK $n" ;;
   online)
-    # QUIC multiplexe tout sur un seul socket UDP : impossible de compter
-    # les sessions par utilisateur avec ss/pgrep, contrairement à PPP.
-    systemctl is-active --quiet hysteria-server && echo 1 || echo 0 ;;
+    mode=$(_clean "$1")
+    systemctl is-active --quiet hysteria-server 2>/dev/null || { [ "$mode" = "all-detail" ] || echo 0; exit 0; }
+    [ -s "$HAPI_SECRET" ] || { [ "$mode" = "all-detail" ] || echo 0; exit 0; }
+    api_secret=$(head -n1 "$HAPI_SECRET" 2>/dev/null)
+    data=$(curl -fsS --max-time 2 -H "Authorization: $api_secret" "$HAPI_URL/online" 2>/dev/null) || data='{}'
+    case "$mode" in
+      all-detail)
+        printf '%s' "$data" | jq -r 'to_entries[]? | "\(.key)|\(.value // 0)"' 2>/dev/null ;;
+      '')
+        printf '%s' "$data" | jq '[.[]? // 0] | add // 0' 2>/dev/null || echo 0 ;;
+      *)
+        printf '%s' "$data" | jq -r --arg u "$mode" '.[$u] // 0' 2>/dev/null || echo 0 ;;
+    esac ;;
   rebuild)
     _rebuild; rc=$?
     if [ "$rc" -eq 0 ]; then echo "OK"

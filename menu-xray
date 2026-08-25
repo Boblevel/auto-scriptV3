@@ -78,7 +78,7 @@ _rand_name(){ printf 'test%s' "$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | hea
 _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 
 trial_client() {
-  banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
+  banner; top; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; bot
   printf "   ${GRY}Génération d'un client ${PROTO^^} valable 24 heures…${NC}\n"
   add_client "$(_rand_name)" 1
 }

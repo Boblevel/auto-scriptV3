@@ -8,7 +8,7 @@ ui_enter; trap ui_leave EXIT INT TERM HUP
 CONF=/etc/nvpanel/bot.conf
 umask 077
 
-banner; center " BOT TELEGRAM " "${BOLD}${WHT}"; line
+banner; _edge "┏" "┓" "BOT TELEGRAM"; bot
 
 if [ -f "$CONF" ]; then
   printf " ${GRY}Bot déjà configuré. Statut : ${NC}"
@@ -31,12 +31,13 @@ if [ -f "$CONF" ]; then
   echo
 fi
 
-entry "1" "🔧" "Configurer le bot"
-entry "2" "🔁" "Redémarrer le bot"
-entry "3" "⏹️" "Arrêter le bot"
-entry "4" "📄" "Voir le statut / logs"
-entry "0" "⬅️" "Retour"
-line
+menu_box_top
+compact_menu_entry "1" "🔧" "Configurer le bot"
+compact_menu_entry "2" "🔁" "Redémarrer le bot"
+compact_menu_entry "3" "⏹️" "Arrêter le bot"
+compact_menu_entry "4" "📄" "Voir le statut / logs"
+compact_menu_entry "0" "⬅️" "Retour"
+menu_box_bot
 ask "$(printf " ${WHT}Choix :${NC} ")" o || exit 0
 
 case "$o" in

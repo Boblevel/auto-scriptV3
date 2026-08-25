@@ -21,6 +21,10 @@ XSTAT=/etc/nvpanel/db/xstats   # compte|dernier_total|debut_activite|derniere_ac
 XLIMDB=/etc/nvpanel/db/xlimit    # proto|compte|limite_appareils (0 = illimite)
 XIPSTATE=/etc/nvpanel/db/xips    # proto|compte|ip|premiere_vue|derniere_vue
 XBLOCKSTATE=/etc/nvpanel/db/xblocks # tag|proto|compte|ips_bloquees
+XOVERSTATE=/run/nvpanel-xlimit-over # proto|compte|debut_depassement
+XIP_ACTIVE_WINDOW=20                # activité authentifiée récente affichée comme en ligne
+XIP_GUARD_WINDOW=8                  # fenêtre stricte utilisée par la protection multi-appareils
+XLIMIT_GRACE=15                     # dépassement continu requis avant verrouillage automatique
 XCREATED=/etc/nvpanel/db/xcreated # proto|compte|date_creation (AAAA-MM-JJ)
 touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED"
 chmod 600 "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED" 2>/dev/null
@@ -214,8 +218,8 @@ _conn_since(){
 # IP sources Xray réellement observées.
 # nginx transmet maintenant X-Forwarded-For pour VMess/VLESS/Trojan ; Xray
 # remplace alors la source 127.0.0.1 par l'IP publique du client WebSocket.
-# Shadowsocks arrive directement et expose déjà sa source. On ne compte que
-# les IP vues durant les 5 dernières minutes, comme la fenêtre d'activité.
+# Shadowsocks arrive directement et expose déjà sa source. Seules les IP
+# authentifiées vues dans la courte fenêtre active sont comptées.
 _x_proto_for_name(){
   local n="$1" p found="" c=0 db
   for p in vmess vless trojan ss; do
@@ -233,101 +237,106 @@ _x_proto_for_name(){
 }
 
 _x_ip_refresh_sync(){
-  command -v journalctl >/dev/null 2>&1 || return 0
-  local now cutoff seen tmp state_tmp old name ip proto row first last stamp=/run/nvpanel-xip.stamp last_run
-  local live_ws live_ss xport cutstr
-  now=$(date +%s); cutoff=$((now-75))
-  cutstr=$(date -d '90 seconds ago' '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
+  local now cutoff seen tmp state_tmp name ip proto row first last seen_ts seen_at old_last
+  local stamp=/run/nvpanel-xip.stamp last_run cutstr
+  now=$(date +%s); cutoff=$((now-XIP_ACTIVE_WINDOW))
+  cutstr=$(date -d "$XIP_ACTIVE_WINDOW seconds ago" '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
 
-  # Rafraîchissement très court : la source principale est désormais le fichier
-  # access.log déjà écrit par Xray, bien plus rapide que journalctl.
+  # Seul le journal AUTHENTIFIÉ de Xray peut relier une IP à un compte.
+  # Le port public 443 est partagé avec nginx/SSH/autres services : utiliser
+  # `ss` sur ce port réattribuait des IP d'autres connexions à d'anciens
+  # comptes Xray et les gardait ensuite artificiellement en ligne.
   last_run=$(cat "$stamp" 2>/dev/null)
   case "$last_run" in ''|*[!0-9]*) last_run=0 ;; esac
   [ $((now - last_run)) -lt 2 ] && return 0
   seen=$(mktemp) || return 0
   tmp=$(mktemp) || { rm -f "$seen"; return 0; }
-  live_ws=$(mktemp) || { rm -f "$seen" "$tmp"; return 0; }
-  live_ss=$(mktemp) || { rm -f "$seen" "$tmp" "$live_ws"; return 0; }
-
-  # Les sockets publiques servent uniquement de confirmation de présence.
-  # La source d'autorité pour une IP fraîche reste access.log de Xray : une
-  # socket peut disparaître/revenir entre deux scans sans que le client soit
-  # réellement déconnecté.
-  xport=$(cat /etc/nvpanel/xport 2>/dev/null); xport=${xport:-443}
-  ss -Htn state established 2>/dev/null | awk -v p1=80 -v p2="$xport" '
-    {for(i=1;i<NF;i++){
-       if($i ~ (":" p1 "$") || $i ~ (":" p2 "$")){
-         v=$(i+1);
-         if(v ~ /^\[/){sub(/^\[/,"",v); sub(/\]:[0-9]+$/,"",v)}
-         else sub(/:[0-9]+$/,"",v);
-         if(v!="127.0.0.1" && v!="::1" && v!="") print v
-       }
-     }}' | sort -u > "$live_ws"
-  ss -Htn state established 2>/dev/null | awk '
-    {for(i=1;i<NF;i++){if($i ~ /:8388$/){v=$(i+1); if(v ~ /^\[/){sub(/^\[/,"",v); sub(/\]:[0-9]+$/,"",v)} else sub(/:[0-9]+$/,"",v); if(v!="127.0.0.1"&&v!="::1"&&v!="") print v}}}' | sort -u > "$live_ss"
 
   if [ -s /var/log/xray/access.log ]; then
-    tail -n 3000 /var/log/xray/access.log 2>/dev/null | awk -v c="$cutstr" 'c=="" || ($1" "$2)>=c'
-  else
-    journalctl -u xray --since '90 seconds ago' --no-pager -o cat 2>/dev/null
-  fi | awk '
+    tail -n 6000 /var/log/xray/access.log 2>/dev/null | awk -v c="$cutstr" '
       /email:/ {
-        name=""; src=""
+        cmp=$1" "$2; sub(/\..*$/, "", cmp)
+        if(c!="" && cmp<c) next
+        name=""; src=""; tag=""
         for(i=1;i<=NF;i++) {
           if($i=="email:" && i<NF) name=$(i+1)
           if($i=="from" && i<NF) src=$(i+1)
+          if($i ~ /^\[(vmess-in|vless-in|trojan-in|ss-in)$/) { tag=$i; sub(/^\[/,"",tag) }
         }
         if(name!="" && src!="") {
           sub(/^tcp:/,"",src)
           if(src ~ /^\[/) { sub(/^\[/,"",src); sub(/\]:[0-9]+$/, "", src) }
           else sub(/:[0-9]+$/, "", src)
-          if(src!="127.0.0.1" && src!="::1" && src!="") print name "|" src
+          if(src!="127.0.0.1" && src!="::1" && src!="") {
+            k=name"|"src"|"tag; ts=$1" "$2
+            if(!(k in last) || ts>last[k]) last[k]=ts
+          }
+        }
+      }
+      END { for(k in last) { split(k,a,"|"); print a[1]"|"a[2]"|"last[k]"|"a[3] } }' > "$seen"
+  else
+    # Repli uniquement si le fichier d'accès manque : ces lignes sont déjà
+    # limitées à la fenêtre courante, donc leur horodatage peut être `now`.
+    journalctl -u xray --since "$XIP_ACTIVE_WINDOW seconds ago" --no-pager -o cat 2>/dev/null | awk -v n="$now" '
+      /email:/ {
+        name=""; src=""; tag=""
+        for(i=1;i<=NF;i++) {
+          if($i=="email:" && i<NF) name=$(i+1)
+          if($i=="from" && i<NF) src=$(i+1)
+          if($i ~ /^\[(vmess-in|vless-in|trojan-in|ss-in)$/) { tag=$i; sub(/^\[/,"",tag) }
+        }
+        if(name!="" && src!="") {
+          sub(/^tcp:/,"",src)
+          if(src ~ /^\[/) { sub(/^\[/,"",src); sub(/\]:[0-9]+$/, "", src) }
+          else sub(/:[0-9]+$/, "", src)
+          if(src!="127.0.0.1" && src!="::1" && src!="") print name"|"src"|"n"|"tag
         }
       }' | sort -u > "$seen"
+  fi
 
-  while IFS='|' read -r name ip; do
+  while IFS='|' read -r name ip seen_ts inbound_tag; do
     [ -n "$name" ] && [ -n "$ip" ] || continue
-    proto=$(_x_proto_for_name "$name")
-    [ -n "$proto" ] || continue
-    # Pour Xray, la source fiable est le journal Xray lui-même. Ne jamais
-    # rejeter une IP fraîche simplement parce que la socket nginx n'est plus
-    # visible au même instant dans `ss` : WebSocket/HTTP peuvent se fermer ou
-    # se recréer entre deux rafraîchissements. C'était précisément la cause
-    # des comptes actifs vus dans access.log mais absents de xips/xipcount.
-    # Shadowsocks est lui aussi accepté ici sur activité fraîche du journal.
-    case "$proto" in
-      vmess|vless|trojan|ss) : ;;
-      *) continue ;;
+    case "$seen_ts" in
+      ''|*[!0-9]*) seen_at=$(date -d "${seen_ts%%.*}" +%s 2>/dev/null) ;;
+      *) seen_at="$seen_ts" ;;
     esac
+    case "$seen_at" in ''|*[!0-9]*) continue ;; esac
+    [ "$seen_at" -ge "$cutoff" ] 2>/dev/null || continue
+    case "$inbound_tag" in
+      vmess-in) proto=vmess ;;
+      vless-in) proto=vless ;;
+      trojan-in) proto=trojan ;;
+      ss-in) proto=ss ;;
+      *) proto=$(_x_proto_for_name "$name") ;;
+    esac
+    case "$proto" in vmess|vless|trojan|ss) ;; *) continue ;; esac
+    # Le tag d'inbound permet de distinguer deux comptes portant le même nom
+    # dans des protocoles différents ; on vérifie quand même que ce compte
+    # existe réellement dans la base du protocole avant de le comptabiliser.
+    xmeta "$proto" || continue
+    awk -v n="$name" '$1=="###"&&$2==n{f=1} END{exit !f}' "$XDB" 2>/dev/null || continue
+
     row=$(awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{print;exit}' "$XIPSTATE" 2>/dev/null)
     first=$(printf '%s' "$row" | cut -d'|' -f4)
-    case "$first" in ''|*[!0-9]*) first=$now ;; esac
-    printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$now" >> "$tmp"
+    old_last=$(printf '%s' "$row" | cut -d'|' -f5)
+    case "$first" in ''|*[!0-9]*) first="$seen_at" ;; esac
+    case "$old_last" in ''|*[!0-9]*) old_last=0 ;; esac
+    # Après une vraie coupure, une IP qui revient démarre une nouvelle durée.
+    [ "$old_last" -ge "$cutoff" ] 2>/dev/null || first="$seen_at"
+    printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$seen_at" >> "$tmp"
   done < "$seen"
 
-  # Conserve une IP seulement si sa connexion réseau existe encore. Cela
-  # évite l'ancien délai artificiel de plusieurs minutes après déconnexion.
+  # Une ancienne IP n'est conservée que jusqu'à la fin de la fenêtre réelle.
+  # Surtout, son `last_seen` n'est JAMAIS remis à maintenant sans nouvelle
+  # ligne authentifiée dans access.log.
   awk -F'|' 'NF>=5{print}' "$XIPSTATE" 2>/dev/null \
     | while IFS='|' read -r proto name ip first last; do
-        case "$proto" in
-          vmess|vless|trojan)
-            # Une IP déjà connue reste active si la socket publique existe
-            # encore OU si Xray l'a vue très récemment. On évite ainsi les
-            # faux 0 causés par une course entre `ss` et access.log.
-            if ! grep -Fxq "$ip" "$live_ws" 2>/dev/null; then
-              case "$last" in ''|*[!0-9]*) continue ;; esac
-              [ "$last" -ge "$cutoff" ] 2>/dev/null || continue
-            fi ;;
-          ss)
-            if ! grep -Fxq "$ip" "$live_ss" 2>/dev/null; then
-              case "$last" in ''|*[!0-9]*) continue ;; esac
-              [ "$last" -ge "$cutoff" ] 2>/dev/null || continue
-            fi ;;
-          *) continue ;;
-        esac
+        case "$last" in ''|*[!0-9]*) continue ;; esac
+        [ "$last" -ge "$cutoff" ] 2>/dev/null || continue
         awk -F'|' -v p="$proto" -v n="$name" -v i="$ip" '$1==p&&$2==n&&$3==i{f=1} END{exit !f}' "$tmp" 2>/dev/null \
-          || printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$([ "$proto" = ss ] && ! grep -Fxq "$ip" "$live_ss" 2>/dev/null && printf '%s' "$last" || printf '%s' "$now")" >> "$tmp"
+          || printf '%s|%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$first" "$last" >> "$tmp"
       done
+
   state_tmp=$(mktemp "${XIPSTATE}.XXXXXX")
   if [ -n "$state_tmp" ] \
      && sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4n -u "$tmp" > "$state_tmp" 2>/dev/null \
@@ -336,7 +345,7 @@ _x_ip_refresh_sync(){
   else
     [ -n "$state_tmp" ] && rm -f "$state_tmp"
   fi
-  rm -f "$seen" "$tmp" "$live_ws" "$live_ss"
+  rm -f "$seen" "$tmp"
 }
 
 # Navigation non bloquante : xonline/xlist lisent immédiatement le dernier
@@ -366,6 +375,11 @@ _x_ip_refresh(){
 
 _x_ip_count(){ # proto compte
   awk -F'|' -v p="$1" -v n="$2" '$1==p&&$2==n{a[$3]=1} END{for(i in a)x++; print x+0}' "$XIPSTATE" 2>/dev/null
+}
+_x_ip_count_recent(){ # proto compte fenêtre_secondes
+  local now cutoff
+  now=$(date +%s); cutoff=$((now-${3:-$XIP_GUARD_WINDOW}))
+  awk -F'|' -v p="$1" -v n="$2" -v c="$cutoff" '$1==p&&$2==n&&$5>=c{a[$3]=1} END{for(i in a)x++; print x+0}' "$XIPSTATE" 2>/dev/null
 }
 
 _x_ip_conn_since(){ # proto compte -> durée depuis la première IP encore connectée
@@ -435,16 +449,19 @@ _x_created_del(){
 # configuration active et marqué verrouillé, mais sa fiche, son identifiant et
 # sa date sont conservés pour permettre une vérification ou une réactivation.
 xlimit_run(){
-  # RHAFF_XLIMIT_V7_LOCK_ON_EXCESS
-  # La décision repose uniquement sur les IP réellement vues dans les logs
-  # Xray. Le dépassement ne doit jamais détruire les données du client.
+  # RHAFF_XLIMIT_V8_REAL_ACTIVE_IPS
+  # Les IP viennent exclusivement du journal authentifié Xray. Un changement
+  # bref d'IP mobile ne verrouille plus un compte : le dépassement doit être
+  # encore présent dans la fenêtre stricte après un délai de grâce continu.
   command -v jq >/dev/null 2>&1 || return 0
   [ -f "$XCONF" ] || return 0
   _x_ip_refresh_sync
 
-  local offenders proto name lim db row ex fl count tmp iptmp changed=0 today
+  local offenders pending proto name lim db row ex fl count tmp iptmp changed=0 today
+  local now first_over
   offenders=$(mktemp) || return 0
-  today=$(date +%F)
+  pending=$(mktemp) || { rm -f "$offenders"; return 0; }
+  today=$(date +%F); now=$(date +%s)
 
   while IFS='|' read -r proto name lim; do
     [ -n "$proto" ] && [ -n "$name" ] || continue
@@ -458,11 +475,18 @@ xlimit_run(){
     fl=$(printf '%s\n' "$row" | awk '{print $5}')
     [ "$fl" = "L" ] && continue
     [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; } && continue
-    count=$(_x_ip_count "$proto" "$name"); count=${count:-0}
-    [ "$count" -gt "$lim" ] 2>/dev/null || continue
-    printf '%s|%s|%s|%s\n' "$proto" "$name" "$lim" "$count" >> "$offenders"
+
+    count=$(_x_ip_count_recent "$proto" "$name" "$XIP_GUARD_WINDOW"); count=${count:-0}
+    if [ "$count" -gt "$lim" ] 2>/dev/null; then
+      first_over=$(awk -F'|' -v p="$proto" -v n="$name" '$1==p&&$2==n{print $3;exit}' "$XOVERSTATE" 2>/dev/null)
+      case "$first_over" in ''|*[!0-9]*) first_over="$now" ;; esac
+      printf '%s|%s|%s\n' "$proto" "$name" "$first_over" >> "$pending"
+      [ $((now-first_over)) -ge "$XLIMIT_GRACE" ] 2>/dev/null \
+        && printf '%s|%s|%s|%s\n' "$proto" "$name" "$lim" "$count" >> "$offenders"
+    fi
   done < "$XLIMDB"
 
+  mv "$pending" "$XOVERSTATE" 2>/dev/null || rm -f "$pending"
   [ -s "$offenders" ] || { rm -f "$offenders"; return 0; }
 
   # Retire tous les comptes fautifs dans une seule copie de config puis ne
@@ -974,8 +998,8 @@ case "$cmd" in
     echo "OK $name $exp"
     if [ "$proto" = ss ]; then ss_box "$name" "$id" "$cr" "$exp"; else xray_box "$proto" "$name" "$id" "$cr" "$exp"; fi ;;
   xonline)
-    # « En ligne » = appareils/IP sources RÉELLEMENT vus pendant les 5
-    # dernières minutes, et non plus simple nombre de comptes ayant du trafic.
+    # « En ligne » = IP sources authentifiées vues dans la fenêtre active,
+    # et non des sockets quelconques présentes sur le port public partagé.
     # "all" permet à l'accueil de tout obtenir en une seule invocation.
     proto="$1"
     # Le compteur d'en-tête n'a besoin ni de StatsService ni d'une validation
@@ -1008,8 +1032,8 @@ case "$cmd" in
     xlimit_run; echo "OK $lim" ;;
   xlist)
     proto="$1"; xmeta "$proto" || { echo "ERR proto"; exit 1; }
-    # L'affichage repose directement sur les IP/sockets réellement actives :
-    # aucune attente de l'API de statistiques Xray pendant la navigation.
+    # L'affichage repose directement sur les IP authentifiées récemment dans
+    # access.log : aucune socket d'un autre service ne peut contaminer le total.
     _x_ip_refresh
     today=$(date +%F)
     while read -r _ nm _ ex fl; do

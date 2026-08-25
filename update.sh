@@ -199,6 +199,14 @@ systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/d
 
 progress_to 90 "Application de la configuration"
 
+# Purge uniquement les anciens caches de présence : les versions précédentes
+# pouvaient conserver de fausses IP Xray et de fausses IP SSH. Les comptes,
+# quotas et consommations ne sont pas touchés ; l'état se reconstruit aussitôt
+# depuis les connexions réellement observées.
+: > /etc/nvpanel/db/xips 2>/dev/null || true
+rm -f /run/nvpanel-xip.stamp /run/nvpanel-xlimit-over \
+      /run/nvpanel-ssh-sessions.cache /run/nvpanel-ssh-sessions.lock 2>/dev/null
+
 # --- Message d'accueil du serveur (MOTD) ---------------------------------
 # Ubuntu et Debian affichent au login un long texte : bannière de la
 # distribution, publicités, message de l'hébergeur (Contabo, OVH…).
@@ -213,6 +221,11 @@ if [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED Xray"
 else
   CONFIG_FAILED="$CONFIG_FAILED Xray"
+fi
+# Hysteria2 : régénère sans perte la configuration existante afin d'activer
+# l'API locale /online utilisée par le panel pour compter les vrais clients.
+if [ -x /usr/local/bin/nvpanel-hysteria ] && grep -q '^### ' /etc/nvpanel/db/hysteria 2>/dev/null; then
+  /usr/local/bin/nvpanel-hysteria rebuild >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED Hysteria2"
 fi
 # compteur de consommation CLIENTS (exclut le trafic propre du serveur)
 if [ -x /usr/local/bin/nvpanel-conso ]; then

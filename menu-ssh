@@ -144,7 +144,7 @@ _rand_name(){ printf 'test%s' "$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | hea
 _rand_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c8; }
 
 trial_account() {
-  banner; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; line
+  banner; top; center " 🎁  COMPTE TEST 24 H " "${BOLD}${WHT}"; bot
   local n p
   n=$(_rand_name); p=$(_rand_pass)
   printf "   ${GRY}Génération d'un compte valable 24 heures…${NC}\n"
@@ -325,12 +325,12 @@ cleanup_menu() {
 }
 
 hy_header(){
-  local total blocked expired active today service
+  local total blocked expired online today service
   today=$(date +%F)
   total=$(grep -c '^### ' /etc/nvpanel/db/hysteria 2>/dev/null); total=${total:-0}
   blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); blocked=${blocked:-0}
   expired=$(awk -v d="$today" '/^### /{if($5!="L" && $4!="" && $4<=d)c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); expired=${expired:-0}
-  active=$(( total - blocked - expired )); [ "$active" -lt 0 ] && active=0
+  online=$(/usr/local/bin/nvpanel-hysteria online 2>/dev/null); online=${online:-0}
   if systemctl is-active --quiet hysteria-server 2>/dev/null; then
     service="${GRN}actif${NC}"
   elif [ -f /etc/hysteria/config.yaml ]; then
@@ -340,7 +340,7 @@ hy_header(){
   fi
   banner
   _edge "┏" "┓" "HYSTERIA UDP"
-  printf "${CYN}┃${NC} ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}✅ Actifs:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$total" "$active" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+  printf "${CYN}┃${NC} ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$total" "$online" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   printf "${CYN}┃${NC} ${GRY}⌛ Expirés:${NC} ${RED}%s${NC}   ${GRY}⚡ Service:${NC} %b   ${GRY}UDP:${NC} ${WHT}443${NC}" "$expired" "$service"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   bot
 }
@@ -405,23 +405,25 @@ hy_create(){
 }
 
 hy_list(){
-  local page=0 size=4 total pages start end i u e s color choice connfmt
+  local page=0 size=4 total pages start end i u e s color choice connfmt devices live
   mapfile -t _rows_hy < <(/usr/local/bin/nvpanel-hysteria list)
-  total=${#_rows_hy[@]}; [ "$total" -eq 0 ] && { hy_header; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; line; warn "Aucun compte."; pause; return; }
+  total=${#_rows_hy[@]}; [ "$total" -eq 0 ] && { hy_header; top; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; bot; warn "Aucun compte."; pause; return; }
+  live=$(/usr/local/bin/nvpanel-hysteria online all-detail 2>/dev/null)
   pages=$(( (total + size - 1) / size ))
   while true; do
-    hy_header; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; line
-    printf "   ${WHT}%-16s %-12s %-8s %s${NC}\n" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ DEPUIS"
+    hy_header; top; center " 📋 COMPTES HYSTERIA UDP " "${BOLD}${WHT}"; bot
+    table_top
+    printf "${CYN}┃${NC} ${WHT}%-16s %-12s %-8s %s${NC}" "COMPTE" "EXPIRE" "ÉTAT" "CONNECTÉ"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
+    table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r u e s <<< "${_rows_hy[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
-      # Hysteria UDP (QUIC) ne fournit pas l'IP active par utilisateur ni une
-      # limite d'appareils exploitable par le panel : même format visuel, sans
-      # fabriquer de valeurs qui n'existent pas.
-      connfmt="— · —/— IP"
-      printf "   %-16s %-12s ${color}%-8s${NC} %s\n" "$u" "$(_fmtd "$e")" "$s" "$connfmt"
+      devices=$(printf '%s\n' "$live" | awk -F'|' -v n="$u" '$1==n{print $2+0; exit}'); devices=${devices:-0}
+      [ "$s" = "actif" ] && connfmt="$devices app." || connfmt="—"
+      printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$u" "$(_fmtd "$e")" "$s" "$connfmt"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
     done
+    table_bot
     if [ "$pages" -le 1 ]; then pause; return; fi
     ask "   ➤ n suivante | p précédente | 0 retour : " choice
     case "${choice,,}" in n) [ "$page" -lt $((pages-1)) ] && page=$((page+1)) ;; p) [ "$page" -gt 0 ] && page=$((page-1)) ;; 0|'') return ;; *) warn "Invalide"; sleep 1 ;; esac

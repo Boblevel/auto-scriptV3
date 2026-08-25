@@ -267,29 +267,35 @@ _online_uniq_port() {
 # même compte connecté depuis 3 appareils différents compte donc pour 3, et
 # non plus pour 1 — comme le nombre réel de personnes connectées.
 _ssh_sessions_raw() {
-  # On part des PROCESSUS (comme l'ancienne méthode, fiable et déjà éprouvée),
-  # jamais de la position des colonnes de « ss » : leur nombre et leur ordre
-  # varient selon la version d'iproute2 installée (colonne « Netid » présente
-  # ou non), ce qui avait totalement cassé une précédente tentative basée sur
-  # $4/$5 (0 connexion détectée alors qu'un compte était bien en ligne).
-  # Ici, on ne cherche dans la sortie de « ss » qu'un motif IP:port par
-  # expression régulière (jamais une position de colonne) pour retrouver
-  # l'IP distante de chaque session — et si elle reste introuvable pour une
-  # raison quelconque, le compte est quand même compté une fois : jamais
-  # moins fiable que l'ancienne méthode, plus précis quand c'est possible.
-  # Renvoie une ligne "compte|ip" par session distincte (dédupliquée) : un
-  # seul balayage réseau, réutilisable pour le total ET le détail par compte.
-  local ss_raw
-  ss_raw=$(ss -tnp state established 2>/dev/null)
-  ps -eo pid=,user=,comm= 2>/dev/null | awk '$3 ~ /sshd|dropbear/{print $1"|"$2}' \
-    | while IFS='|' read -r pid u; do
-        [ -z "$pid" ] || [ -z "$u" ] && continue
-        grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null || continue
-        ip=$(printf '%s\n' "$ss_raw" | grep "pid=$pid," \
-             | grep -oP '[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+' \
-             | tail -1 | sed -E 's/:[0-9]+$//')
-        printf '%s|%s\n' "$u" "${ip:-pid$pid}"
-      done | sort -u
+  # Une session SSH réelle est une socket dont le PORT LOCAL est celui
+  # d'OpenSSH/Dropbear et dont le processus authentifié appartient au compte.
+  # Les connexions sortantes créées par le tunnel (sites visités sur :443)
+  # ne doivent jamais être prises pour l'IP du client.
+  local dp ports port
+  dp=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
+  case "$dp" in ''|*[!0-9]*) dp="" ;; esac
+  ports=$(printf '22\n143\n%s\n' "$dp" | awk '/^[0-9]+$/{a[$1]=1} END{for(p in a)print p}')
+
+  for port in $ports; do
+    ss -Htnp state established "( sport = :$port )" 2>/dev/null
+  done | awk '
+    /pid=/ {
+      peer=$4
+      if(peer ~ /^\[/) { sub(/^\[/,"",peer); sub(/\]:[0-9]+$/,"",peer) }
+      else sub(/:[0-9]+$/,"",peer)
+      if(match($0,/pid=[0-9]+/)) {
+        pid=substr($0,RSTART+4,RLENGTH-4)
+        print pid"|"peer
+      }
+    }' | sort -u | while IFS='|' read -r pid ip; do
+      [ -n "$pid" ] && [ -n "$ip" ] || continue
+      uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
+      case "$uid" in ''|*[!0-9]*) continue ;; esac
+      u=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1)
+      [ -n "$u" ] || continue
+      grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null || continue
+      printf '%s|%s\n' "$u" "$ip"
+    done | sort -u
 }
 
 _ssh_sessions() {
@@ -354,7 +360,7 @@ stats() {
   hy=$(_count_db hysteria)
   total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
 
-  local on_xray on_ss on_wg on_l2 on_pp on_sst ppp_online
+  local on_xray on_ss on_wg on_l2 on_pp on_sst on_hy ppp_online
   # Ne compte « en ligne » que si des comptes existent pour ce protocole :
   # sinon une connexion quelconque sur le port public (scan internet, très
   # courant sur tout VPS exposé) peut apparaître comme un faux client alors
@@ -375,9 +381,13 @@ stats() {
     on_pp=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="pptp"{print $2+0}'); on_pp=${on_pp:-0}
     on_sst=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="sstp"{print $2+0}'); on_sst=${on_sst:-0}
   fi
-  # Hysteria2 (QUIC) : pas de comptage par session fiable, volontairement
-  # exclu plutôt que d'afficher un faux chiffre.
-  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst ))
+  # Hysteria2 : l'API locale officielle renvoie le nombre exact d'instances
+  # clientes connectées, pas le nombre de flux QUIC/proxy.
+  on_hy=0
+  if [ "$hy" -gt 0 ] && [ -x /usr/local/bin/nvpanel-hysteria ]; then
+    on_hy=$(/usr/local/bin/nvpanel-hysteria online 2>/dev/null); on_hy=${on_hy:-0}
+  fi
+  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst + on_hy ))
 
   local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
   bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
