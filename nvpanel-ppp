@@ -60,18 +60,19 @@ _limit_del(){
 }
 
 # PPP appelle automatiquement ip-up/ip-down à chaque vraie session. Ces deux
-# hooks enregistrent compte + interface + IP distante. Si une NOUVELLE IP fait
-# dépasser la limite, le compte est verrouillé et ses sessions sont coupées ;
+# hooks enregistrent compte + interface + IP distante. Le compte n'est verrouillé
+# que si le dépassement reste réellement simultané après le délai de tolérance ;
 # sa fiche reste disponible pour contrôle ou réactivation.
 _ensure_hooks(){
   local up=/etc/ppp/ip-up.d/90-nvpanel-device-limit down=/etc/ppp/ip-down.d/90-nvpanel-device-limit
   mkdir -p /etc/ppp/ip-up.d /etc/ppp/ip-down.d
-  if ! grep -q 'RHAFF_PPP_LIMIT_V6_LOCK_ON_EXCESS' "$up" 2>/dev/null; then
+  if ! grep -q 'RHAFF_PPP_LIMIT_V7_SIMULTANEOUS_ONLY' "$up" 2>/dev/null; then
     cat > "$up" <<'EOF'
 #!/bin/sh
-# RHAFF_PPP_LIMIT_V6_LOCK_ON_EXCESS
+# RHAFF_PPP_LIMIT_V7_SIMULTANEOUS_ONLY
 LIM=/etc/nvpanel/db/ppp_limit
 STATE=/run/nvpanel-ppp-sessions
+HANDOVER_GRACE=30
 exec 9>/run/nvpanel-ppp-sessions.lock
 flock -w 5 9 || exit 0
 user=${PEERNAME:-}
@@ -101,26 +102,45 @@ done < "$STATE"
 mv "$tmp" "$STATE"
 lim=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{v=$3} END{print v+0}' "$LIM" 2>/dev/null)
 now=$(date +%s)
-# Une même IP compte pour un seul appareil même si elle ouvre plusieurs PPP.
-if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then
-  exists=$(awk -F'|' -v p="$proto" -v u="$user" -v i="$ip" '$1==p&&$2==u&&$4==i{f=1} END{print f+0}' "$STATE")
-  n=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{a[$4]=1} END{for(i in a)c++; print c+0}' "$STATE")
-  if [ "$exists" -eq 0 ] && [ "$n" -ge "$lim" ]; then
-    # Le nouvel appareil ferait passer le compte au-dessus de sa limite :
-    # verrouillage du compte, puis coupure de la session déclenchante.
-    # Libère le verrou des sessions avant d'appeler nvpanel-ppp, qui le
-    # reprendra pendant le verrouillage. Cela évite un interblocage avec le panel.
-    flock -u 9 2>/dev/null
-    /usr/local/bin/nvpanel-ppp lock "$proto" "$user" >/dev/null 2>&1
-    printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$lim" "$((n+1))" >> /var/log/nvpanel-device-lock.log 2>/dev/null
-    kill "$pid" 2>/dev/null
-    exit 0
-  fi
-fi
-# remplace l'éventuelle ancienne ligne de cette interface
+# remplace l'éventuelle ancienne ligne de cette interface puis enregistre la
+# nouvelle session avant de vérifier la simultanéité réelle.
 awk -F'|' -v f="$iface" '$3!=f' "$STATE" > "$STATE.tmp" 2>/dev/null
 printf '%s|%s|%s|%s|%s|%s\n' "$proto" "$user" "$iface" "${ip:--}" "$now" "$pid" >> "$STATE.tmp"
 mv "$STATE.tmp" "$STATE"
+
+# Une bascule Wi-Fi/mobile peut laisser l'ancienne interface PPP présente un
+# court moment. Le dépassement est donc confirmé après HANDOVER_GRACE secondes.
+# Si l'ancienne session a disparu, aucun verrouillage n'est appliqué. Si deux
+# appareils restent réellement connectés, le compte est verrouillé.
+if [ "${lim:-0}" -gt 0 ] 2>/dev/null; then
+  n=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{a[$4]=1} END{for(i in a)c++; print c+0}' "$STATE")
+  if [ "$n" -gt "$lim" ] 2>/dev/null; then
+    # Le contrôle différé ne doit pas conserver le verrou ip-up pendant l'attente.
+    flock -u 9 2>/dev/null
+    guard="/run/nvpanel-ppp-over.${proto}.${user}"
+    if mkdir "$guard" 2>/dev/null; then
+      (
+        trap 'rmdir "$guard" 2>/dev/null' EXIT INT TERM HUP
+        sleep "$HANDOVER_GRACE"
+        exec 8>/run/nvpanel-ppp-sessions.lock
+        flock -w 5 8 || exit 0
+        t=$(mktemp /run/.nvpanel-ppp-confirm.XXXXXX) || exit 0
+        while IFS='|' read -r p u f rip first rpid; do
+          [ -n "$f" ] && [ -d "/sys/class/net/$f" ] && printf '%s|%s|%s|%s|%s|%s\n' "$p" "$u" "$f" "$rip" "$first" "$rpid" >> "$t"
+        done < "$STATE"
+        mv "$t" "$STATE"
+        n2=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{a[$4]=1} END{for(i in a)c++; print c+0}' "$STATE")
+        lim2=$(awk -F'|' -v p="$proto" -v u="$user" '$1==p&&$2==u{v=$3} END{print v+0}' "$LIM" 2>/dev/null)
+        [ "${lim2:-0}" -gt 0 ] 2>/dev/null || exit 0
+        [ "${n2:-0}" -gt "$lim2" ] 2>/dev/null || exit 0
+        flock -u 8 2>/dev/null
+        if /usr/local/bin/nvpanel-ppp lock "$proto" "$user" >/dev/null 2>&1; then
+          printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$lim2" "$n2" >> /var/log/nvpanel-device-lock.log 2>/dev/null
+        fi
+      ) >/dev/null 2>&1 &
+    fi
+  fi
+fi
 exit 0
 EOF
     chmod 755 "$up"

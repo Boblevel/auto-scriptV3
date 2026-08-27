@@ -5,9 +5,12 @@
 #  Format d'une ligne :  utilisateur  nombre_max
 # ============================================================
 DB=/etc/nvpanel/db/limit
+OVERSTATE=/run/nvpanel-ssh-limit-over
+HANDOVER_GRACE=30
 umask 077
 [ -f "$DB" ] || touch "$DB"
-chmod 600 "$DB" 2>/dev/null
+[ -f "$OVERSTATE" ] || touch "$OVERSTATE"
+chmod 600 "$DB" "$OVERSTATE" 2>/dev/null
 
 # Liste « pid adresse » des connexions ENTRANTES appartenant à un compte,
 # les plus anciennes d'abord.
@@ -99,26 +102,39 @@ sessions_of() {
 }
 
 while true; do
+  now=$(date +%s)
+  pending=$(mktemp /run/.nvpanel-ssh-limit-over.XXXXXX) || { sleep 1; continue; }
+
   while read -r user max; do
     [ -z "$user" ] && continue
     [[ "$max" =~ ^[0-9]+$ ]] || continue
     [ "$max" -le 0 ] && continue
 
     list=$(sessions_of "$user")
-    [ -z "$list" ] && continue
+    if [ -n "$list" ]; then
+      devices=$(printf '%s\n' "$list" | awk '{a[$2]=1} END{for(k in a)n++; print n+0}')
+    else
+      devices=0
+    fi
 
-    devices=$(printf '%s\n' "$list" | awk '{a[$2]=1} END{for(k in a)n++; print n+0}')
-    [ "${devices:-0}" -gt "$max" ] 2>/dev/null || continue
+    if [ "${devices:-0}" -gt "$max" ] 2>/dev/null; then
+      first_over=$(awk -F'|' -v u="$user" '$1==u{print $2; exit}' "$OVERSTATE" 2>/dev/null)
+      case "$first_over" in ''|*[!0-9]*) first_over="$now" ;; esac
+      printf '%s|%s\n' "$user" "$first_over" >> "$pending"
 
-    # Dépassement réel : verrouillage COMPLET immédiat. nvpanel-cli applique
-    # aussi les effets associés au compte SSH (UDP credential clear) et coupe
-    # toutes ses sessions : il ne peut plus se reconnecter avant déverrouillage.
-    if /usr/local/bin/nvpanel-cli lock "$user" >/dev/null 2>&1; then
-      printf '%s|ssh|%s|%s|%s\n' "$(date '+%F %T')" "$user" "$max" "$devices" \
-        >> /var/log/nvpanel-device-lock.log 2>/dev/null || true
+      # Une reconnexion après changement de Wi-Fi/opérateur peut faire coexister
+      # brièvement l'ancienne et la nouvelle session. On ne verrouille que si
+      # le dépassement reste réellement présent pendant toute la période de
+      # tolérance ; deux utilisateurs simultanés persistants restent bloqués.
+      if [ $((now-first_over)) -ge "$HANDOVER_GRACE" ] 2>/dev/null; then
+        if /usr/local/bin/nvpanel-cli lock "$user" >/dev/null 2>&1; then
+          printf '%s|ssh|%s|%s|%s\n' "$(date '+%F %T')" "$user" "$max" "$devices" \
+            >> /var/log/nvpanel-device-lock.log 2>/dev/null || true
+        fi
+      fi
     fi
   done < "$DB"
 
-  # Réaction quasi immédiate sans attendre les anciennes 20 secondes.
+  mv "$pending" "$OVERSTATE" 2>/dev/null || rm -f "$pending"
   sleep 1
 done
