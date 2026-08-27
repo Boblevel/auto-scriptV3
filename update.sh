@@ -25,7 +25,18 @@ for _path in etc/nvpanel usr/local/etc/xray etc/nginx/conf.d/rhaff.conf \
 done
 [ "${#_backup_paths[@]}" -gt 0 ] \
   || { printf "${RED}✘ Aucune donnée du panel à sauvegarder.${NC}\n"; exit 1; }
-tar -czf "$BACKUP_FILE" -C / "${_backup_paths[@]}" 2>/dev/null \
+_backup_err=$(mktemp /tmp/nvpanel-backup.XXXXXX) \
+  || { printf "${RED}✘ Sauvegarde avant mise à jour échouée.${NC}\n"; exit 1; }
+LC_ALL=C tar -czf "$BACKUP_FILE" -C / "${_backup_paths[@]}" 2>"$_backup_err"
+_backup_rc=$?
+# Les fichiers d'état de /etc/nvpanel peuvent évoluer pendant leur lecture.
+# Ce seul avertissement tar n'invalide pas l'archive ; toute autre erreur reste bloquante.
+if [ "$_backup_rc" -eq 1 ] && [ -s "$_backup_err" ] \
+   && ! grep -Evq '^tar: .*: file changed as we read it$' "$_backup_err"; then
+  _backup_rc=0
+fi
+rm -f "$_backup_err"
+[ "$_backup_rc" -eq 0 ] \
   && tar -tzf "$BACKUP_FILE" >/dev/null 2>&1 \
   && chmod 600 "$BACKUP_FILE" \
   || { rm -f "$BACKUP_FILE"; printf "${RED}✘ Sauvegarde avant mise à jour échouée.${NC}\n"; exit 1; }
@@ -195,22 +206,9 @@ fi
 grep -qxF '/bin/false' /etc/shells 2>/dev/null || echo '/bin/false' >> /etc/shells
 # Le bot Telegram n'est PAS redémarré ici : c'est à toi de le faire
 # depuis le menu (Bot Telegram → « Redémarrer le bot »).
-if [ -x /usr/local/bin/nvpanel-limit ]; then
-  systemctl enable nvpanel-limit >/dev/null 2>&1 \
-    && systemctl restart nvpanel-limit >/dev/null 2>&1 \
-    && systemctl is-active --quiet nvpanel-limit \
-    || CONFIG_FAILED="$CONFIG_FAILED limite-SSH"
-fi
+systemctl is-active --quiet nvpanel-limit && systemctl restart nvpanel-limit >/dev/null 2>&1
 
 progress_to 90 "Application de la configuration"
-
-# Purge uniquement les anciens caches de présence : les versions précédentes
-# pouvaient conserver de fausses IP Xray et de fausses IP SSH. Les comptes,
-# quotas et consommations ne sont pas touchés ; l'état se reconstruit aussitôt
-# depuis les connexions réellement observées.
-: > /etc/nvpanel/db/xips 2>/dev/null || true
-rm -f /run/nvpanel-xip.stamp /run/nvpanel-xlimit-over \
-      /run/nvpanel-ssh-sessions.cache /run/nvpanel-ssh-sessions.lock 2>/dev/null
 
 # --- Message d'accueil du serveur (MOTD) ---------------------------------
 # Ubuntu et Debian affichent au login un long texte : bannière de la
@@ -227,11 +225,6 @@ if [ -x /usr/local/bin/install-xray ]; then
 else
   CONFIG_FAILED="$CONFIG_FAILED Xray"
 fi
-# Hysteria2 : régénère sans perte la configuration existante afin d'activer
-# l'API locale /online utilisée par le panel pour compter les vrais clients.
-if [ -x /usr/local/bin/nvpanel-hysteria ] && grep -q '^### ' /etc/nvpanel/db/hysteria 2>/dev/null; then
-  /usr/local/bin/nvpanel-hysteria rebuild >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED Hysteria2"
-fi
 # compteur de consommation CLIENTS (exclut le trafic propre du serveur)
 if [ -x /usr/local/bin/nvpanel-conso ]; then
   /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED consommation"
@@ -245,7 +238,7 @@ if [ -x /usr/local/bin/nvpanel-cli ]; then
   ( crontab -l 2>/dev/null | grep -v 'nvpanel-cli xsample'; echo "* * * * * /usr/local/bin/nvpanel-cli xsample" ) | crontab - 2>/dev/null \
     || CONFIG_FAILED="$CONFIG_FAILED cron-Xray"
 
-  # La limite Xray/Shadowsocks doit réagir immédiatement au dépassement. Ce service
+  # La limite Xray/Shadowsocks doit réagir en quelques secondes. Ce service
   # n'agit ni sur SSH ni sur SlowDNS.
   cat > /etc/systemd/system/nvpanel-xlimit.service <<'UNIT'
 [Unit]
@@ -255,7 +248,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 1; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -263,8 +256,7 @@ RestartSec=2
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload >/dev/null 2>&1
-  systemctl enable nvpanel-xlimit >/dev/null 2>&1 \
-    && systemctl restart nvpanel-xlimit >/dev/null 2>&1 \
+  systemctl enable --now nvpanel-xlimit >/dev/null 2>&1 \
     && systemctl is-active --quiet nvpanel-xlimit \
     || CONFIG_FAILED="$CONFIG_FAILED limite-Xray"
 fi
