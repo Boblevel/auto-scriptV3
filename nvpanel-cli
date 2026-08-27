@@ -23,8 +23,8 @@ XIPSTATE=/etc/nvpanel/db/xips    # proto|compte|ip|premiere_vue|derniere_vue
 XBLOCKSTATE=/etc/nvpanel/db/xblocks # tag|proto|compte|ips_bloquees
 XOVERSTATE=/run/nvpanel-xlimit-over # proto|compte|debut_depassement
 XIP_ACTIVE_WINDOW=20                # activité authentifiée récente affichée comme en ligne
-XIP_GUARD_WINDOW=8                  # fenêtre stricte utilisée par la protection multi-appareils
-XLIMIT_GRACE=15                     # dépassement continu requis avant verrouillage automatique
+XIP_GUARD_WINDOW=60                 # historique court pour confirmer deux utilisateurs réellement simultanés
+XLIMIT_GRACE=30                     # dépassement simultané maintenu avant verrouillage automatique
 XCREATED=/etc/nvpanel/db/xcreated # proto|compte|date_creation (AAAA-MM-JJ)
 touch "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED"
 chmod 600 "$XLIMDB" "$XIPSTATE" "$XBLOCKSTATE" "$XCREATED" 2>/dev/null
@@ -382,6 +382,92 @@ _x_ip_count_recent(){ # proto compte fenêtre_secondes
   awk -F'|' -v p="$1" -v n="$2" -v c="$cutoff" '$1==p&&$2==n&&$5>=c{a[$3]=1} END{for(i in a)x++; print x+0}' "$XIPSTATE" 2>/dev/null
 }
 
+_x_guard_snapshot(){ # proto|compte|ip|dernier_evenement_epoch
+  local now cutstr seen out name ip seen_ts inbound_tag seen_at proto
+  now=$(date +%s)
+  cutstr=$(date -d "$XIP_GUARD_WINDOW seconds ago" '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
+  seen=$(mktemp) || return 0
+  out=$(mktemp) || { rm -f "$seen"; return 0; }
+
+  # La protection ne se base pas sur une simple ancienne IP. Elle lit les
+  # authentifications Xray récentes et conserve, pour chaque compte/IP, le
+  # dernier événement réellement observé. Lors d'un changement de réseau, la
+  # vieille IP cesse donc d'avancer ; deux utilisateurs réellement simultanés
+  # continuent au contraire à produire des événements depuis leurs deux IP.
+  if [ -s /var/log/xray/access.log ]; then
+    tail -n 12000 /var/log/xray/access.log 2>/dev/null | awk -v c="$cutstr" '
+      /email:/ {
+        cmp=$1" "$2; sub(/\..*$/, "", cmp)
+        if(c!="" && cmp<c) next
+        name=""; src=""; tag=""
+        for(i=1;i<=NF;i++) {
+          if($i=="email:" && i<NF) name=$(i+1)
+          if($i=="from" && i<NF) src=$(i+1)
+          if($i ~ /^\[(vmess-in|vless-in|trojan-in|ss-in)$/) { tag=$i; sub(/^\[/,"",tag) }
+        }
+        if(name!="" && src!="") {
+          sub(/^tcp:/,"",src)
+          if(src ~ /^\[/) { sub(/^\[/,"",src); sub(/\]:[0-9]+$/, "", src) }
+          else sub(/:[0-9]+$/, "", src)
+          if(src!="127.0.0.1" && src!="::1" && src!="") {
+            k=name"|"src"|"tag; ts=$1" "$2
+            if(!(k in last) || ts>last[k]) last[k]=ts
+          }
+        }
+      }
+      END { for(k in last) { split(k,a,"|"); print a[1]"|"a[2]"|"last[k]"|"a[3] } }' > "$seen"
+  else
+    # Repli journalctl avec son vrai timestamp UNIX. On ne remplace jamais
+    # artificiellement une ancienne authentification par « maintenant », sinon
+    # une IP abandonnée pendant une bascule réseau semblerait toujours active.
+    journalctl -u xray --since "$XIP_GUARD_WINDOW seconds ago" --no-pager -o short-unix 2>/dev/null | awk '
+      /email:/ {
+        ts=$1; sub(/\..*$/, "", ts)
+        name=""; src=""; tag=""
+        for(i=1;i<=NF;i++) {
+          if($i=="email:" && i<NF) name=$(i+1)
+          if($i=="from" && i<NF) src=$(i+1)
+          if($i ~ /^\[(vmess-in|vless-in|trojan-in|ss-in)$/) { tag=$i; sub(/^\[/,"",tag) }
+        }
+        if(name!="" && src!="") {
+          sub(/^tcp:/,"",src)
+          if(src ~ /^\[/) { sub(/^\[/,"",src); sub(/\]:[0-9]+$/, "", src) }
+          else sub(/:[0-9]+$/, "", src)
+          if(src!="127.0.0.1" && src!="::1" && src!="") {
+            k=name"|"src"|"tag
+            if(!(k in last) || ts>last[k]) last[k]=ts
+          }
+        }
+      }
+      END { for(k in last) { split(k,a,"|"); print a[1]"|"a[2]"|"last[k]"|"a[3] } }' > "$seen"
+  fi
+
+  while IFS='|' read -r name ip seen_ts inbound_tag; do
+    [ -n "$name" ] && [ -n "$ip" ] || continue
+    case "$seen_ts" in
+      ''|*[!0-9]*) seen_at=$(date -d "${seen_ts%%.*}" +%s 2>/dev/null) ;;
+      *) seen_at="$seen_ts" ;;
+    esac
+    case "$seen_at" in ''|*[!0-9]*) continue ;; esac
+    [ "$seen_at" -ge $((now-XIP_GUARD_WINDOW)) ] 2>/dev/null || continue
+    case "$inbound_tag" in
+      vmess-in) proto=vmess ;;
+      vless-in) proto=vless ;;
+      trojan-in) proto=trojan ;;
+      ss-in) proto=ss ;;
+      *) proto=$(_x_proto_for_name "$name") ;;
+    esac
+    case "$proto" in vmess|vless|trojan|ss) ;; *) continue ;; esac
+    xmeta "$proto" || continue
+    awk -v n="$name" '$1=="###"&&$2==n{f=1} END{exit !f}' "$XDB" 2>/dev/null || continue
+    printf '%s|%s|%s|%s\n' "$proto" "$name" "$ip" "$seen_at" >> "$out"
+  done < "$seen"
+
+  sort -t'|' -k1,1 -k2,2 -k3,3 -k4,4nr "$out" 2>/dev/null \
+    | awk -F'|' '!seen[$1 FS $2 FS $3]++'
+  rm -f "$seen" "$out"
+}
+
 _x_ip_conn_since(){ # proto compte -> durée depuis la première IP encore connectée
   local first now d
   first=$(awk -F'|' -v p="$1" -v n="$2" '$1==p&&$2==n{if(f==0||$4<f)f=$4} END{print f+0}' "$XIPSTATE" 2>/dev/null)
@@ -449,19 +535,22 @@ _x_created_del(){
 # configuration active et marqué verrouillé, mais sa fiche, son identifiant et
 # sa date sont conservés pour permettre une vérification ou une réactivation.
 xlimit_run(){
-  # RHAFF_XLIMIT_V8_REAL_ACTIVE_IPS
-  # Les IP viennent exclusivement du journal authentifié Xray. Un changement
-  # bref d'IP mobile ne verrouille plus un compte : le dépassement doit être
-  # encore présent dans la fenêtre stricte après un délai de grâce continu.
+  # RHAFF_XLIMIT_V10_SIMULTANEOUS_CONFIRMED
+  # Une simple bascule Wi-Fi/mobile ne suffit jamais à verrouiller : l'ancienne
+  # IP peut rester dans l'historique, mais elle ne produit plus d'authentification.
+  # Le verrouillage n'arrive que si PLUS d'IP que la limite continuent réellement
+  # à produire des événements authentifiés APRÈS le début du dépassement.
   command -v jq >/dev/null 2>&1 || return 0
   [ -f "$XCONF" ] || return 0
   _x_ip_refresh_sync
 
-  local offenders pending proto name lim db row ex fl count tmp iptmp changed=0 today
-  local now first_over
+  local offenders pending guard proto name lim db row ex fl count confirmed tmp iptmp changed=0 today
+  local now first_over fresh_cut
   offenders=$(mktemp) || return 0
   pending=$(mktemp) || { rm -f "$offenders"; return 0; }
-  today=$(date +%F); now=$(date +%s)
+  guard=$(mktemp) || { rm -f "$offenders" "$pending"; return 0; }
+  _x_guard_snapshot > "$guard"
+  today=$(date +%F); now=$(date +%s); fresh_cut=$((now-XIP_ACTIVE_WINDOW))
 
   while IFS='|' read -r proto name lim; do
     [ -n "$proto" ] && [ -n "$name" ] || continue
@@ -476,23 +565,40 @@ xlimit_run(){
     [ "$fl" = "L" ] && continue
     [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; } && continue
 
-    count=$(_x_ip_count_recent "$proto" "$name" "$XIP_GUARD_WINDOW"); count=${count:-0}
+    count=$(awk -F'|' -v p="$proto" -v n="$name" '$1==p&&$2==n{a[$3]=1} END{for(i in a)c++; print c+0}' "$guard" 2>/dev/null)
+    count=${count:-0}
     if [ "$count" -gt "$lim" ] 2>/dev/null; then
       first_over=$(awk -F'|' -v p="$proto" -v n="$name" '$1==p&&$2==n{print $3;exit}' "$XOVERSTATE" 2>/dev/null)
       case "$first_over" in ''|*[!0-9]*) first_over="$now" ;; esac
+      # Un ancien état laissé par un redémarrage ne doit jamais provoquer un
+      # verrouillage immédiat sur une nouvelle connexion.
+      if [ "$first_over" -gt "$now" ] 2>/dev/null || [ "$first_over" -lt $((now-XIP_GUARD_WINDOW)) ] 2>/dev/null; then
+        first_over="$now"
+      fi
       printf '%s|%s|%s\n' "$proto" "$name" "$first_over" >> "$pending"
-      [ $((now-first_over)) -ge "$XLIMIT_GRACE" ] 2>/dev/null \
-        && printf '%s|%s|%s|%s\n' "$proto" "$name" "$lim" "$count" >> "$offenders"
+
+      if [ $((now-first_over)) -ge "$XLIMIT_GRACE" ] 2>/dev/null; then
+        # Confirmation décisive : chaque IP comptée doit avoir continué à
+        # produire une activité authentifiée APRÈS le début du dépassement ET
+        # être encore dans la même fenêtre active que celle affichée par le
+        # panel. Une ancienne IP laissée par un changement de réseau disparaît
+        # donc sans verrouiller ; deux utilisateurs réellement simultanés restent.
+        confirmed=$(awk -F'|' -v p="$proto" -v n="$name" -v s="$first_over" -v f="$fresh_cut" \
+          '$1==p&&$2==n&&$4>s&&$4>=f{a[$3]=1} END{for(i in a)c++; print c+0}' "$guard" 2>/dev/null)
+        confirmed=${confirmed:-0}
+        [ "$confirmed" -gt "$lim" ] 2>/dev/null \
+          && printf '%s|%s|%s|%s\n' "$proto" "$name" "$lim" "$confirmed" >> "$offenders"
+      fi
     fi
   done < "$XLIMDB"
 
   mv "$pending" "$XOVERSTATE" 2>/dev/null || rm -f "$pending"
-  [ -s "$offenders" ] || { rm -f "$offenders"; return 0; }
+  [ -s "$offenders" ] || { rm -f "$offenders" "$guard"; return 0; }
 
   # Retire tous les comptes fautifs dans une seule copie de config puis ne
   # redémarre Xray qu'une fois. Le nombre des autres clients est préservé.
-  tmp=$(mktemp "${XCONF}.device-lock.XXXXXX.json") || { rm -f "$offenders"; return 0; }
-  cp -a "$XCONF" "$tmp" 2>/dev/null || { rm -f "$tmp" "$offenders"; return 0; }
+  tmp=$(mktemp "${XCONF}.device-lock.XXXXXX.json") || { rm -f "$offenders" "$guard"; return 0; }
+  cp -a "$XCONF" "$tmp" 2>/dev/null || { rm -f "$tmp" "$offenders" "$guard"; return 0; }
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
     jq --arg tag "$TAG" --arg key "$CLIENTS_KEY" --arg e "$name" \
@@ -502,8 +608,8 @@ xlimit_run(){
     changed=1
   done < "$offenders"
 
-  [ "$changed" -eq 1 ] || { rm -f "$tmp" "$offenders"; return 0; }
-  _xconf_commit "$tmp" || { rm -f "$offenders"; return 0; }
+  [ "$changed" -eq 1 ] || { rm -f "$tmp" "$offenders" "$guard"; return 0; }
+  _xconf_commit "$tmp" || { rm -f "$offenders" "$guard"; return 0; }
 
   while IFS='|' read -r proto name lim count; do
     xmeta "$proto" || continue
@@ -514,7 +620,7 @@ xlimit_run(){
       && mv "$iptmp" "$XIPSTATE" || rm -f "$iptmp"
     printf '%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$name" "$lim" "$count" >> /var/log/nvpanel-device-lock.log 2>/dev/null || true
   done < "$offenders"
-  rm -f "$offenders"
+  rm -f "$offenders" "$guard"
 }
 
 _udp_cred(){ # $1 = compte  $2 = mot de passe  $3 = limite
