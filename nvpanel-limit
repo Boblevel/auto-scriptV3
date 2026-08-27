@@ -37,13 +37,26 @@ sessions_of() {
   local ports wanted_uid; ports=" $(ssh_ports) "
   wanted_uid=$(id -u "$1" 2>/dev/null) || return 0
 
+  # Un seul instantané ESTABLISHED est utilisé par appel. Pour SlowDNS, une
+  # connexion localhost n'est retenue que si son autre extrémité appartient
+  # réellement à dns-server : aucun ancien log, cache ou socket locale d'un
+  # autre proxy ne peut être interprété comme un appareil SlowDNS connecté.
   ss -Htnp state established 2>/dev/null | awk -v p="$ports" '
-    /pid=/ {
+    {
       local_ep=$3
       endpoint=$4
       lport=local_ep
+      rport=endpoint
       sub(/^.*:/,"",lport)
-      if(index(p," " lport " ")==0) next
+      sub(/^.*:/,"",rport)
+
+      # Côté dnstt : mémorise uniquement les endpoints localhost qui sont
+      # connectés MAINTENANT vers un des ports SSH réellement utilisés.
+      if($0 ~ /users:\(\("dns-server"/ && index(p," " rport " ")>0) {
+        slowdns_ep[local_ep]=1
+      }
+
+      if(index(p," " lport " ")==0 || $0 !~ /pid=/) next
 
       peer=endpoint
       if(peer ~ /^\[/) {
@@ -56,8 +69,17 @@ sessions_of() {
       line=$0
       while(match(line,/pid=[0-9]+/)) {
         pid=substr(line,RSTART+4,RLENGTH-4)
-        print pid"|"peer"|"endpoint
+        n++
+        row[n]=pid"|"peer"|"endpoint
         line=substr(line,RSTART+RLENGTH)
+      }
+    }
+    END {
+      for(i=1;i<=n;i++) {
+        split(row[i],f,"|")
+        ip=f[2]; endpoint=f[3]
+        if((ip=="127.0.0.1" || ip=="::1") && !slowdns_ep[endpoint]) continue
+        print row[i]
       }
     }' | sort -u | while IFS='|' read -r pid ip endpoint; do
       owner_uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
