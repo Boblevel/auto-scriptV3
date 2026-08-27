@@ -471,7 +471,7 @@ settings_row(){
 settings_sep(){ printf "${CYN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}\n"; }
 
 while true; do
-  flush_in; printf '\033[H\033[2J'
+  printf '\033[H\033[2J'
   _edge "┏" "┓" "PARAMÈTRES DU PANEL"
   settings_row 1  "DOMAINE"               10 "TEST DE VITESSE"
   settings_sep
