@@ -365,13 +365,12 @@ _x_ip_refresh_sync(){
     xmeta "$proto" || continue
     awk -v n="$name" '$1=="###"&&$2==n{f=1} END{exit !f}' "$XDB" 2>/dev/null || continue
 
-    # IP active = socket réellement ouverte MAINTENANT. Le repli de 5 secondes
-    # couvre uniquement le très court intervalle entre l'authentification et
-    # l'apparition de la socket dans `ss`; il ne crée plus des "en ligne"
-    # fantômes pendant 20 secondes ou davantage.
+    # Pour Vmess/Vless/Trojan, une IP n'est active que si sa socket publique
+    # est réellement établie MAINTENANT : aucune IP vue juste avant ne peut
+    # déclencher la limite. Shadowsocks conserve seul le repli court existant.
     if awk -F'|' -v p="$proto" -v i="$ip" '$1==p&&$2==i{f=1} END{exit !f}' "$alive" 2>/dev/null; then
       current_last="$now"
-    elif [ "$seen_at" -ge "$recent_cut" ] 2>/dev/null; then
+    elif [ "$proto" = "ss" ] && [ "$seen_at" -ge "$recent_cut" ] 2>/dev/null; then
       current_last="$seen_at"
     else
       continue
