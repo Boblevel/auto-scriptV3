@@ -146,7 +146,7 @@ infobox(){
   W=$((W + 4))
   _edge "┏" "┓" "R H A F F   S E R V I C E" "$YLW"
   sysinfo
-  stats
+  stats "${1:-}"
   _edge "┗" "┛" "$CONTACT" "$YLW"
   W="$_home_w"
 }
@@ -267,52 +267,75 @@ _online_uniq_port() {
 # même compte connecté depuis 3 appareils différents compte donc pour 3, et
 # non plus pour 1 — comme le nombre réel de personnes connectées.
 _ssh_sessions_raw() {
-  # Une session SSH réelle est une socket dont le PORT LOCAL est celui
-  # d'OpenSSH/Dropbear et dont le processus authentifié appartient au compte.
-  # Les connexions SORTANTES du tunnel (vers :443/:5222/etc.) sont exclues.
-  #
-  # SlowDNS termine localement sur 127.0.0.1:22 : le binaire dnstt ne transmet
-  # pas l'IP Internet du client à sshd. Dans ce seul cas, chaque endpoint local
-  # réel (IP:port source) représente une session SlowDNS distincte ; on le garde
-  # comme clé de session au lieu de prétendre que 127.0.0.1 est l'IP du client.
-  local dp ports port
-  dp=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
-  case "$dp" in ''|*[!0-9]*) dp="" ;; esac
-  ports=$(printf '22\n143\n%s\n' "$dp" | awk '/^[0-9]+$/{a[$1]=1} END{for(p in a)print p}')
+  # Un seul relevé `ss`, un seul relevé `ps` et aucune recherche répétée par PID.
+  # L'ancienne version rescannait toute la sortie réseau + la DB pour chaque
+  # processus sshd/dropbear ; avec plusieurs clients cela coûtait plusieurs
+  # secondes. La logique reste identique : compte réel du panel + IP distante,
+  # avec repli pidXXXX si `ss` ne fournit pas l'endpoint.
+  local ss_raw line rest endpoint peer pid ip u comm marker dbu
+  local -A _pid_peer _panel_user
 
-  for port in $ports; do
-    ss -Htnp state established "( sport = :$port )" 2>/dev/null
-  done | awk '
-    /pid=/ {
-      endpoint=$4
-      peer=endpoint
-      if(peer ~ /^\[/) { sub(/^\[/,"",peer); sub(/\]:[0-9]+$/,"",peer) }
-      else sub(/:[0-9]+$/,"",peer)
-      line=$0
-      while(match(line,/pid=[0-9]+/)) {
-        pid=substr(line,RSTART+4,RLENGTH-4)
-        print pid"|"peer"|"endpoint
-        line=substr(line,RSTART+RLENGTH)
-      }
-    }' | sort -u | while IFS='|' read -r pid ip endpoint; do
-      [ -n "$pid" ] && [ -n "$ip" ] || continue
-      uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
-      case "$uid" in ''|*[!0-9]*) continue ;; esac
-      u=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1)
-      [ -n "$u" ] || continue
-      grep -q "^### $u " /etc/nvpanel/db/ssh 2>/dev/null || continue
-      case "$ip" in
-        127.0.0.1|::1) key="slowdns:${endpoint}" ;;
-        *) key="$ip" ;;
-      esac
-      printf '%s|%s\n' "$u" "$key"
-    done | sort -u
+  while read -r marker dbu _; do
+    [ "$marker" = "###" ] && [ -n "$dbu" ] && _panel_user["$dbu"]=1
+  done < /etc/nvpanel/db/ssh 2>/dev/null
+
+  ss_raw=$(ss -tnp state established 2>/dev/null)
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    rest="$line"; endpoint=""
+    # Garde le dernier endpoint IP:port de la ligne, exactement comme l'ancien
+    # `grep -o ... | tail -1`, mais uniquement avec les primitives Bash.
+    while [[ "$rest" =~ ([0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9a-fA-F:]+\]):[0-9]+ ]]; do
+      endpoint="${BASH_REMATCH[0]}"
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+    done
+    [ -n "$endpoint" ] || continue
+    peer="$endpoint"
+    if [[ "$peer" == \[*\]:* ]]; then
+      peer="${peer#\[}"; peer="${peer%\]:*}"
+    else
+      peer="${peer%:*}"
+    fi
+
+    rest="$line"
+    while [[ "$rest" =~ pid=([0-9]+) ]]; do
+      pid="${BASH_REMATCH[1]}"
+      _pid_peer["$pid"]="$peer"
+      rest="${rest#*pid=$pid}"
+    done
+  done <<< "$ss_raw"
+
+  while read -r pid u comm; do
+    [ -n "$pid" ] && [ -n "$u" ] || continue
+    case "$comm" in sshd|dropbear) ;; *) continue ;; esac
+    [ "${_panel_user[$u]:-}" = 1 ] || continue
+    ip="${_pid_peer[$pid]:-pid$pid}"
+    printf '%s|%s\n' "$u" "$ip"
+  done < <(ps -eo pid=,user=,comm= 2>/dev/null) | sort -u
 }
 
-# Pas de cache ancien : la liste, le total et la limite SSH/SlowDNS doivent
-# refléter les mêmes sessions réellement établies au moment de l'affichage.
 _ssh_sessions() {
-  _ssh_sessions_raw
+  # Même principe que pour Xray/consommation : le scan ss+ps reste la source
+  # réelle, mais il ne doit plus figer l'écran ~0,5 s à chaque navigation.
+  local cache=/run/nvpanel-ssh-sessions.cache lock=/run/nvpanel-ssh-sessions.lock
+  local now mt age tmp
+  now=$(date +%s)
+  if [ -f "$cache" ]; then
+    cat "$cache" 2>/dev/null
+    mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+    if [ "$age" -ge 2 ] 2>/dev/null; then
+      (
+        mkdir "$lock" 2>/dev/null || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        tmp="${cache}.${BASHPID}"
+        _ssh_sessions_raw > "$tmp" 2>/dev/null && mv "$tmp" "$cache"
+      ) </dev/null >/dev/null 2>&1 &
+    fi
+    return
+  fi
+  tmp="${cache}.${BASHPID}"
+  _ssh_sessions_raw | tee "$tmp"
+  mv "$tmp" "$cache" 2>/dev/null || true
 }
 
 _ssh_online() { _ssh_sessions | wc -l; }
@@ -331,6 +354,34 @@ _xray_online() {
   _online_uniq_port "$xport"
 }
 
+# PPP est la source en ligne la plus lente après SSH (~2 s sur le VPS testé).
+# Une ouverture explicite du menu force une lecture réelle ; les retours et les
+# sous-menus réutilisent au maximum 2 secondes de cache pendant qu'un refresh
+# se fait en arrière-plan. La source reste `nvpanel-ppp online all`.
+_ppp_online_all(){
+  local mode="${1:-}" cache=/run/nvpanel-ppp-online.cache lock=/run/nvpanel-ppp-online.lock
+  local now mt age r tmp
+  now=$(date +%s)
+  if [ "$mode" != "fresh" ] && [ -f "$cache" ]; then
+    cat "$cache" 2>/dev/null
+    mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+    if [ "$age" -ge 2 ] 2>/dev/null; then
+      (
+        mkdir "$lock" 2>/dev/null || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        tmp="${cache}.${BASHPID}"
+        nvpanel-ppp online all > "$tmp" 2>/dev/null && mv "$tmp" "$cache"
+      ) </dev/null >/dev/null 2>&1 &
+    fi
+    return
+  fi
+  r=$(nvpanel-ppp online all 2>/dev/null)
+  tmp="${cache}.${BASHPID}"
+  printf '%s\n' "$r" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  printf '%s\n' "$r"
+}
+
 # ---- Statistiques comptes ----------------------------------
 # ATTENTION : « grep -c » renvoie un code d'erreur quand le compte est 0,
 # tout en affichant « 0 ». Un « || echo 0 » ajouterait donc un SECOND zéro
@@ -338,10 +389,10 @@ _xray_online() {
 _count_db(){ local n; n=$(grep -c '^### ' "/etc/nvpanel/db/$1" 2>/dev/null); printf '%s' "${n:-0}"; }
 
 stats() {
-  local online blocked total hier auj mois
+  local fresh="${1:-}" online blocked total hier auj mois
   local ssh on_ssh bl_ssh
   ssh=$(grep -c '^### ' /etc/nvpanel/db/ssh 2>/dev/null); ssh=${ssh:-0}
-  on_ssh=$(_ssh_online)
+
   # Un seul passage dans /etc/shadow au lieu d'un appel `passwd -S` par
   # compte : même information réelle, nettement moins de processus au chargement.
   bl_ssh=$(awk 'NR==FNR{if($1=="###")u[$2]=1; next} {split($0,a,":"); if(u[a[1]] && a[2] ~ /^!/)c++} END{print c+0}' /etc/nvpanel/db/ssh /etc/shadow 2>/dev/null); bl_ssh=${bl_ssh:-0}
@@ -353,48 +404,100 @@ stats() {
   hy=$(_count_db hysteria)
   total=$(( ssh + vm + vl + tr + ss + wg + l2 + pp + sst + hy ))
 
-  local on_xray on_ss on_wg on_l2 on_pp on_sst on_hy ppp_online
-  # Ne compte « en ligne » que si des comptes existent pour ce protocole :
-  # sinon une connexion quelconque sur le port public (scan internet, très
-  # courant sur tout VPS exposé) peut apparaître comme un faux client alors
-  # qu'aucun compte n'a jamais été créé.
-  # Xray + Shadowsocks : une seule invocation, comptée en IP/appareils réels.
-  on_xray=0; on_ss=0
-  if [ $((vm + vl + tr + ss)) -gt 0 ]; then
-    on_xray=$(nvpanel-cli xonline all 2>/dev/null); on_xray=${on_xray:-0}
-  fi
-  on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
+  # Les sources lentes sont indépendantes : les exécuter en parallèle évite
+  # d'additionner 3 s SSH + 2 s PPP + Xray + consommation. Le temps d'attente
+  # devient celui de la source la plus lente, sans changer la méthode de comptage.
+  local on_xray=0 on_wg=0 on_l2=0 on_pp=0 on_sst=0 ppp_online=""
+  local _sd _conso _cache _tmp
+  _sd=$(mktemp -d /run/nvpanel-stats.XXXXXX 2>/dev/null)
+  if [ -n "$_sd" ] && [ -d "$_sd" ]; then
+    (_ssh_online > "$_sd/ssh" 2>/dev/null) &
+    if [ $((vm + vl + tr + ss)) -gt 0 ]; then
+      (nvpanel-cli xonline all > "$_sd/xray" 2>/dev/null) &
+    else
+      printf '0\n' > "$_sd/xray"
+    fi
+    (wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}' > "$_sd/wg") &
+    if [ $((l2 + pp + sst)) -gt 0 ]; then
+      if [ "$fresh" = "fresh" ]; then (_ppp_online_all fresh > "$_sd/ppp" 2>/dev/null) &
+      else (_ppp_online_all > "$_sd/ppp" 2>/dev/null) & fi
+    else
+      : > "$_sd/ppp"
+    fi
+    if [ "$fresh" = "fresh" ] && [ -x /usr/local/bin/nvpanel-conso ]; then
+      (/usr/local/bin/nvpanel-conso read > "$_sd/conso" 2>/dev/null) &
+    else
+      (_conso_raw > "$_sd/conso" 2>/dev/null) &
+    fi
 
-  # PPP : même information réelle, mais les trois protocoles sont lus en une
-  # seule exécution de nvpanel-ppp (un seul prune des sessions).
-  on_l2=0; on_pp=0; on_sst=0
-  if [ $((l2 + pp + sst)) -gt 0 ]; then
-    ppp_online=$(nvpanel-ppp online all 2>/dev/null)
+    local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
+    bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
+    bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
+    bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
+    bl_ss=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/shadowsocks 2>/dev/null)
+    bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
+    bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
+    bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
+    bl_wg=$(awk '/^### /{if($6=="L")c++} END{print c+0}' /etc/nvpanel/db/wireguard 2>/dev/null)
+    bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
+    blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_wg + bl_hy ))
+
+    wait
+    on_ssh=$(head -n1 "$_sd/ssh" 2>/dev/null); on_ssh=${on_ssh:-0}
+    on_xray=$(head -n1 "$_sd/xray" 2>/dev/null); on_xray=${on_xray:-0}
+    on_wg=$(head -n1 "$_sd/wg" 2>/dev/null); on_wg=${on_wg:-0}
+    case "$on_ssh" in ''|*[!0-9]*) on_ssh=0 ;; esac
+    case "$on_xray" in ''|*[!0-9]*) on_xray=0 ;; esac
+    case "$on_wg" in ''|*[!0-9]*) on_wg=0 ;; esac
+    ppp_online=$(cat "$_sd/ppp" 2>/dev/null)
     on_l2=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="l2tp"{print $2+0}'); on_l2=${on_l2:-0}
     on_pp=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="pptp"{print $2+0}'); on_pp=${on_pp:-0}
     on_sst=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="sstp"{print $2+0}'); on_sst=${on_sst:-0}
+    _conso=$(head -n1 "$_sd/conso" 2>/dev/null)
+    rm -rf "$_sd" 2>/dev/null
+  else
+    # Repli sûr si /run n'autorise exceptionnellement pas mktemp.
+    on_ssh=$(_ssh_online); on_ssh=${on_ssh:-0}
+    [ $((vm + vl + tr + ss)) -gt 0 ] && on_xray=$(nvpanel-cli xonline all 2>/dev/null); on_xray=${on_xray:-0}
+    on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
+    case "$on_ssh" in ''|*[!0-9]*) on_ssh=0 ;; esac
+    case "$on_xray" in ''|*[!0-9]*) on_xray=0 ;; esac
+    case "$on_wg" in ''|*[!0-9]*) on_wg=0 ;; esac
+    if [ $((l2 + pp + sst)) -gt 0 ]; then
+      if [ "$fresh" = "fresh" ]; then ppp_online=$(_ppp_online_all fresh); else ppp_online=$(_ppp_online_all); fi
+      on_l2=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="l2tp"{print $2+0}'); on_l2=${on_l2:-0}
+      on_pp=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="pptp"{print $2+0}'); on_pp=${on_pp:-0}
+      on_sst=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="sstp"{print $2+0}'); on_sst=${on_sst:-0}
+    fi
+    if [ "$fresh" = "fresh" ] && [ -x /usr/local/bin/nvpanel-conso ]; then _conso=$(/usr/local/bin/nvpanel-conso read 2>/dev/null); else _conso=$(_conso_raw); fi
+    local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
+    bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
+    bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
+    bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
+    bl_ss=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/shadowsocks 2>/dev/null)
+    bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
+    bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
+    bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
+    bl_wg=$(awk '/^### /{if($6=="L")c++} END{print c+0}' /etc/nvpanel/db/wireguard 2>/dev/null)
+    bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
+    blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_wg + bl_hy ))
   fi
-  # Hysteria2 : l'API locale officielle renvoie le nombre exact d'instances
-  # clientes connectées, pas le nombre de flux QUIC/proxy.
-  on_hy=0
-  if [ "$hy" -gt 0 ] && [ -x /usr/local/bin/nvpanel-hysteria ]; then
-    on_hy=$(/usr/local/bin/nvpanel-hysteria online 2>/dev/null); on_hy=${on_hy:-0}
-  fi
-  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst + on_hy ))
 
-  local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
-  bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
-  bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
-  bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
-  bl_ss=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/shadowsocks 2>/dev/null)
-  bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
-  bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
-  bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
-  bl_wg=$(awk '/^### /{if($6=="L")c++} END{print c+0}' /etc/nvpanel/db/wireguard 2>/dev/null)
-  bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
-  blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_wg + bl_hy ))
+  # Une mesure fraîche obtenue au lancement du menu devient immédiatement le
+  # cache de référence pour les retours suivants, sans second poll bloquant.
+  case "$_conso" in
+    *'|'*'|'*)
+      if [ "$fresh" = "fresh" ]; then
+        _cache=/run/nvpanel-conso-all.cache; _tmp="${_cache}.${BASHPID}"
+        printf '%s\n' "$_conso" > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$_cache" 2>/dev/null
+        rm -f "$_tmp" 2>/dev/null
+      fi
+      ;;
+    *) _conso="0|0|0" ;;
+  esac
 
-  IFS='|' read -r hier auj mois <<< "$(_conso_raw)"
+  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst ))
+  IFS='|' read -r hier auj mois <<< "$_conso"
 
   printf "${CYN}┃${NC} ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}📦 Total:${NC} ${WHT}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$online" "$total" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
   printf "${CYN}┃${NC} ${GRY}📊 Conso — hier:${NC} %s ${GRY}· auj.:${NC} %s ${GRY}· mois:${NC} %s" "$(_hr "$hier")" "$(_hr "$auj")" "$(_hr "$mois")"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
@@ -434,12 +537,15 @@ proto_dash() {
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
       blocked=$(awk '/^### /{if($6=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     ppp:*)
-      local pp="${mode#ppp:}"
+      local pp="${mode#ppp:}" ppp_all
       online=0
-      # Sans ce garde-fou, un pppd résiduel ou un scan quelconque pouvait
-      # apparaître comme un client en ligne même sans aucun compte créé
-      # pour ce protocole précis (même bug déjà corrigé pour Xray/SS ci-dessus).
-      [ "$total" -gt 0 ] && { online=$(nvpanel-ppp online "$pp" 2>/dev/null); online=${online:-0}; }
+      # Le cache global PPP est déjà alimenté par le menu principal. On extrait
+      # seulement le protocole demandé au lieu de relancer le prune complet.
+      if [ "$total" -gt 0 ]; then
+        ppp_all=$(_ppp_online_all)
+        online=$(printf '%s\n' "$ppp_all" | awk -F'|' -v p="$pp" '$1==p{print $2+0}')
+        online=${online:-0}
+      fi
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
   esac
   IFS='|' read -r hier auj mois <<< "$(_conso_raw "$tag")"

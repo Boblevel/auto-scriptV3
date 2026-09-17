@@ -27,21 +27,6 @@ section_panel(){
   bot
 }
 
-# Le menu principal doit afficher la consommation réellement relevée AU MOMENT
-# où il s'ouvre/revient à l'écran, pas la valeur du cache précédent.
-refresh_home_conso(){
-  [ -x /usr/local/bin/nvpanel-conso ] || return 0
-  local r cache=/run/nvpanel-conso-all.cache tmp
-  r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null) || return 0
-  case "$r" in
-    *'|'*'|'*)
-      tmp="${cache}.${BASHPID}"
-      printf '%s\n' "$r" > "$tmp" && mv -f "$tmp" "$cache"
-      rm -f "$tmp" 2>/dev/null
-      ;;
-  esac
-}
-
 home_entry(){
   local n="$1" e="$2" t="$3"
   printf "${CYN}┃${NC} ${GRN}[%s]${NC} %s ${WHT}%s${NC}" "$n" "$e" "$(_upper "$t")"
@@ -105,9 +90,17 @@ optimize_server() {
   pause
 }
 
+# À la première ouverture explicite de `menu`, on force une mesure fraîche.
+# Aux retours depuis les sous-menus, l'interface réutilise le cache très court
+# et le rafraîchit en arrière-plan afin que la navigation reste instantanée.
+_HOME_FIRST=1
 while true; do
-  refresh_home_conso
-  infobox
+  if [ "$_HOME_FIRST" = 1 ]; then
+    infobox fresh
+    _HOME_FIRST=0
+  else
+    infobox
+  fi
   home_top
   home_entry "01" "🔒" "SSH · SlowDNS · UDP"
   home_entry "02" "🌐" "Menu · L2TP"

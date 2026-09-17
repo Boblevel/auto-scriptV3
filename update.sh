@@ -100,57 +100,80 @@ for _t in curl jq openssl python3 flock iptables ip ss crontab netfilter-persist
 done
 [ -z "$_MISSING" ] || { printf "\n${RED}✘ Outils indispensables absents :%s${NC}\n" "$_MISSING"; exit 1; }
 
-# ---- Téléchargement silencieux -----------------------------
+# ---- Téléchargement silencieux, en parallèle contrôlé -------
+# Les 27 fichiers étaient téléchargés l'un après l'autre : avec 1-2 s de
+# latence GitHub par requête, la mise à jour pouvait prendre près d'une minute
+# avant même l'installation. On télécharge maintenant par lots de 6 dans un
+# dossier temporaire, puis on valide/installe séquentiellement : aucun fichier
+# actif n'est écrasé tant que son téléchargement n'est pas complet.
 FAILED=""; CHANGED=0
-fetch(){
-  local name dest="$2" ok=0 tmp
-  tmp=$(mktemp "${dest}.XXXXXX") || { FAILED="$FAILED $1"; return; }
-  for name in "$1" "$1.txt"; do
-    if curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/$name" -o "$tmp" 2>/dev/null \
-       && [ -s "$tmp" ] && ! head -c 200 "$tmp" | grep -q '404: Not Found'; then
+_STAGE=$(mktemp -d /tmp/nvpanel-update.XXXXXX) \
+  || { printf "\n${RED}✘ Préparation du téléchargement impossible.${NC}\n"; exit 1; }
+trap 'rm -rf "$_STAGE" 2>/dev/null' EXIT
+
+_COMPONENTS=(
+  "ui.sh:/etc/nvpanel/lib/ui.sh" "menu:/usr/local/bin/menu" "menu-ssh:/usr/local/bin/menu-ssh"
+  "menu-xray:/usr/local/bin/menu-xray" "menu-ss:/usr/local/bin/menu-ss" "menu-wg:/usr/local/bin/menu-wg"
+  "menu-bot:/usr/local/bin/menu-bot" "menu-settings:/usr/local/bin/menu-settings"
+  "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli"
+  "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit"
+  "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean"
+  "nvpanel-conso:/usr/local/bin/nvpanel-conso"
+  "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp"
+  "install-l2tp:/usr/local/bin/install-l2tp" "install-pptp:/usr/local/bin/install-pptp"
+  "install-sstp:/usr/local/bin/install-sstp"
+  "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls"
+  "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp"
+  "install-hysteria:/usr/local/bin/install-hysteria" "nvpanel-hysteria:/usr/local/bin/nvpanel-hysteria"
+  "update.sh:/usr/local/bin/update"
+)
+
+download_one(){
+  local idx="$1" pair="${_COMPONENTS[$1]}" name dest candidate ok=0
+  name="${pair%%:*}"; dest="${pair##*:}"
+  for candidate in "$name" "$name.txt"; do
+    if curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_RAW/$candidate" -o "$_STAGE/$idx.data" 2>/dev/null \
+       && [ -s "$_STAGE/$idx.data" ] \
+       && ! head -c 200 "$_STAGE/$idx.data" | grep -q '404: Not Found'; then
       ok=1; break
     fi
   done
-  if [ "$ok" = 1 ]; then
-    # Ne compte (et n'écrase) que si le contenu a réellement changé — c'est
-    # ce qui permet de distinguer « déjà à jour » d'une vraie mise à jour.
-    if [ -f "$dest" ] && cmp -s "$tmp" "$dest" 2>/dev/null; then
-      rm -f "$tmp"; chmod 700 "$dest" 2>/dev/null || FAILED="$FAILED $1"
-    else
-      if chmod 700 "$tmp" && mv "$tmp" "$dest"; then
-        CHANGED=$((CHANGED+1))
-      else
-        rm -f "$tmp"; FAILED="$FAILED $1"
-      fi
-    fi
-  else
-    rm -f "$tmp"
-    FAILED="$FAILED $1"
-  fi
+  if [ "$ok" = 1 ]; then printf 'ok\n' > "$_STAGE/$idx.status"; else rm -f "$_STAGE/$idx.data"; printf 'fail\n' > "$_STAGE/$idx.status"; fi
 }
 
 progress_to 5 "Téléchargement des composants"
-_DONE_FILES=0; _TOTAL_FILES=27
-for pair in \
-  "ui.sh:/etc/nvpanel/lib/ui.sh" "menu:/usr/local/bin/menu" "menu-ssh:/usr/local/bin/menu-ssh" \
-  "menu-xray:/usr/local/bin/menu-xray" "menu-ss:/usr/local/bin/menu-ss" "menu-wg:/usr/local/bin/menu-wg" \
-  "menu-bot:/usr/local/bin/menu-bot" "menu-settings:/usr/local/bin/menu-settings" \
-  "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
-  "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
-  "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
-  "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
-  "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp" \
-  "install-l2tp:/usr/local/bin/install-l2tp" "install-pptp:/usr/local/bin/install-pptp" \
-  "install-sstp:/usr/local/bin/install-sstp" \
-  "install-xray:/usr/local/bin/install-xray" "install-tls:/usr/local/bin/install-tls" \
-  "install-slowdns:/usr/local/bin/install-slowdns" "install-udp:/usr/local/bin/install-udp" \
-  "install-hysteria:/usr/local/bin/install-hysteria" "nvpanel-hysteria:/usr/local/bin/nvpanel-hysteria" \
-  "update.sh:/usr/local/bin/update"; do
-  fetch "${pair%%:*}" "${pair##*:}"
-  _DONE_FILES=$((_DONE_FILES+1))
-  progress_to $((5 + _DONE_FILES * 60 / _TOTAL_FILES)) "Téléchargement des composants"
+_TOTAL_FILES=${#_COMPONENTS[@]}
+_BATCH=6
+for ((_base=0; _base<_TOTAL_FILES; _base+=_BATCH)); do
+  _pids=()
+  for ((_j=_base; _j<_base+_BATCH && _j<_TOTAL_FILES; _j++)); do
+    download_one "$_j" & _pids+=("$!")
+  done
+  for _pid in "${_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
+  _done=$((_base + _BATCH)); [ "$_done" -gt "$_TOTAL_FILES" ] && _done="$_TOTAL_FILES"
+  progress_to $((5 + _done * 60 / _TOTAL_FILES)) "Téléchargement des composants"
+done
+
+# Installation/compare dans le processus principal : les compteurs FAILED et
+# CHANGED restent fiables et aucun sous-processus ne modifie l'état partagé.
+for ((_i=0; _i<_TOTAL_FILES; _i++)); do
+  _pair="${_COMPONENTS[$_i]}"; _name="${_pair%%:*}"; _dest="${_pair##*:}"
+  if [ "$(cat "$_STAGE/$_i.status" 2>/dev/null)" != ok ]; then
+    FAILED="$FAILED $_name"
+    continue
+  fi
+  _tmp="$_STAGE/$_i.data"
+  if [ -f "$_dest" ] && cmp -s "$_tmp" "$_dest" 2>/dev/null; then
+    chmod 700 "$_dest" 2>/dev/null || FAILED="$FAILED $_name"
+  elif chmod 700 "$_tmp" && mv -f "$_tmp" "$_dest"; then
+    CHANGED=$((CHANGED+1))
+  else
+    FAILED="$FAILED $_name"
+  fi
 done
 progress_to 65 "Téléchargement terminé"
+rm -rf "$_STAGE" 2>/dev/null
+trap - EXIT
 
 progress_to 72 "Mise en place des composants"
 command -v qrencode >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1

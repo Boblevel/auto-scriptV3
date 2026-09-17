@@ -180,36 +180,37 @@ setup_chains(){
 # `-C` vérifie si la règle existe déjà avant de l'ajouter (idempotent).
 ensure_accounts(){
   command -v iptables >/dev/null 2>&1 || return 0
-  local u uid
+  local u uid spec existing
+  spec="${RULES_OUT:-}"
+  [ -n "$spec" ] || spec=$(iptables -w 3 -S "$COUT" 2>/dev/null)
+  existing=$(printf '%s\n' "$spec" | awk '/--comment ssh_bundle/ && /--uid-owner/ {for(i=1;i<=NF;i++) if($i=="--uid-owner") print $(i+1)}')
   for u in $(awk '/^### /{print $2}' /etc/nvpanel/db/ssh 2>/dev/null); do
     uid=$(id -u "$u" 2>/dev/null) || continue
     [ "$uid" -ge 1000 ] 2>/dev/null || continue
-    iptables -w 3 -C "$COUT" -m owner --uid-owner "$uid" -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null \
-      || iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null
+    printf '%s\n' "$existing" | grep -qxF "$uid" 2>/dev/null && continue
+    if iptables -w 3 -A "$COUT" -m owner --uid-owner "$uid" -m comment --comment "ssh_bundle" -j RETURN 2>/dev/null; then
+      existing="${existing}${existing:+$'\n'}$uid"
+    fi
   done
 }
 
-_chain_bytes(){ # somme des octets d'une chaîne
-  # printf "%.0f" et non "%d" : sur mawk (awk par défaut sur Debian/Ubuntu),
-  # "%d" convertit la somme via un entier 32 bits et déborde au-delà de 4 Go
-  # (constaté : trafic réel ~28 Go affiché comme 4294967294 octets, soit
-  # 2^32-2 — la consommation se figeait dès que le vrai trafic dépassait
-  # cette limite). "%.0f" passe par le formatage flottant natif d'awk
-  # (double précision, exact jusqu'à 2^53 octets), sans cette limite.
-  iptables -w 3 -nvxL "$1" 2>/dev/null | awk 'NR>2 {s+=$2} END{printf "%.0f", s+0}'
+# Un relevé iptables complet par chaîne suffit pour le total ET les huit
+# protocoles. L'ancienne version relançait iptables 27 fois par poll
+# (3 chaînes x total + 3 chaînes x 8 tags), ce qui expliquait 5 à 7 secondes.
+# Les snapshots sont pris sous le même verrou que l'accumulation.
+_snapshot_chains(){
+  SNAP_IN=$(iptables -w 3 -nvxL "$CIN" 2>/dev/null) || return 1
+  SNAP_OUT=$(iptables -w 3 -nvxL "$COUT" 2>/dev/null) || return 1
+  SNAP_FWD=$(iptables -w 3 -nvxL "$CFWD" 2>/dev/null) || return 1
+  return 0
 }
 
-# Comme _chain_bytes, mais ne somme que les règles portant l'étiquette
-# --comment "$2" (voir setup_chains) : permet à chaque menu de protocole
-# de n'afficher QUE sa propre consommation, sans toucher au total global.
-_tag_bytes(){
-  # index() est une recherche de SOUS-CHAÎNE LITTÉRALE (pas une regex) :
-  # les antislashs d'échappement (\* ) n'ont donc jamais lieu d'être ici.
-  # Avec eux, "t" valait littéralement "/\* vless \*/" alors que la vraie
-  # ligne iptables contient "/* vless */" (sans antislash) : index() ne
-  # trouvait donc JAMAIS de correspondance, pour aucune étiquette — la
-  # consommation par protocole restait figée à 0 malgré du vrai trafic.
-  iptables -w 3 -nvxL "$1" 2>/dev/null | awk -v t="/* $2 */" 'NR>2 && index($0,t){s+=$2} END{printf "%.0f", s+0}'
+_snapshot_bytes(){
+  awk 'NR>2 {s+=$2} END{printf "%.0f", s+0}' <<< "$1"
+}
+
+_snapshot_tag_bytes(){
+  awk -v t="/* $2 */" 'NR>2 && index($0,t){s+=$2} END{printf "%.0f", s+0}' <<< "$1"
 }
 
 # Au moins un compte client existe-t-il, tous protocoles confondus ?
@@ -243,7 +244,7 @@ _has_tag_account(){
 # N'assure PAS le verrou : l'appelant doit déjà le détenir.
 _accumulate(){
   local raw last delta today cur i o f
-  i=$(_chain_bytes "$CIN"); o=$(_chain_bytes "$COUT"); f=$(_chain_bytes "$CFWD")
+  i=$(_snapshot_bytes "$SNAP_IN"); o=$(_snapshot_bytes "$SNAP_OUT"); f=$(_snapshot_bytes "$SNAP_FWD")
   raw=$(( i + o + f ))
 
   # On NE remet PLUS les compteurs à zéro. On mémorise leur dernière valeur
@@ -292,7 +293,7 @@ _accumulate_tag(){
   local tag="$1" lastf dbf raw last delta today cur ti to tf
   lastf="$DBDIR/.conso.last.$tag"
   dbf="$DBDIR/conso_$tag"
-  ti=$(_tag_bytes "$CIN" "$tag"); to=$(_tag_bytes "$COUT" "$tag"); tf=$(_tag_bytes "$CFWD" "$tag")
+  ti=$(_snapshot_tag_bytes "$SNAP_IN" "$tag"); to=$(_snapshot_tag_bytes "$SNAP_OUT" "$tag"); tf=$(_snapshot_tag_bytes "$SNAP_FWD" "$tag")
   raw=$(( ti + to + tf ))
   last=$(cat "$lastf" 2>/dev/null); last=${last:-0}
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -318,56 +319,56 @@ _accumulate_tag(){
 # met aussi à jour le détail par protocole. Un appel oublié quelque part
 # casserait uniquement le détail par protocole, jamais le total global.
 _accumulate_all(){
+  # Si une lecture iptables échoue, on ne touche surtout pas aux références
+  # `conso.last` : cela évite qu'un snapshot vide soit pris pour un reset.
+  _snapshot_chains || return 0
   _accumulate
   local tag
   for tag in $CONSO_TAGS; do _accumulate_tag "$tag"; done
 }
 
+_chains_ready(){
+  RULES_IN=$(iptables -w 3 -S "$CIN" 2>/dev/null) || return 1
+  RULES_OUT=$(iptables -w 3 -S "$COUT" 2>/dev/null) || return 1
+  RULES_FWD=$(iptables -w 3 -S "$CFWD" 2>/dev/null) || return 1
+  printf '%s\n' "$RULES_OUT" | grep -q -- '--comment vmess' || return 1
+  printf '%s\n' "$RULES_OUT" | grep -q -- '--comment vless' || return 1
+  printf '%s\n' "$RULES_OUT" | grep -q -- '--comment trojan' || return 1
+  printf '%s\n' "$RULES_IN"  | grep -q -- '--dport 8388.*--comment shadowsocks' || return 1
+  printf '%s\n' "$RULES_IN"  | grep -q -- '--dport 443.*--comment hysteria' || return 1
+  printf '%s\n' "$RULES_FWD" | grep -q -- '-i wg0.*--comment wg' || return 1
+  printf '%s\n' "$RULES_FWD" | grep -q -- '-i ppp+.*--comment ppp' || return 1
+  printf '%s\n' "$RULES_OUT" | grep -q -- '--dports 7100,7200,7300.*--comment ssh_bundle' || return 1
+  return 0
+}
+
+_ensure_jump_first(){
+  local base="$1" counter="$2" spec first
+  spec=$(iptables -w 3 -S "$base" 2>/dev/null) || return 0
+  first=$(printf '%s\n' "$spec" | awk '$1=="-A"{print; exit}')
+  [ "$first" = "-A $base -j $counter" ] && return 0
+  while iptables -w 3 -D "$base" -j "$counter" 2>/dev/null; do :; done
+  iptables -w 3 -I "$base" -j "$counter" 2>/dev/null
+}
+
 poll(){
   command -v iptables >/dev/null 2>&1 || return 0
+  local _wait="${1:-5}"
   (
-  flock -w 5 201 || return 0
-  # IMPORTANT : setup_chains() n'est appelé que si la chaîne est absente
-  # ou si un ancien format sans étiquettes par protocole est encore actif.
-  # Il fait un FLUSH complet (-F) avant de reconstruire, ce qui
-  # remet TOUS les compteurs à zéro. L'appeler à chaque relevé (erreur
-  # commise puis corrigée le jour même) mesurait alors un `raw` toujours
-  # proche de zéro juste après son propre flush : le vrai trafic accumulé
-  # entre deux relevés n'était quasiment jamais capturé — la conso restait
-  # figée malgré un usage réel (confirmé par `nvpanel-conso debug` montrant
-  # plusieurs Mo comptés dans les règles mais "Dernier relevé brut : 0").
-  # Pour ajouter les comptes créés après coup SANS perdre l'historique des
-  # compteurs, on utilise ensure_accounts() (ci-dessus), qui n'AJOUTE que
-  # les règles manquantes et ne flushe jamais rien.
-  if ! iptables -w 3 -nL "$CIN" >/dev/null 2>&1 || \
-     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vmess' || \
-     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment vless' || \
-     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--comment trojan' || \
-     ! iptables -w 3 -S "$CIN"  2>/dev/null | grep -q -- '--dport 8388.*--comment shadowsocks' || \
-     ! iptables -w 3 -S "$CIN"  2>/dev/null | grep -q -- '--dport 443.*--comment hysteria' || \
-     ! iptables -w 3 -S "$CFWD" 2>/dev/null | grep -q -- '-i wg0.*--comment wg' || \
-     ! iptables -w 3 -S "$CFWD" 2>/dev/null | grep -q -- '-i ppp+.*--comment ppp' || \
-     ! iptables -w 3 -S "$COUT" 2>/dev/null | grep -q -- '--dports 7100,7200,7300.*--comment ssh_bundle'; then
+  flock -w "$_wait" 201 || return 0
+  # Trois `iptables -S` seulement au lieu de relire les mêmes chaînes pour
+  # chaque test. Une reconstruction complète reste réservée aux règles absentes.
+  if ! _chains_ready; then
     setup_chains
   fi
   ensure_accounts
-  # Réaffirme la position du renvoi À CHAQUE relevé, pas seulement à la
-  # création des chaînes. Motif : les installateurs de protocoles (ex.
-  # install-slowdns sur le port UDP 5300, exactement celui compté plus bas)
-  # font `iptables -I INPUT ... -j ACCEPT`, qui s'insère TOUJOURS en tête
-  # de chaîne. Chaque installation/réinstallation d'un protocole APRÈS que
-  # nvpanel-conso a créé son renvoi le repousse alors plus loin — jusqu'à
-  # ce qu'une règle ACCEPT plus haute intercepte le trafic concerné et
-  # empêche définitivement qu'il atteigne la règle de comptage (le
-  # compteur se fige alors silencieusement, sans erreur visible). Un
-  # delete-puis-réinsertion est idempotent et sans risque : il ne fait que
-  # garantir que le renvoi reste bien la toute première règle.
-  while iptables -w 3 -D INPUT  -j "$CIN"  2>/dev/null; do :; done
-  iptables -w 3 -I INPUT  -j "$CIN"  2>/dev/null
-  while iptables -w 3 -D OUTPUT -j "$COUT" 2>/dev/null; do :; done
-  iptables -w 3 -I OUTPUT -j "$COUT" 2>/dev/null
-  while iptables -w 3 -D FORWARD -j "$CFWD" 2>/dev/null; do :; done
-  iptables -w 3 -I FORWARD -j "$CFWD" 2>/dev/null
+
+  # Les renvois doivent rester les premières règles, mais on ne fait plus le
+  # coûteux delete+insert à chaque poll si leur position est déjà correcte.
+  _ensure_jump_first INPUT "$CIN"
+  _ensure_jump_first OUTPUT "$COUT"
+  _ensure_jump_first FORWARD "$CFWD"
+
   _accumulate_all
   ) 201>"$DBDIR/.conso.lock"
   return 0
@@ -375,7 +376,7 @@ poll(){
 
 
 read_vals(){ # affiche "hier|aujourdhui|mois" en octets
-  poll >/dev/null 2>&1
+  poll 1 >/dev/null 2>&1
   local t y m today yest month
   today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
   # "%.0f" et non "%d" : même correction que dans _chain_bytes ci-dessus,
@@ -393,7 +394,7 @@ read_vals(){ # affiche "hier|aujourdhui|mois" en octets
 read_vals_tag(){
   local tag="$1" dbf t y m today yest month
   dbf="$DBDIR/conso_$tag"
-  poll >/dev/null 2>&1
+  poll 1 >/dev/null 2>&1
   today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
   t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
   y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
