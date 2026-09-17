@@ -12,6 +12,12 @@
 #  Un téléchargement fait par le serveur est OUTPUT vers le
 #  port 443 DISTANT (et non depuis notre port 443) : ignoré.
 # ============================================================
+# Les crons utilisateur Debian/Ubuntu peuvent démarrer avec un PATH réduit
+# (/usr/bin:/bin). iptables se trouve normalement dans /usr/sbin : sans ce
+# PATH explicite, `nvpanel-conso poll` lancé par cron quittait immédiatement
+# alors que la même commande fonctionnait depuis le shell root.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 DBDIR=/etc/nvpanel/db
 DB="$DBDIR/conso"
 umask 077

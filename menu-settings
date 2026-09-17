@@ -8,7 +8,12 @@ ui_enter; trap ui_leave EXIT INT TERM HUP
 BKDIR=/root
 umask 077
 
-header(){ banner; center " ⚙️  PARAMÈTRES SYSTÈME " "${BOLD}${WHT}"; line; }
+section_panel(){
+  top
+  center "$1" "${BOLD}${WHT}"
+  bot
+}
+header(){ banner; section_panel " ⚙️  PARAMÈTRES SYSTÈME "; }
 valid_domain(){
   local d="$1" label
   [ "${#d}" -le 253 ] && [[ "$d" == *.* ]] && [[ "$d" != *..* ]] || return 1
@@ -21,7 +26,7 @@ valid_domain(){
 
 traffic_report(){
   local LC_ALL=C.UTF-8
-  header; center " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES " "${BOLD}${WHT}"; line
+  header; section_panel " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES "
   [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
   local DB=/etc/nvpanel/db/conso
   [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
@@ -69,7 +74,7 @@ traffic_report(){
 }
 
 set_domain(){
-  header; center " 🌐  DOMAINE DU SERVEUR " "${BOLD}${WHT}"; line
+  header; section_panel " 🌐  DOMAINE DU SERVEUR "
   printf "   ${GRY}Actuel :${NC} %s\n\n" "$(cat /etc/nvpanel/domain 2>/dev/null || echo 'non configuré')"
   ask " Domaine complet (ex. vpn.mondomaine.com) : " d
   d=$(printf '%s' "$d" | tr -d '\r\n\t ' | tr 'A-Z' 'a-z')
@@ -233,7 +238,7 @@ enable_bbr(){
   pause
 }
 speedtest(){
-  header; center " 📶  TEST DE VITESSE DU SERVEUR " "${BOLD}${WHT}"; echo
+  header; section_panel " 📶  TEST DE VITESSE DU SERVEUR "; echo
   local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')
   printf "   ${GRY}⬇  Mesure de la vitesse en cours…${NC}\n\n"
 
@@ -274,7 +279,7 @@ speedtest(){
   pause
 }
 restart_services(){
-  header; center " ♻️  REDÉMARRAGE DES SERVICES " "${BOLD}${WHT}"; line
+  header; section_panel " ♻️  REDÉMARRAGE DES SERVICES "
   echo
   loading "Redémarrage des services"
   local s pair total=0 done=0
@@ -306,7 +311,7 @@ restart_services(){
   pause
 }
 renew_cert(){
-  header; center " 📜  RENOUVELLEMENT DES CERTIFICATS " "${BOLD}${WHT}"; line
+  header; section_panel " 📜  RENOUVELLEMENT DES CERTIFICATS "
   if ! command -v certbot >/dev/null 2>&1; then
     err "certbot n'est pas installé (le TLS n'a jamais été activé)."; pause; return
   fi
@@ -414,7 +419,7 @@ change_banner(){
   esac
 }
 script_info(){
-  header; center " ℹ️  À PROPOS " "${BOLD}${WHT}"; echo
+  header; section_panel " ℹ️  À PROPOS "; echo
   printf "   ${WHT}%s${NC}\n" "$BRAND"
   printf "   ${GRY}Panel de gestion premium multi-protocoles${NC}\n"
   printf "   ${CYN}Telegram : %s${NC}\n\n" "$CONTACT"
@@ -426,7 +431,7 @@ script_info(){
   pause
 }
 reset_traffic(){
-  header; center " 🧹  RÉINITIALISER LA CONSOMMATION " "${BOLD}${WHT}"; line
+  header; section_panel " 🧹  RÉINITIALISER LA CONSOMMATION "
   warn "Remet à zéro les compteurs (hier / aujourd'hui / mois)."
   printf "   ${RED}➤ Confirmer ? (o/n) : ${NC}"; ask "" r
   confirm "$r" || { warn "Annulé."; pause; return; }

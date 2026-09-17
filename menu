@@ -21,6 +21,27 @@ run() {
 home_top(){ _edge "┏" "┓" "PROTOCOLES & SERVICES"; }
 home_mid(){ _edge "┣" "┫" "OUTILS & ADMINISTRATION"; }
 home_bot(){ bot; }
+section_panel(){
+  top
+  center "$1" "${BOLD}${WHT}"
+  bot
+}
+
+# Le menu principal doit afficher la consommation réellement relevée AU MOMENT
+# où il s'ouvre/revient à l'écran, pas la valeur du cache précédent.
+refresh_home_conso(){
+  [ -x /usr/local/bin/nvpanel-conso ] || return 0
+  local r cache=/run/nvpanel-conso-all.cache tmp
+  r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null) || return 0
+  case "$r" in
+    *'|'*'|'*)
+      tmp="${cache}.${BASHPID}"
+      printf '%s\n' "$r" > "$tmp" && mv -f "$tmp" "$cache"
+      rm -f "$tmp" 2>/dev/null
+      ;;
+  esac
+}
+
 home_entry(){
   local n="$1" e="$2" t="$3"
   printf "${CYN}┃${NC} ${GRN}[%s]${NC} %s ${WHT}%s${NC}" "$n" "$e" "$(_upper "$t")"
@@ -28,7 +49,7 @@ home_entry(){
 }
 
 services_status() {
-  banner; center " 📊  STATUT DES SERVICES " "${BOLD}${WHT}"; line
+  banner; section_panel " 📊  STATUT DES SERVICES "
   local s name
   for pair in \
     "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray (Vmess/Vless/Trojan/SS)" \
@@ -48,7 +69,7 @@ services_status() {
 }
 
 reboot_server() {
-  banner; center " 🔁  REDÉMARRAGE DU SERVEUR " "${BOLD}${WHT}"; line
+  banner; section_panel " 🔁  REDÉMARRAGE DU SERVEUR "
   warn "Le serveur va redémarrer. Ta session SSH sera coupée quelques instants."
   ask " Confirmer le redémarrage ? (o/n) : " r
   if confirm "$r"; then
@@ -57,7 +78,7 @@ reboot_server() {
 }
 
 optimize_server() {
-  banner; center " 🚀  OPTIMISATION DU SERVEUR " "${BOLD}${WHT}"; line
+  banner; section_panel " 🚀  OPTIMISATION DU SERVEUR "
   printf "   ${GRY}Nettoyage sûr (n'affecte ni les comptes ni la config)…${NC}\n\n"
   local ram_b disk_b ram_a disk_a rf df_
   ram_b=$(free -m | awk '/Mem:/{print $3}')
@@ -85,6 +106,7 @@ optimize_server() {
 }
 
 while true; do
+  refresh_home_conso
   infobox
   home_top
   home_entry "01" "🔒" "SSH · SlowDNS · UDP"
