@@ -182,53 +182,55 @@ _hr(){ awk -v b="${1:-0}" 'BEGIN{ if(b=="null"||b==""){b=0}; split("o Ko Mo Go T
 _fmtd(){ [ -n "$1" ] && date -d "$1" +"%d-%m-%Y" 2>/dev/null || printf '%s' "$1"; }
 
 # renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
-# renvoie "hier|aujourdhui|mois" en octets (ou 0 si indispo)
 # Sans argument : total global (accueil). Avec un argument (ex. "vmess",
 # "ssh_bundle") : consommation de ce seul protocole, pour les menus dédiés.
-_conso_raw(){
-  # Consommation des CLIENTS uniquement. Aucun repli sur vnstat.
-  # nvpanel-conso reste l'unique source réelle ; son calcul peut toutefois
-  # prendre > 1 s sur un serveur chargé. Pour ne plus bloquer l'affichage,
-  # on rend immédiatement la dernière mesure valide et on la rafraîchit en
-  # arrière-plan. Fenêtre courte (2 s), jamais de valeur inventée.
-  local tag="$1" r key cache lock now mt age tmp
-  key="${tag:-all}"; key=${key//[^a-zA-Z0-9_.-]/_}
-  cache="/run/nvpanel-conso-${key}.cache"
-  lock="/run/nvpanel-conso-${key}.lock"
+#
+# IMPORTANT PERFORMANCE : l'affichage ne lance JAMAIS un poll iptables en
+# premier plan. Le cron maintient déjà les historiques ; le menu lit donc
+# immédiatement la dernière valeur réellement enregistrée puis déclenche un
+# rafraîchissement en arrière-plan. Aucun chiffre n'est inventé et aucune
+# donnée n'est effacée.
+_conso_db_read(){
+  local tag="${1:-}" dbf today yest month t y m
+  if [ -n "$tag" ]; then dbf="/etc/nvpanel/db/conso_$tag"
+  else dbf="/etc/nvpanel/db/conso"; fi
+  today=$(date +%F); yest=$(date -d 'yesterday' +%F 2>/dev/null); month=$(date +%Y-%m)
+  t=$(awk -F'|' -v d="$today" '$1==d{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
+  y=$(awk -F'|' -v d="$yest"  '$1==d{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
+  m=$(awk -F'|' -v p="$month" 'index($1,p)==1{s+=$2} END{printf "%.0f", s+0}' "$dbf" 2>/dev/null)
+  printf '%s|%s|%s\n' "${y:-0}" "${t:-0}" "${m:-0}"
+}
+
+# Un SEUL rafraîchissement iptables peut tourner en arrière-plan, quel que soit
+# le menu/protocole ouvert. Cela évite qu'une navigation rapide lance plusieurs
+# `nvpanel-conso read` concurrents (chacun faisait un poll complet et pouvait
+# ralentir tout le panel). Le cron reste la collecte principale toutes les 5 min.
+_conso_refresh_async(){
+  [ -x /usr/local/bin/nvpanel-conso ] || return 0
+  local lock=/run/nvpanel-conso-ui-refresh.lock stamp=/run/nvpanel-conso-ui-refresh.stamp
+  local now mt age
   now=$(date +%s)
+  mt=$(stat -c %Y "$stamp" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+  [ "$age" -lt 2 ] 2>/dev/null && return 0
+  (
+    mkdir "$lock" 2>/dev/null || exit 0
+    trap 'rmdir "$lock" 2>/dev/null' EXIT
+    # Revalide après acquisition du verrou : un autre écran a pu finir juste avant.
+    now=$(date +%s); mt=$(stat -c %Y "$stamp" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+    [ "$age" -lt 2 ] 2>/dev/null && exit 0
+    /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
+    touch "$stamp" 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
+  return 0
+}
 
-  if [ -s "$cache" ]; then
-    r=$(head -n1 "$cache" 2>/dev/null)
-    case "$r" in
-      *'|'*'|'*)
-        mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
-        if [ "$age" -ge 2 ] 2>/dev/null && [ -x /usr/local/bin/nvpanel-conso ]; then
-          (
-            mkdir "$lock" 2>/dev/null || exit 0
-            trap 'rmdir "$lock" 2>/dev/null' EXIT
-            if [ -n "$tag" ]; then rr=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
-            else rr=$(/usr/local/bin/nvpanel-conso read 2>/dev/null); fi
-            case "$rr" in
-              *'|'*'|'*) tmp="${cache}.${BASHPID}"; printf '%s\n' "$rr" > "$tmp" && mv "$tmp" "$cache" ;;
-            esac
-          ) </dev/null >/dev/null 2>&1 &
-        fi
-        printf '%s\n' "$r"
-        return
-        ;;
-    esac
-  fi
-
-  # Premier passage uniquement : on attend une vraie mesure afin de ne jamais
-  # afficher 0 par défaut à la place d'une consommation existante.
-  if [ -x /usr/local/bin/nvpanel-conso ]; then
-    if [ -n "$tag" ]; then r=$(/usr/local/bin/nvpanel-conso read "$tag" 2>/dev/null)
-    else r=$(/usr/local/bin/nvpanel-conso read 2>/dev/null); fi
-    case "$r" in
-      *'|'*'|'*) printf '%s\n' "$r" | tee "$cache" 2>/dev/null; return ;;
-    esac
-  fi
-  echo "0|0|0"
+_conso_raw(){
+  local tag="${1:-}" r
+  # Affichage immédiat de la dernière mesure réellement enregistrée. Le poll
+  # part ensuite en arrière-plan : aucune ouverture de menu n'attend iptables.
+  r=$(_conso_db_read "$tag")
+  _conso_refresh_async
+  case "$r" in *'|'*'|'*) printf '%s\n' "$r" ;; *) printf '0|0|0\n' ;; esac
 }
 
 # ---- En-tête système ---------------------------------------
@@ -354,6 +356,54 @@ _xray_online() {
   _online_uniq_port "$xport"
 }
 
+# Cache très court des commandes Xray : la détection réelle reste
+# `nvpanel-cli xonline`, mais elle ne bloque plus chaque réaffichage du menu.
+_xonline_cached(){
+  local proto="${1:-all}" key cache lock now mt age r tmp rr
+  key=${proto//[^a-zA-Z0-9_.-]/_}
+  cache="/run/nvpanel-xonline-${key}.cache"; lock="/run/nvpanel-xonline-${key}.lock"
+  now=$(date +%s)
+  if [ -s "$cache" ]; then
+    r=$(head -n1 "$cache" 2>/dev/null)
+    case "$r" in ''|*[!0-9]*) r=0 ;; esac
+    mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+    if [ "$age" -ge 2 ] 2>/dev/null; then
+      (
+        mkdir "$lock" 2>/dev/null || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        rr=$(/usr/local/bin/nvpanel-cli xonline "$proto" 2>/dev/null); case "$rr" in ''|*[!0-9]*) exit 0 ;; esac
+        tmp="${cache}.${BASHPID}"; printf '%s\n' "$rr" > "$tmp" && mv "$tmp" "$cache"
+      ) </dev/null >/dev/null 2>&1 &
+    fi
+    printf '%s\n' "$r"; return
+  fi
+  r=$(/usr/local/bin/nvpanel-cli xonline "$proto" 2>/dev/null); case "$r" in ''|*[!0-9]*) r=0 ;; esac
+  tmp="${cache}.${BASHPID}"; printf '%s\n' "$r" > "$tmp" 2>/dev/null && mv "$tmp" "$cache" 2>/dev/null
+  printf '%s\n' "$r"
+}
+
+_hysteria_online_cached(){
+  local cache=/run/nvpanel-hysteria-online.cache lock=/run/nvpanel-hysteria-online.lock now mt age r tmp rr
+  now=$(date +%s)
+  if [ -s "$cache" ]; then
+    r=$(head -n1 "$cache" 2>/dev/null); case "$r" in ''|*[!0-9]*) r=0 ;; esac
+    mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+    if [ "$age" -ge 2 ] 2>/dev/null && [ -x /usr/local/bin/nvpanel-hysteria ]; then
+      (
+        mkdir "$lock" 2>/dev/null || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        rr=$(/usr/local/bin/nvpanel-hysteria online 2>/dev/null); case "$rr" in ''|*[!0-9]*) exit 0 ;; esac
+        tmp="${cache}.${BASHPID}"; printf '%s\n' "$rr" > "$tmp" && mv "$tmp" "$cache"
+      ) </dev/null >/dev/null 2>&1 &
+    fi
+    printf '%s\n' "$r"; return
+  fi
+  if [ -x /usr/local/bin/nvpanel-hysteria ]; then r=$(/usr/local/bin/nvpanel-hysteria online 2>/dev/null); else r=0; fi
+  case "$r" in ''|*[!0-9]*) r=0 ;; esac
+  tmp="${cache}.${BASHPID}"; printf '%s\n' "$r" > "$tmp" 2>/dev/null && mv "$tmp" "$cache" 2>/dev/null
+  printf '%s\n' "$r"
+}
+
 # PPP est la source en ligne la plus lente après SSH (~2 s sur le VPS testé).
 # Une ouverture explicite du menu force une lecture réelle ; les retours et les
 # sous-menus réutilisent au maximum 2 secondes de cache pendant qu'un refresh
@@ -407,28 +457,25 @@ stats() {
   # Les sources lentes sont indépendantes : les exécuter en parallèle évite
   # d'additionner 3 s SSH + 2 s PPP + Xray + consommation. Le temps d'attente
   # devient celui de la source la plus lente, sans changer la méthode de comptage.
-  local on_xray=0 on_wg=0 on_l2=0 on_pp=0 on_sst=0 ppp_online=""
+  local on_xray=0 on_wg=0 on_l2=0 on_pp=0 on_sst=0 on_hy=0 ppp_online=""
   local _sd _conso _cache _tmp
   _sd=$(mktemp -d /run/nvpanel-stats.XXXXXX 2>/dev/null)
   if [ -n "$_sd" ] && [ -d "$_sd" ]; then
     (_ssh_online > "$_sd/ssh" 2>/dev/null) &
     if [ $((vm + vl + tr + ss)) -gt 0 ]; then
-      (nvpanel-cli xonline all > "$_sd/xray" 2>/dev/null) &
+      (_xonline_cached all > "$_sd/xray" 2>/dev/null) &
     else
       printf '0\n' > "$_sd/xray"
     fi
     (wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}' > "$_sd/wg") &
+    if [ "$hy" -gt 0 ] 2>/dev/null; then (_hysteria_online_cached > "$_sd/hy" 2>/dev/null) &
+    else printf '0\n' > "$_sd/hy"; fi
     if [ $((l2 + pp + sst)) -gt 0 ]; then
-      if [ "$fresh" = "fresh" ]; then (_ppp_online_all fresh > "$_sd/ppp" 2>/dev/null) &
-      else (_ppp_online_all > "$_sd/ppp" 2>/dev/null) & fi
+      (_ppp_online_all > "$_sd/ppp" 2>/dev/null) &
     else
       : > "$_sd/ppp"
     fi
-    if [ "$fresh" = "fresh" ] && [ -x /usr/local/bin/nvpanel-conso ]; then
-      (/usr/local/bin/nvpanel-conso read > "$_sd/conso" 2>/dev/null) &
-    else
-      (_conso_raw > "$_sd/conso" 2>/dev/null) &
-    fi
+    (_conso_raw > "$_sd/conso" 2>/dev/null) &
 
     local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
     bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
@@ -446,9 +493,11 @@ stats() {
     on_ssh=$(head -n1 "$_sd/ssh" 2>/dev/null); on_ssh=${on_ssh:-0}
     on_xray=$(head -n1 "$_sd/xray" 2>/dev/null); on_xray=${on_xray:-0}
     on_wg=$(head -n1 "$_sd/wg" 2>/dev/null); on_wg=${on_wg:-0}
+    on_hy=$(head -n1 "$_sd/hy" 2>/dev/null); on_hy=${on_hy:-0}
     case "$on_ssh" in ''|*[!0-9]*) on_ssh=0 ;; esac
     case "$on_xray" in ''|*[!0-9]*) on_xray=0 ;; esac
     case "$on_wg" in ''|*[!0-9]*) on_wg=0 ;; esac
+    case "$on_hy" in ''|*[!0-9]*) on_hy=0 ;; esac
     ppp_online=$(cat "$_sd/ppp" 2>/dev/null)
     on_l2=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="l2tp"{print $2+0}'); on_l2=${on_l2:-0}
     on_pp=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="pptp"{print $2+0}'); on_pp=${on_pp:-0}
@@ -458,18 +507,20 @@ stats() {
   else
     # Repli sûr si /run n'autorise exceptionnellement pas mktemp.
     on_ssh=$(_ssh_online); on_ssh=${on_ssh:-0}
-    [ $((vm + vl + tr + ss)) -gt 0 ] && on_xray=$(nvpanel-cli xonline all 2>/dev/null); on_xray=${on_xray:-0}
+    [ $((vm + vl + tr + ss)) -gt 0 ] && on_xray=$(_xonline_cached all); on_xray=${on_xray:-0}
     on_wg=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
+    [ "$hy" -gt 0 ] 2>/dev/null && on_hy=$(_hysteria_online_cached); on_hy=${on_hy:-0}
     case "$on_ssh" in ''|*[!0-9]*) on_ssh=0 ;; esac
     case "$on_xray" in ''|*[!0-9]*) on_xray=0 ;; esac
     case "$on_wg" in ''|*[!0-9]*) on_wg=0 ;; esac
+    case "$on_hy" in ''|*[!0-9]*) on_hy=0 ;; esac
     if [ $((l2 + pp + sst)) -gt 0 ]; then
-      if [ "$fresh" = "fresh" ]; then ppp_online=$(_ppp_online_all fresh); else ppp_online=$(_ppp_online_all); fi
+      ppp_online=$(_ppp_online_all)
       on_l2=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="l2tp"{print $2+0}'); on_l2=${on_l2:-0}
       on_pp=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="pptp"{print $2+0}'); on_pp=${on_pp:-0}
       on_sst=$(printf '%s\n' "$ppp_online" | awk -F'|' '$1=="sstp"{print $2+0}'); on_sst=${on_sst:-0}
     fi
-    if [ "$fresh" = "fresh" ] && [ -x /usr/local/bin/nvpanel-conso ]; then _conso=$(/usr/local/bin/nvpanel-conso read 2>/dev/null); else _conso=$(_conso_raw); fi
+    _conso=$(_conso_raw)
     local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
     bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
     bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
@@ -487,16 +538,12 @@ stats() {
   # cache de référence pour les retours suivants, sans second poll bloquant.
   case "$_conso" in
     *'|'*'|'*)
-      if [ "$fresh" = "fresh" ]; then
-        _cache=/run/nvpanel-conso-all.cache; _tmp="${_cache}.${BASHPID}"
-        printf '%s\n' "$_conso" > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$_cache" 2>/dev/null
-        rm -f "$_tmp" 2>/dev/null
-      fi
+      : # cache géré directement par _conso_raw
       ;;
     *) _conso="0|0|0" ;;
   esac
 
-  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst ))
+  online=$(( on_ssh + on_xray + on_wg + on_l2 + on_pp + on_sst + on_hy ))
   IFS='|' read -r hier auj mois <<< "$_conso"
 
   printf "${CYN}┃${NC} ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}📦 Total:${NC} ${WHT}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$online" "$total" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
@@ -517,7 +564,7 @@ proto_dash() {
       local p="${mode#port:}"
       online=0
       if [ "$total" -gt 0 ]; then
-        if [ "$dbf" = "shadowsocks" ]; then online=$(nvpanel-cli xonline ss 2>/dev/null)
+        if [ "$dbf" = "shadowsocks" ]; then online=$(_xonline_cached ss)
         else online=$(_online_uniq_port "$p"); fi
       fi
       online=${online:-0}
@@ -531,7 +578,7 @@ proto_dash() {
       # (même échantillonnage que « connecté depuis »), donc chaque menu
       # affiche enfin son propre chiffre.
       online=0
-      [ "$total" -gt 0 ] && online=$(nvpanel-cli xonline "$dbf" 2>/dev/null); online=${online:-0}
+      [ "$total" -gt 0 ] && online=$(_xonline_cached "$dbf"); online=${online:-0}
       blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')

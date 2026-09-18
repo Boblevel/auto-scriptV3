@@ -27,7 +27,10 @@ valid_domain(){
 traffic_report(){
   local LC_ALL=C.UTF-8
   header; section_panel " 📊  BILAN DU TRAFIC — TOUS PROTOCOLES "
-  [ -x /usr/local/bin/nvpanel-conso ] && /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
+  # Le bilan affiche immédiatement le dernier historique validé. Le relevé
+  # iptables est déclenché en arrière-plan par la bibliothèque UI afin que
+  # l'ouverture de cette option ne reste plus bloquée plusieurs secondes.
+  _conso_refresh_async
   local DB=/etc/nvpanel/db/conso
   [ -s "$DB" ] || { echo; warn "Aucune donnée de consommation pour l'instant."; pause; return; }
 
