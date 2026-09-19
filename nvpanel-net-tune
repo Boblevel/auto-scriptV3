@@ -1,0 +1,130 @@
+#!/bin/bash
+# ============================================================
+#  RHAFF SERVICE · réglage réseau ciblé
+#  - buffers UDP mesurés insuffisants
+#  - RPS/RFS uniquement sur NIC mono-file
+#  Ne touche ni au MTU, ni à BBR/fq, ni aux protocoles.
+# ============================================================
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+
+SYSCTL_FILE=/etc/sysctl.d/99-nvpanel-network.conf
+UNIT_FILE=/etc/systemd/system/nvpanel-net-tune.service
+RPS_ENTRIES=32768
+RBUF_DEFAULT=1048576
+RBUF_MAX=16777216
+UDP_RMEM_MIN=16384
+
+[ "${EUID:-$(id -u)}" -eq 0 ] || exit 1
+
+_default_iface(){
+  ip -4 route show default 2>/dev/null | awk '$1=="default"{print $5; exit}'
+}
+
+_cpu_mask_without_cpu0(){
+  local n="$1"
+  python3 - "$n" <<'PY'
+import sys
+n = int(sys.argv[1])
+if n <= 1:
+    print("0")
+    raise SystemExit
+mask = sum(1 << i for i in range(1, n))
+parts = []
+while mask:
+    parts.append(f"{mask & 0xffffffff:08x}")
+    mask >>= 32
+parts.reverse()
+parts[0] = parts[0].lstrip("0") or "0"
+print(",".join(parts))
+PY
+}
+
+_write_config(){
+  mkdir -p /etc/sysctl.d /etc/systemd/system || return 1
+  cat > "$SYSCTL_FILE" <<EOF_SYSCTL
+# RHAFF SERVICE - réglages réseau validés sur charge réelle
+# Buffer UDP : le socket SlowDNS à 212992 octets perdait des paquets.
+net.core.rmem_max = $RBUF_MAX
+net.core.rmem_default = $RBUF_DEFAULT
+net.ipv4.udp_rmem_min = $UDP_RMEM_MIN
+# RFS : table globale. L'activation par file est faite dynamiquement ci-dessous.
+net.core.rps_sock_flow_entries = $RPS_ENTRIES
+EOF_SYSCTL
+  chmod 644 "$SYSCTL_FILE" || return 1
+
+  cat > "$UNIT_FILE" <<'EOF_UNIT'
+[Unit]
+Description=RHAFF SERVICE - optimisation réception réseau
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nvpanel-net-tune apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+  chmod 644 "$UNIT_FILE" || return 1
+}
+
+_apply_sysctl(){
+  # Applique uniquement les paramètres RHAFF ci-dessus. Pas de sysctl --system :
+  # on évite de réappliquer d'autres réglages tiers du VPS.
+  sysctl -w "net.core.rmem_max=$RBUF_MAX" >/dev/null 2>&1 || return 1
+  sysctl -w "net.core.rmem_default=$RBUF_DEFAULT" >/dev/null 2>&1 || return 1
+  sysctl -w "net.ipv4.udp_rmem_min=$UDP_RMEM_MIN" >/dev/null 2>&1 || return 1
+  sysctl -w "net.core.rps_sock_flow_entries=$RPS_ENTRIES" >/dev/null 2>&1 || return 1
+}
+
+_apply_rps(){
+  local iface cpus mask q queues=()
+  iface=$(_default_iface)
+  [ -n "$iface" ] || return 0
+  [ -d "/sys/class/net/$iface/queues" ] || return 0
+
+  shopt -s nullglob
+  queues=(/sys/class/net/"$iface"/queues/rx-*)
+  shopt -u nullglob
+
+  # Une NIC multi-file possède déjà son parallélisme matériel (RSS). Le réglage
+  # est volontairement limité au cas diagnostiqué : une seule file RX.
+  [ "${#queues[@]}" -eq 1 ] || return 0
+  cpus=$(nproc 2>/dev/null || echo 1)
+  case "$cpus" in ''|*[!0-9]*) cpus=1 ;; esac
+  [ "$cpus" -gt 1 ] || return 0
+
+  mask=$(_cpu_mask_without_cpu0 "$cpus") || return 1
+  [ -n "$mask" ] && [ "$mask" != 0 ] || return 0
+
+  q="${queues[0]}"
+  [ -w "$q/rps_cpus" ] || return 1
+  printf '%s\n' "$mask" > "$q/rps_cpus" || return 1
+  if [ -w "$q/rps_flow_cnt" ]; then
+    printf '%s\n' "$RPS_ENTRIES" > "$q/rps_flow_cnt" || return 1
+  fi
+}
+
+_apply(){
+  _apply_sysctl || return 1
+  _apply_rps || return 1
+}
+
+case "${1:-apply}" in
+  apply)
+    _apply
+    ;;
+  install)
+    _write_config || exit 1
+    systemctl daemon-reload >/dev/null 2>&1 || exit 1
+    systemctl enable nvpanel-net-tune.service >/dev/null 2>&1 || exit 1
+    _apply
+    ;;
+  *)
+    echo "usage: nvpanel-net-tune apply|install" >&2
+    exit 2
+    ;;
+esac

@@ -176,6 +176,7 @@ for pair in \
   "menu-bot:/usr/local/bin/menu-bot" "menu-settings:/usr/local/bin/menu-settings" \
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli" \
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit" \
+  "nvpanel-net-tune:/usr/local/bin/nvpanel-net-tune" \
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean" \
   "nvpanel-conso:/usr/local/bin/nvpanel-conso" \
   "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp" \
@@ -212,7 +213,7 @@ After=network-online.target xray.service nginx.service
 Wants=network-online.target
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 1; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/nvpanel-cli xenforce >/dev/null 2>&1; sleep 5; done'
 Restart=always
 RestartSec=2
 [Install]
@@ -224,6 +225,11 @@ systemctl enable --now nvpanel-xlimit >/dev/null 2>&1 || die "Le service de limi
 sleep 1
 systemctl is-active --quiet nvpanel-limit || die "Le service de limite SSH s'est arrêté après son démarrage."
 systemctl is-active --quiet nvpanel-xlimit || die "Le service de limite Xray s'est arrêté après son démarrage."
+# Réglages réseau validés : appliqués avant le démarrage de SlowDNS afin que
+# son socket UDP soit créé directement avec le bon buffer.
+[ -x /usr/local/bin/nvpanel-net-tune ] \
+  && /usr/local/bin/nvpanel-net-tune install >/dev/null 2>&1 \
+  || die "Application des réglages réseau échouée."
 ( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null \
   || die "Installation de la tâche de quota échouée."
 # compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)

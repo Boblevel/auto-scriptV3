@@ -20,7 +20,8 @@ chmod 700 "$BACKUP_DIR" 2>/dev/null
 _backup_paths=()
 for _path in etc/nvpanel usr/local/etc/xray etc/nginx/conf.d/rhaff.conf \
              etc/nginx/nvpanel-ws.conf etc/wireguard etc/ppp etc/hysteria \
-             etc/default/dropbear; do
+             etc/default/dropbear etc/sysctl.d/99-nvpanel-network.conf \
+             etc/systemd/system/nvpanel-net-tune.service; do
   [ -e "/$_path" ] && _backup_paths+=("$_path")
 done
 [ "${#_backup_paths[@]}" -gt 0 ] \
@@ -101,7 +102,7 @@ done
 [ -z "$_MISSING" ] || { printf "\n${RED}✘ Outils indispensables absents :%s${NC}\n" "$_MISSING"; exit 1; }
 
 # ---- Téléchargement silencieux, en parallèle contrôlé -------
-# Les 27 fichiers étaient téléchargés l'un après l'autre : avec 1-2 s de
+# Les composants étaient téléchargés l'un après l'autre : avec 1-2 s de
 # latence GitHub par requête, la mise à jour pouvait prendre près d'une minute
 # avant même l'installation. On télécharge maintenant par lots de 6 dans un
 # dossier temporaire, puis on valide/installe séquentiellement : aucun fichier
@@ -117,6 +118,7 @@ _COMPONENTS=(
   "menu-bot:/usr/local/bin/menu-bot" "menu-settings:/usr/local/bin/menu-settings"
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli"
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit"
+  "nvpanel-net-tune:/usr/local/bin/nvpanel-net-tune"
   "nvpanel-quota:/usr/local/bin/nvpanel-quota" "nvpanel-clean:/usr/local/bin/nvpanel-clean"
   "nvpanel-conso:/usr/local/bin/nvpanel-conso"
   "menu-ppp:/usr/local/bin/menu-ppp" "nvpanel-ppp:/usr/local/bin/nvpanel-ppp"
@@ -242,6 +244,23 @@ progress_to 90 "Application de la configuration"
 touch /root/.hushlogin 2>/dev/null
 [ -n "${SUDO_USER:-}" ] && [ -d "/home/${SUDO_USER}" ] && \
   touch "/home/${SUDO_USER}/.hushlogin" 2>/dev/null
+
+# Réglages réseau ciblés : buffers UDP + RPS/RFS sur NIC mono-file.
+# Le redémarrage SlowDNS n'est fait que lors du premier changement du buffer
+# par défaut afin que son socket UDP persistant récupère la nouvelle valeur.
+_nv_old_rmem=$(sysctl -n net.core.rmem_default 2>/dev/null || echo 0)
+if [ -x /usr/local/bin/nvpanel-net-tune ]; then
+  if /usr/local/bin/nvpanel-net-tune install >/dev/null 2>&1; then
+    if [ "$_nv_old_rmem" != "1048576" ] && systemctl is-active --quiet nvpanel-slowdns 2>/dev/null; then
+      systemctl restart nvpanel-slowdns >/dev/null 2>&1 \
+        || CONFIG_FAILED="$CONFIG_FAILED SlowDNS-buffer"
+    fi
+  else
+    CONFIG_FAILED="$CONFIG_FAILED réseau"
+  fi
+else
+  CONFIG_FAILED="$CONFIG_FAILED réseau"
+fi
 
 if [ -x /usr/local/bin/install-xray ]; then
   /usr/local/bin/install-xray auto >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED Xray"
