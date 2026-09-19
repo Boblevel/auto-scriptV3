@@ -211,13 +211,17 @@ _conso_refresh_async(){
   local now mt age
   now=$(date +%s)
   mt=$(stat -c %Y "$stamp" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
-  [ "$age" -lt 2 ] 2>/dev/null && return 0
+  # Un poll iptables peut prendre plusieurs secondes sur un VPS très chargé.
+  # Lancer ce poll toutes les 2 s pendant la navigation faisait travailler le
+  # noyau presque en continu. 15 s garde un affichage très récent sans gêner
+  # les flux clients ; le cron 5 min reste la collecte de sécurité.
+  [ "$age" -lt 15 ] 2>/dev/null && return 0
   (
     mkdir "$lock" 2>/dev/null || exit 0
     trap 'rmdir "$lock" 2>/dev/null' EXIT
     # Revalide après acquisition du verrou : un autre écran a pu finir juste avant.
     now=$(date +%s); mt=$(stat -c %Y "$stamp" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
-    [ "$age" -lt 2 ] 2>/dev/null && exit 0
+    [ "$age" -lt 15 ] 2>/dev/null && exit 0
     /usr/local/bin/nvpanel-conso poll >/dev/null 2>&1
     touch "$stamp" 2>/dev/null
   ) </dev/null >/dev/null 2>&1 &
@@ -281,7 +285,17 @@ _ssh_sessions_raw() {
     [ "$marker" = "###" ] && [ -n "$dbu" ] && _panel_user["$dbu"]=1
   done < /etc/nvpanel/db/ssh 2>/dev/null
 
-  ss_raw=$(ss -tnp state established 2>/dev/null)
+  local dp ports filter="" _p ss_rc
+  dp=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
+  case "$dp" in ''|*[!0-9]*) dp="" ;; esac
+  ports="22 143 ${dp:-}"
+  for _p in $ports; do
+    [ -n "$filter" ] && filter="$filter or "
+    filter="${filter}sport = :${_p}"
+  done
+  [ -n "$filter" ] && filter="( $filter )"
+  ss_raw=$(ss -Htnp state established "$filter" 2>/dev/null); ss_rc=$?
+  [ "$ss_rc" -eq 0 ] || ss_raw=$(ss -Htnp state established 2>/dev/null)
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     rest="$line"; endpoint=""
@@ -325,7 +339,10 @@ _ssh_sessions() {
   if [ -f "$cache" ]; then
     cat "$cache" 2>/dev/null
     mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
-    if [ "$age" -ge 2 ] 2>/dev/null; then
+    # nvpanel-limit alimente maintenant ce même cache chaque seconde. On ne
+    # lance un scan UI de secours que si le cache est réellement ancien ; cela
+    # évite deux scans concurrents pendant une navigation normale.
+    if [ "$age" -ge 5 ] 2>/dev/null; then
       (
         mkdir "$lock" 2>/dev/null || exit 0
         trap 'rmdir "$lock" 2>/dev/null' EXIT
@@ -410,7 +427,7 @@ _hysteria_online_cached(){
 # se fait en arrière-plan. La source reste `nvpanel-ppp online all`.
 _ppp_online_all(){
   local mode="${1:-}" cache=/run/nvpanel-ppp-online.cache lock=/run/nvpanel-ppp-online.lock
-  local now mt age r tmp
+  local now mt age r tmp state=/run/nvpanel-ppp-sessions
   now=$(date +%s)
   if [ "$mode" != "fresh" ] && [ -f "$cache" ]; then
     cat "$cache" 2>/dev/null
@@ -425,6 +442,25 @@ _ppp_online_all(){
     fi
     return
   fi
+
+  if [ "$mode" != "fresh" ] && [ -f "$state" ]; then
+    # Premier affichage après reboot/update : les hooks PPP maintiennent déjà
+    # ce fichier à chaque ip-up/ip-down. On en déduit immédiatement le nombre
+    # courant puis on lance le prune officiel en arrière-plan. Ainsi ouvrir
+    # L2TP/PPTP/SSTP ne peut plus attendre plusieurs secondes sur un flock.
+    r=$(awk -F'|' '$1=="l2tp"||$1=="pptp"||$1=="sstp"{a[$1 SUBSEP $2 SUBSEP $4]=1} END{for(i in a){split(i,k,SUBSEP); c[k[1]]++} print "l2tp|" c["l2tp"]+0; print "pptp|" c["pptp"]+0; print "sstp|" c["sstp"]+0}' "$state" 2>/dev/null)
+    tmp="${cache}.${BASHPID}"
+    printf '%s\n' "$r" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null
+    (
+      mkdir "$lock" 2>/dev/null || exit 0
+      trap 'rmdir "$lock" 2>/dev/null' EXIT
+      tmp="${cache}.${BASHPID}"
+      nvpanel-ppp online all > "$tmp" 2>/dev/null && mv "$tmp" "$cache"
+    ) </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$r"
+    return
+  fi
+
   r=$(nvpanel-ppp online all 2>/dev/null)
   tmp="${cache}.${BASHPID}"
   printf '%s\n' "$r" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null
@@ -679,9 +715,22 @@ ask(){
 # Durée de connexion d'un compte SSH : on prend le processus le plus ancien
 # appartenant au compte (sa session). Renvoie une chaîne vide s'il est hors ligne.
 _conn_time(){
-  local u="$1" et
+  local u="$1" et cache=/run/nvpanel-ssh-times.cache lock=/run/nvpanel-ssh-times.lock
+  local now mt age tmp
   [ -z "$u" ] && return 0
-  et=$(ps -o etimes= -u "$u" 2>/dev/null | tr -d ' ' | sort -rn | head -1)
+  now=$(date +%s); mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+  if [ ! -f "$cache" ] || [ "$age" -ge 2 ] 2>/dev/null; then
+    if mkdir "$lock" 2>/dev/null; then
+      tmp="${cache}.${BASHPID}"
+      # Même résultat que l'ancien `ps -o etimes= -u user` répété pour chaque
+      # ligne : durée maximale de tout processus appartenant au compte, mais
+      # calculée en UN seul ps pour tous les comptes.
+      ps -eo user:64=,etimes= 2>/dev/null | awk '{if(($2+0)>m[$1])m[$1]=$2+0} END{for(u in m) print u"|"m[u]}' > "$tmp"
+      mv "$tmp" "$cache" 2>/dev/null || rm -f "$tmp"
+      rmdir "$lock" 2>/dev/null
+    fi
+  fi
+  et=$(awk -F'|' -v u="$u" '$1==u{print $2; exit}' "$cache" 2>/dev/null)
   [ -z "$et" ] && return 0
   [ "$et" -lt 5 ] 2>/dev/null && return 0
   if   [ "$et" -ge 86400 ] 2>/dev/null; then printf '%dj %dh' $((et/86400)) $(((et%86400)/3600))
@@ -691,11 +740,21 @@ _conn_time(){
 
 # Durée depuis la dernière poignée de main WireGuard (= client actif).
 _wg_time(){
-  local pub="$1" hs now d
+  local pub="$1" hs now d cache=/run/nvpanel-wg-handshakes.cache lock=/run/nvpanel-wg-handshakes.lock
+  local mt age tmp
   [ -z "$pub" ] && return 0
-  hs=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v p="$pub" '$1==p{print $2}')
+  now=$(date +%s); mt=$(stat -c %Y "$cache" 2>/dev/null); mt=${mt:-0}; age=$((now-mt))
+  if [ ! -f "$cache" ] || [ "$age" -ge 2 ] 2>/dev/null; then
+    if mkdir "$lock" 2>/dev/null; then
+      tmp="${cache}.${BASHPID}"
+      wg show wg0 latest-handshakes 2>/dev/null > "$tmp"
+      mv "$tmp" "$cache" 2>/dev/null || rm -f "$tmp"
+      rmdir "$lock" 2>/dev/null
+    fi
+  fi
+  hs=$(awk -v p="$pub" '$1==p{print $2; exit}' "$cache" 2>/dev/null)
   [ -z "$hs" ] || [ "$hs" = 0 ] && return 0
-  now=$(date +%s); d=$(( now - hs ))
+  d=$(( now - hs ))
   [ "$d" -gt 75 ] 2>/dev/null && return 0
   if   [ "$d" -ge 3600 ] 2>/dev/null; then printf '%dh %02dmin' $((d/3600)) $(((d%3600)/60))
   else printf '%dmin' $((d/60)); fi

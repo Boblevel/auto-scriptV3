@@ -36,89 +36,130 @@ ssh_ports() {
   printf '22 143 %s' "${dp:-}"
 }
 
-sessions_of() {
-  local ports wanted_uid; ports=" $(ssh_ports) "
-  wanted_uid=$(id -u "$1" 2>/dev/null) || return 0
+sessions_snapshot() {
+  # RHAFF_LIMIT_V8_SINGLE_SNAPSHOT
+  # Un seul relevé réseau par cycle pour TOUS les comptes. L'ancienne
+  # implémentation relançait `ss -Htnp state established` une fois par compte
+  # limité ; avec plusieurs milliers de sockets cela saturait inutilement le CPU.
+  # On demande d'abord au noyau uniquement les sockets ayant un port SSH
+  # pertinent (local OU distant, nécessaire pour le côté dns-server SlowDNS).
+  local ports ports_raw filter="" p ss_raw rc line pid ip endpoint owner_uid user key tmpcache _k _v _rest
+  ports_raw=$(ssh_ports)
+  ports=" $ports_raw "
+  for p in $ports_raw; do
+    [ -n "$p" ] || continue
+    [ -n "$filter" ] && filter="$filter or "
+    filter="${filter}sport = :${p} or dport = :${p}"
+  done
+  [ -n "$filter" ] && filter="( $filter )"
 
-  # Un seul instantané ESTABLISHED est utilisé par appel. Pour SlowDNS, une
-  # connexion localhost n'est retenue que si son autre extrémité appartient
-  # réellement à dns-server : aucun ancien log, cache ou socket locale d'un
-  # autre proxy ne peut être interprété comme un appareil SlowDNS connecté.
-  ss -Htnp state established 2>/dev/null | awk -v p="$ports" '
-    {
-      local_ep=$3
-      endpoint=$4
-      lport=local_ep
-      rport=endpoint
-      sub(/^.*:/,"",lport)
-      sub(/^.*:/,"",rport)
+  if [ -n "$filter" ]; then
+    ss_raw=$(ss -Htnp state established "$filter" 2>/dev/null)
+    rc=$?
+  else
+    rc=1
+  fi
+  # Repli compatible avec une ancienne version d'iproute2 qui ne comprendrait
+  # pas le filtre ci-dessus. La fonctionnalité reste alors identique, mais il
+  # n'y a toujours qu'UN seul snapshot par cycle.
+  [ "$rc" -eq 0 ] || ss_raw=$(ss -Htnp state established 2>/dev/null)
 
-      # Côté dnstt : mémorise uniquement les endpoints localhost qui sont
-      # connectés MAINTENANT vers un des ports SSH réellement utilisés.
-      if($0 ~ /users:\(\("dns-server"/ && index(p," " rport " ")>0) {
-        slowdns_ep[local_ep]=1
+  # Construit l'ensemble des comptes réellement gérés sans lancer `id` une fois
+  # par utilisateur à chaque seconde : /etc/passwd donne directement UID -> nom.
+  declare -gA _limit_by_user _uid_to_user _device_seen _device_count _over_first
+  _limit_by_user=(); _uid_to_user=(); _device_seen=(); _device_count=(); _over_first=()
+  declare -A _panel_name=()
+  while read -r _mark user _rest; do
+    [ "$_mark" = "###" ] && [ -n "$user" ] && _panel_name["$user"]=1
+  done < /etc/nvpanel/db/ssh 2>/dev/null
+  while read -r user max; do
+    [ -n "$user" ] || continue
+    case "$max" in ''|*[!0-9]*) continue ;; esac
+    _limit_by_user["$user"]="$max"
+    _panel_name["$user"]=1
+  done < "$DB"
+  while IFS=: read -r user _pw _uid _gid _rest; do
+    [ "${_panel_name[$user]:-}" = 1 ] || continue
+    _uid_to_user["$_uid"]="$user"
+  done < /etc/passwd
+  while IFS='|' read -r user _ts _rest; do
+    [ -n "$user" ] || continue
+    case "$_ts" in ''|*[!0-9]*) continue ;; esac
+    _over_first["$user"]="$_ts"
+  done < "$OVERSTATE" 2>/dev/null
+
+  # L'AWK conserve exactement la logique SlowDNS précédente : il mémorise le
+  # socket local appartenant à dns-server, puis valide uniquement le socket
+  # sshd correspondant. Les connexions directes restent identifiées par IP.
+  while IFS='|' read -r pid ip endpoint; do
+    [ -n "$pid" ] && [ -n "$ip" ] || continue
+    owner_uid=""
+    while read -r _k _v _rest; do
+      [ "$_k" = "Uid:" ] && { owner_uid="$_v"; break; }
+    done < "/proc/$pid/status" 2>/dev/null
+    [ -n "$owner_uid" ] || continue
+    user="${_uid_to_user[$owner_uid]:-}"
+    [ -n "$user" ] || continue
+    case "$ip" in
+      127.0.0.1|::1) key="slowdns:${endpoint}" ;;
+      *) key="$ip" ;;
+    esac
+    [ -n "${_device_seen[$user|$key]:-}" ] && continue
+    _device_seen["$user|$key"]=1
+    _device_count["$user"]=$(( ${_device_count[$user]:-0} + 1 ))
+  done < <(
+    printf '%s\n' "$ss_raw" | awk -v p="$ports" '
+      {
+        local_ep=$3; endpoint=$4
+        lport=local_ep; rport=endpoint
+        sub(/^.*:/,"",lport); sub(/^.*:/,"",rport)
+        if($0 ~ /users:\(\(\"dns-server\"/ && index(p," " rport " ")>0) slowdns_ep[local_ep]=1
+        if(index(p," " lport " ")==0 || $0 !~ /pid=/) next
+        peer=endpoint
+        if(peer ~ /^\[/){sub(/^\[/,"",peer); sub(/\]:[0-9]+$/,"",peer)}
+        else sub(/:[0-9]+$/,"",peer)
+        line=$0
+        while(match(line,/pid=[0-9]+/)){
+          pid=substr(line,RSTART+4,RLENGTH-4)
+          n++; row[n]=pid "|" peer "|" endpoint
+          line=substr(line,RSTART+RLENGTH)
+        }
       }
+      END {
+        for(i=1;i<=n;i++) {
+          split(row[i],f,"|"); ip=f[2]; endpoint=f[3]
+          if((ip=="127.0.0.1" || ip=="::1") && !slowdns_ep[endpoint]) continue
+          if(!seen[row[i]]++) print row[i]
+        }
+      }'
+  )
 
-      if(index(p," " lport " ")==0 || $0 !~ /pid=/) next
-
-      peer=endpoint
-      if(peer ~ /^\[/) {
-        sub(/^\[/,"",peer)
-        sub(/\]:[0-9]+$/,"",peer)
-      } else {
-        sub(/:[0-9]+$/,"",peer)
-      }
-
-      line=$0
-      while(match(line,/pid=[0-9]+/)) {
-        pid=substr(line,RSTART+4,RLENGTH-4)
-        n++
-        row[n]=pid"|"peer"|"endpoint
-        line=substr(line,RSTART+RLENGTH)
-      }
-    }
-    END {
-      for(i=1;i<=n;i++) {
-        split(row[i],f,"|")
-        ip=f[2]; endpoint=f[3]
-        if((ip=="127.0.0.1" || ip=="::1") && !slowdns_ep[endpoint]) continue
-        print row[i]
-      }
-    }' | sort -u | while IFS='|' read -r pid ip endpoint; do
-      owner_uid=$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
-      [ "$owner_uid" = "$wanted_uid" ] || continue
-
-      # SSH/Dropbear direct : une IP distante = un appareil.
-      # SlowDNS arrive réellement dans sshd depuis 127.0.0.1 ; dnstt ne fournit
-      # pas l'IP Internet du client à sshd. On compte donc chaque endpoint local
-      # distinct comme une session/appareil SlowDNS au lieu de fusionner tous
-      # les utilisateurs sous la fausse "IP client" 127.0.0.1.
-      case "$ip" in
-        127.0.0.1|::1) key="slowdns:${endpoint}" ;;
-        *) key="$ip" ;;
-      esac
-      printf '%s %s\n' "$pid" "$key"
-    done
+  # Le même snapshot nourrit l'UI. Ainsi ouvrir le panel ne relance plus son
+  # propre scan de milliers de sockets : nvpanel-limit, déjà actif, fournit la
+  # dernière vue réelle (mise à jour chaque seconde).
+  tmpcache=$(mktemp /run/.nvpanel-ssh-sessions.XXXXXX) || return 0
+  for key in "${!_device_seen[@]}"; do
+    printf '%s\n' "$key" >> "$tmpcache"
+  done
+  chmod 600 "$tmpcache" 2>/dev/null
+  mv "$tmpcache" /run/nvpanel-ssh-sessions.cache 2>/dev/null || rm -f "$tmpcache"
 }
 
 while true; do
   now=$(date +%s)
   pending=$(mktemp /run/.nvpanel-ssh-limit-over.XXXXXX) || { sleep 1; continue; }
 
+  # Un seul snapshot sert à tous les comptes et à l'affichage du panel.
+  sessions_snapshot
+
   while read -r user max; do
     [ -z "$user" ] && continue
     [[ "$max" =~ ^[0-9]+$ ]] || continue
     [ "$max" -le 0 ] && continue
 
-    list=$(sessions_of "$user")
-    if [ -n "$list" ]; then
-      devices=$(printf '%s\n' "$list" | awk '{a[$2]=1} END{for(k in a)n++; print n+0}')
-    else
-      devices=0
-    fi
-
+    devices="${_device_count[$user]:-0}"
     if [ "${devices:-0}" -gt "$max" ] 2>/dev/null; then
-      first_over=$(awk -F'|' -v u="$user" '$1==u{print $2; exit}' "$OVERSTATE" 2>/dev/null)
+      first_over="${_over_first[$user]:-$now}"
       case "$first_over" in ''|*[!0-9]*) first_over="$now" ;; esac
       printf '%s|%s\n' "$user" "$first_over" >> "$pending"
 
