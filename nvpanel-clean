@@ -7,6 +7,11 @@ umask 077
 exec 7>/run/nvpanel-clean.lock
 flock -n 7 || exit 0
 
+log_lock_result(){
+  local proto="$1" user="$2" result="$3"
+  printf '%s|%s|%s|%s\n' "$(date '+%F %T')" "$proto" "$user" "$result" >> /var/log/nvpanel-expire-lock.log 2>/dev/null || true
+}
+
 # --- Comptes SSH --------------------------------------------
 # Un compte SSH expiré (date passée sur "useradd -e") est DÉJÀ bloqué par le
 # système lui-même : aucune connexion possible, sans le moindre code de
@@ -38,7 +43,7 @@ purge_proto() {
     # dès 00h00 CE jour-là, alors qu'il devait rester valable jusqu'à sa fin.
     case "$exp" in ''|*[!0-9-]*) continue ;; esac
     if [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; then
-      /usr/local/bin/nvpanel-cli xlock "$proto" "$name" >/dev/null 2>&1
+      if /usr/local/bin/nvpanel-cli xlock "$proto" "$name" >/dev/null 2>&1; then log_lock_result "$proto" "$name" OK; else log_lock_result "$proto" "$name" FAIL; fi
     fi
   done < "$db"
 }
@@ -64,7 +69,7 @@ for p in l2tp pptp sstp; do
     [ -z "$user" ] && continue
     [ "$fl" = "L" ] && continue
     case "$exp" in ''|*[!0-9-]*) continue ;; esac
-    { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; } && /usr/local/bin/nvpanel-ppp lock "$p" "$user" >/dev/null 2>&1
+    { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; } && if /usr/local/bin/nvpanel-ppp lock "$p" "$user" >/dev/null 2>&1; then log_lock_result "$p" "$user" OK; else log_lock_result "$p" "$user" FAIL; fi
   done < "$db"
 done
 
