@@ -603,7 +603,7 @@ def handle_callback(chat, data):
                     continue
                 locked = len(r) > 5 and r[5] == "L"
                 expired = bool(r[4] and r[4] <= today)
-                state = "verrou" if locked else ("expir\u00e9" if expired else "actif")
+                state = "exp+verr" if (locked and expired) else ("verrou" if locked else ("expir\u00e9" if expired else "actif"))
                 ct = "\u2014" if (locked or expired) else (wg_time(r[2]) or "\u2014")
                 lignes.append("%-14s %-12s %-8s %s" % (r[1], fmt_date(r[4]), state, ct))
             txt = "\n".join(lignes)

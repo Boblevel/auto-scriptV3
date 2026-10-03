@@ -58,7 +58,7 @@ pick(){
     header; printf "   ${GRY}Comptes $LABEL · page %d/%d :${NC}\n" "$((page+1))" "$pages"
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r nm ex st <<< "${_l[$i]}"; case "$st" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      IFS='|' read -r nm ex st <<< "${_l[$i]}"; case "$st" in verrou|expiré|exp+verr|*verr*) color="$RED" ;; *) color="$GRN" ;; esac
       printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${color}%s${NC}\n" "$((i+1))" "$nm" "$(_fmtd "$ex")" "$st"
     done
     echo; if [ "$pages" -gt 1 ]; then ask "   ➤ N° | n suivante | p précédente | 0 retour : " n; else ask "   ➤ Numéro (0 = annuler) : " n; fi
@@ -122,7 +122,7 @@ list_all(){
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r n e s <<< "${_rows_ppp[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      IFS='|' read -r n e s <<< "${_rows_ppp[$i]}"; case "$s" in verrou|expiré|exp+verr|*verr*) color="$RED" ;; *) color="$GRN" ;; esac
       ct="—"; [ "$s" = "actif" ] && ct=$(_ppp_session_info "$n")
       printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$n" "$(_fmtd "$e")" "$s" "$ct"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
       [ "$i" -lt $((end-1)) ] && table_sep
@@ -138,13 +138,14 @@ blocked_accounts(){
   local u st out
   header; pick || return; u="$PICK"
   st=$(nvpanel-ppp list "$PROTO" 2>/dev/null | awk -F'|' -v n="$u" '$1==n{print $3; exit}')
-  if [ "$st" = "verrou" ]; then
-    out=$(nvpanel-ppp unlock "$PROTO" "$u" 2>&1)
-    if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi
-  else
-    out=$(nvpanel-ppp lock "$PROTO" "$u" 2>&1)
-    if echo "$out" | grep -q '^OK'; then ok "$u verrouillé"; else err "Échec : $out"; fi
-  fi
+  case "$st" in
+    verrou|exp+verr|*verr*)
+      out=$(nvpanel-ppp unlock "$PROTO" "$u" 2>&1)
+      if echo "$out" | grep -q '^OK'; then ok "$u déverrouillé"; else err "Échec : $out"; fi ;;
+    *)
+      out=$(nvpanel-ppp lock "$PROTO" "$u" 2>&1)
+      if echo "$out" | grep -q '^OK'; then ok "$u verrouillé"; else err "Échec : $out"; fi ;;
+  esac
   pause
 }
 

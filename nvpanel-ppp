@@ -244,7 +244,7 @@ case "$cmd" in
     _box "$proto" "$user" "$pass" "$cr" "$exp" ;;
   list)
     proto=$(_clean "$1"); _srv "$proto" >/dev/null || { echo "ERR proto"; exit 1; }; db=$(_db "$proto"); today=$(date +%F)
-    awk -v d="$today" '/^### /{ st=($5=="L")?"verrou":(($4!="" && $4<=d)?"expiré":"actif"); print $2"|"$4"|"st }' "$db" 2>/dev/null ;;
+    awk -v d="$today" '/^### /{ expired=($4!="" && $4<=d); st=($5=="L")?(expired?"exp+verr":"verrou"):(expired?"expiré":"actif"); print $2"|"$4"|"st }' "$db" 2>/dev/null ;;
   lock)
     proto=$(_clean "$1"); user=$(_clean "$2"); srv=$(_srv "$proto") || { echo "ERR proto"; exit 1; }
     _valid_name "$user" || { echo "ERR username"; exit 1; }

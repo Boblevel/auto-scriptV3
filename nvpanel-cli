@@ -1034,7 +1034,7 @@ case "$cmd" in
       expired=0
       [ -n "$e" ] && { [ "$e" \< "$today" ] || [ "$e" = "$today" ]; } && expired=1
       if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
-        s="$([ "$expired" -eq 1 ] && echo "expiré + verrouillé" || echo "verrou")"
+        s="$([ "$expired" -eq 1 ] && echo "exp+verr" || echo "verrou")"
       elif [ "$expired" -eq 1 ]; then
         s="expiré"
       else
@@ -1147,7 +1147,7 @@ case "$cmd" in
       expired=0
       [ -n "$ex" ] && { [ "$ex" \< "$today" ] || [ "$ex" = "$today" ]; } && expired=1
       if [ "$fl" = "L" ]; then
-        st="$([ "$expired" -eq 1 ] && echo "expiré + verrouillé" || echo "verrou")"; ct="—"; ips=0
+        st="$([ "$expired" -eq 1 ] && echo "exp+verr" || echo "verrou")"; ct="—"; ips=0
       elif [ "$expired" -eq 1 ]; then
         st="expiré"; ct="—"; ips=0
       else

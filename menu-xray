@@ -58,7 +58,7 @@ list_clients() {
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r n e s ct ips lim <<< "${_rows_x[$i]}"
-      case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      case "$s" in verrou|expiré|exp+verr|*verr*) color="$RED" ;; *) color="$GRN" ;; esac
       cap="$lim"; [ -z "$cap" ] || [ "$cap" = 0 ] && cap="∞"
       ct=${ct:-—}; ct=${ct// /}
       shown="$ct · ${ips:-0}/${cap} IP"
@@ -93,7 +93,7 @@ pick_client() {
     header; printf "   ${GRY}Clients ${PROTO^^} · page %d/%d :${NC}\n" "$((page+1))" "$pages"
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r nm ex st <<< "${_cl[$i]}"; case "$st" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      IFS='|' read -r nm ex st <<< "${_cl[$i]}"; case "$st" in verrou|expiré|exp+verr|*verr*) color="$RED" ;; *) color="$GRN" ;; esac
       printf "   ${WHT}%2d${NC}) %-16s ${GRY}exp %s${NC}  ${color}%s${NC}\n" "$((i+1))" "$nm" "$(_fmtd "$ex")" "$st"
     done
     echo; if [ "$pages" -gt 1 ]; then ask "   ➤ N° | n suivante | p précédente | 0 retour : " n; else ask "   ➤ Numéro (0 = annuler) : " n; fi
@@ -108,13 +108,14 @@ blocked_clients() {
   local name st out
   header; pick_client || return; name="$PICK"
   st=$(nvpanel-cli xlist "$PROTO" 2>/dev/null | awk -F'|' -v n="$name" '$1==n{print $3; exit}')
-  if [ "$st" = "verrou" ]; then
-    out=$(nvpanel-cli xunlock "$PROTO" "$name" 2>&1)
-    if echo "$out" | grep -q '^OK'; then ok "$name déverrouillé"; else err "Échec : $out"; fi
-  else
-    out=$(nvpanel-cli xlock "$PROTO" "$name" 2>&1)
-    if echo "$out" | grep -q '^OK'; then ok "$name verrouillé"; else err "Échec : $out"; fi
-  fi
+  case "$st" in
+    verrou|exp+verr|*verr*)
+      out=$(nvpanel-cli xunlock "$PROTO" "$name" 2>&1)
+      if echo "$out" | grep -q '^OK'; then ok "$name déverrouillé"; else err "Échec : $out"; fi ;;
+    *)
+      out=$(nvpanel-cli xlock "$PROTO" "$name" 2>&1)
+      if echo "$out" | grep -q '^OK'; then ok "$name verrouillé"; else err "Échec : $out"; fi ;;
+  esac
   pause
 }
 

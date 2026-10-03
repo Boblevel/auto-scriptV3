@@ -30,9 +30,11 @@ pick_user() {
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       u="${_users[$i]}"; exp=$(awk -v x="$u" '$2==x{print $3}' "$DB")
+      expired=0
+      [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; } && expired=1
       if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
-        st="${RED}verrou${NC}"
-      elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
+        st="$([ "$expired" -eq 1 ] && printf "${RED}exp+verr${NC}" || printf "${RED}verrou${NC}")"
+      elif [ "$expired" -eq 1 ]; then
         st="${RED}expiré${NC}"
       else
         st="${GRN}actif${NC}"
@@ -100,9 +102,11 @@ list_accounts() {
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
       IFS='|' read -r u exp <<< "${_rows_ssh[$i]}"
+      expired=0
+      [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; } && expired=1
       if passwd -S "$u" 2>/dev/null | awk '{exit !($2=="L")}'; then
-        st="verrou"; st_color="$RED"
-      elif [ -n "$exp" ] && { [ "$exp" \< "$today" ] || [ "$exp" = "$today" ]; }; then
+        st="$([ "$expired" -eq 1 ] && echo "exp+verr" || echo "verrou")"; st_color="$RED"
+      elif [ "$expired" -eq 1 ]; then
         st="expiré"; st_color="$RED"
       else
         st="actif"; st_color="$GRN"
@@ -496,7 +500,7 @@ hy_list(){
     table_sep
     start=$((page*size)); end=$((start+size)); [ "$end" -gt "$total" ] && end=$total
     for ((i=start; i<end; i++)); do
-      IFS='|' read -r u e s <<< "${_rows_hy[$i]}"; case "$s" in verrou|expiré) color="$RED" ;; *) color="$GRN" ;; esac
+      IFS='|' read -r u e s <<< "${_rows_hy[$i]}"; case "$s" in verrou|expiré|exp+verr|*verr*) color="$RED" ;; *) color="$GRN" ;; esac
       devices=$(printf '%s\n' "$live" | awk -F'|' -v n="$u" '$1==n{print $2+0; exit}'); devices=${devices:-0}
       [ "$s" = "actif" ] && connfmt="$devices app." || connfmt="—"
       printf "${CYN}┃${NC} %-16s %-12s ${color}%-8s${NC} %s" "$u" "$(_fmtd "$e")" "$s" "$connfmt"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"
