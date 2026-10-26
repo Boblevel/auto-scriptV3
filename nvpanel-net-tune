@@ -42,17 +42,15 @@ PY
 }
 
 _write_config(){
+  local tmp
   mkdir -p /etc/sysctl.d /etc/systemd/system || return 1
-  cat > "$SYSCTL_FILE" <<EOF_SYSCTL
+  tmp=$(mktemp /etc/sysctl.d/.nvpanel-network.XXXXXX) || return 1
+  cat > "$tmp" <<EOF_SYSCTL
 # RHAFF SERVICE - réglages réseau validés sur charge réelle
-# Buffer UDP : le socket SlowDNS à 212992 octets perdait des paquets.
-net.core.rmem_max = $RBUF_MAX
-net.core.rmem_default = $RBUF_DEFAULT
-net.ipv4.udp_rmem_min = $UDP_RMEM_MIN
-# RFS : table globale. L'activation par file est faite dynamiquement ci-dessous.
-net.core.rps_sock_flow_entries = $RPS_ENTRIES
+# Seuls les paramètres acceptés par ce noyau sont enregistrés.
 EOF_SYSCTL
-  chmod 644 "$SYSCTL_FILE" || return 1
+  printf '%s' "$_SYSCTL_APPLIED" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 644 "$tmp" && mv -f "$tmp" "$SYSCTL_FILE" || { rm -f "$tmp"; return 1; }
 
   cat > "$UNIT_FILE" <<'EOF_UNIT'
 [Unit]
@@ -72,12 +70,32 @@ EOF_UNIT
 }
 
 _apply_sysctl(){
-  # Applique uniquement les paramètres RHAFF ci-dessus. Pas de sysctl --system :
-  # on évite de réappliquer d'autres réglages tiers du VPS.
-  sysctl -w "net.core.rmem_max=$RBUF_MAX" >/dev/null 2>&1 || return 1
-  sysctl -w "net.core.rmem_default=$RBUF_DEFAULT" >/dev/null 2>&1 || return 1
-  sysctl -w "net.ipv4.udp_rmem_min=$UDP_RMEM_MIN" >/dev/null 2>&1 || return 1
-  sysctl -w "net.core.rps_sock_flow_entries=$RPS_ENTRIES" >/dev/null 2>&1 || return 1
+  # Un VPS peut exposer des paramètres en lecture seule ou sans permission
+  # d'écriture (LXC, noyau hébergeur...). Ne pas bloquer le panel pour une
+  # optimisation facultative, et ne pas la rendre persistante si refusée.
+  local key value path current
+  _SYSCTL_APPLIED=""
+  while read -r key value; do
+    [ -n "$key" ] || continue
+    path="/proc/sys/${key//./\/}"
+    current=$(sysctl -n "$key" 2>/dev/null)
+    # Une valeur existante supérieure à la cible peut être un réglage de
+    # l'hébergeur : ne pas la diminuer ni la remplacer au prochain démarrage.
+    if [[ "$current" =~ ^[0-9]+$ ]] && [ "$current" -gt "$value" ]; then
+      printf 'RHAFF réseau : %s déjà supérieur à la cible ; conservé.\n' "$key" >&2
+      continue
+    fi
+    if [ -e "$path" ] && sysctl -w "$key=$value" >/dev/null 2>&1; then
+      _SYSCTL_APPLIED+="$key = $value"$'\n'
+    else
+      printf 'RHAFF réseau : %s non autorisé par le noyau ; ignoré.\n' "$key" >&2
+    fi
+  done <<EOF_SYSCTL
+net.core.rmem_max $RBUF_MAX
+net.core.rmem_default $RBUF_DEFAULT
+net.ipv4.udp_rmem_min $UDP_RMEM_MIN
+net.core.rps_sock_flow_entries $RPS_ENTRIES
+EOF_SYSCTL
 }
 
 _apply_rps(){
@@ -97,14 +115,16 @@ _apply_rps(){
   case "$cpus" in ''|*[!0-9]*) cpus=1 ;; esac
   [ "$cpus" -gt 1 ] || return 0
 
-  mask=$(_cpu_mask_without_cpu0 "$cpus") || return 1
+  mask=$(_cpu_mask_without_cpu0 "$cpus") || return 0
   [ -n "$mask" ] && [ "$mask" != 0 ] || return 0
 
   q="${queues[0]}"
-  [ -w "$q/rps_cpus" ] || return 1
-  printf '%s\n' "$mask" > "$q/rps_cpus" || return 1
+  [ -w "$q/rps_cpus" ] || { echo 'RHAFF réseau : RPS interdit sur cette interface ; ignoré.' >&2; return 0; }
+  printf '%s\n' "$mask" > "$q/rps_cpus" 2>/dev/null \
+    || { echo 'RHAFF réseau : écriture RPS refusée ; ignorée.' >&2; return 0; }
   if [ -w "$q/rps_flow_cnt" ]; then
-    printf '%s\n' "$RPS_ENTRIES" > "$q/rps_flow_cnt" || return 1
+    printf '%s\n' "$RPS_ENTRIES" > "$q/rps_flow_cnt" 2>/dev/null \
+      || echo 'RHAFF réseau : écriture RFS refusée ; ignorée.' >&2
   fi
 }
 
@@ -118,10 +138,10 @@ case "${1:-apply}" in
     _apply
     ;;
   install)
+    _apply || exit 1
     _write_config || exit 1
     systemctl daemon-reload >/dev/null 2>&1 || exit 1
     systemctl enable nvpanel-net-tune.service >/dev/null 2>&1 || exit 1
-    _apply
     ;;
   *)
     echo "usage: nvpanel-net-tune apply|install" >&2

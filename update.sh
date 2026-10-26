@@ -186,43 +186,77 @@ ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 progress_to 80 "Mise à jour des services"
 systemctl daemon-reload >/dev/null 2>&1
 CONFIG_FAILED=""
-# Dropbear : Ubuntu livre NO_START=1, le service ne démarre jamais sans ceci
-if dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
+# Dropbear : préserver le port personnalisé et éviter les conflits avec SSH/IMAP.
+_db_listening(){
+  ss -H -ltn 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$"){f=1} END{exit f?0:1}'
+}
+_db_owned(){
+  ss -H -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$") && /"dropbear"/{f=1} END{exit f?0:1}'
+}
+if command -v dropbear >/dev/null 2>&1; then
   touch /etc/default/dropbear
   _dropbear_port=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
   case "$_dropbear_port" in ''|*[!0-9]*) _dropbear_port=143 ;; esac
   [ "$_dropbear_port" -ge 1 ] 2>/dev/null && [ "$_dropbear_port" -le 65535 ] 2>/dev/null || _dropbear_port=143
-  # Le port 22 livré par défaut entre en conflit avec OpenSSH. Tout autre port
-  # valide choisi depuis le panel est conservé pendant la mise à jour.
   [ "$_dropbear_port" = 22 ] && _dropbear_port=143
-  # Se déclenche aussi si le port est resté sur 22 (paquet Debian 12 qui le
-  # livre déjà décommenté) : avant, on ne réparait que si le service était
-  # inactif ou NO_START=1, or Dropbear tournait déjà (sur le mauvais port),
-  # donc cette réparation ne s'exécutait jamais sur ces installations.
-  if grep -q '^NO_START=1' /etc/default/dropbear \
-     || ! systemctl is-active --quiet dropbear 2>/dev/null \
-     || ! grep -q '^DROPBEAR_PORT=' /etc/default/dropbear \
-     || grep -Eq '^DROPBEAR_PORT="?22"?[[:space:]]*$' /etc/default/dropbear; then
-    sed -i '/^NO_START=/d' /etc/default/dropbear
-    echo 'NO_START=0' >> /etc/default/dropbear
-    sed -i '/^DROPBEAR_PORT=/d' /etc/default/dropbear
-    echo "DROPBEAR_PORT=$_dropbear_port" >> /etc/default/dropbear
-    grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
-    systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket' && systemctl disable --now dropbear.socket >/dev/null 2>&1
-    systemctl unmask dropbear >/dev/null 2>&1
-    systemctl enable dropbear >/dev/null 2>&1
-    systemctl restart dropbear >/dev/null 2>&1
+  _db_blocked=0
+  if _db_listening "$_dropbear_port" && ! _db_owned "$_dropbear_port"; then
+    if [ "$_dropbear_port" = 143 ]; then
+      _db_xport=$(cat /etc/nvpanel/xport 2>/dev/null)
+      for _db_candidate in 1443 2222 22222; do
+        [ "$_db_candidate" = "$_db_xport" ] && continue
+        if ! _db_listening "$_db_candidate"; then _dropbear_port=$_db_candidate; break; fi
+      done
+    fi
+    if _db_listening "$_dropbear_port" && ! _db_owned "$_dropbear_port"; then
+      _db_blocked=1
+      CONFIG_FAILED="$CONFIG_FAILED Dropbear-port-occupé"
+    fi
   fi
-  if ! systemctl is-active --quiet dropbear \
-     || ! ss -H -ltn 2>/dev/null | awk -v p=":$_dropbear_port" '$4 ~ p"$"{f=1} END{exit f?0:1}'; then
+  if [ "$_db_blocked" = 0 ] && \
+     { grep -q '^NO_START=1' /etc/default/dropbear \
+       || ! systemctl is-active --quiet dropbear 2>/dev/null \
+       || ! grep -q '^DROPBEAR_PORT=' /etc/default/dropbear \
+       || ! grep -Eq "^DROPBEAR_PORT=\"?${_dropbear_port}\"?[[:space:]]*$" /etc/default/dropbear \
+       || ! _db_listening "$_dropbear_port"; }; then
+    _db_backup=$(mktemp /tmp/rhaff-dropbear-update.XXXXXX) || _db_backup=""
+    if [ -z "$_db_backup" ] || ! cp -a /etc/default/dropbear "$_db_backup" 2>/dev/null \
+       || ! chmod 600 "$_db_backup"; then
+      CONFIG_FAILED="$CONFIG_FAILED Dropbear-sauvegarde"
+    else
+      sed -i '/^NO_START=/d; /^DROPBEAR_PORT=/d' /etc/default/dropbear
+      printf 'NO_START=0\nDROPBEAR_PORT=%s\n' "$_dropbear_port" >> /etc/default/dropbear
+      grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
+      if systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket'; then
+        systemctl disable --now dropbear.socket >/dev/null 2>&1
+      fi
+      systemctl unmask dropbear >/dev/null 2>&1
+      if ! systemctl enable dropbear >/dev/null 2>&1 \
+         || ! systemctl restart dropbear >/dev/null 2>&1 \
+         || ! systemctl is-active --quiet dropbear \
+         || ! _db_listening "$_dropbear_port"; then
+        cp -a "$_db_backup" /etc/default/dropbear
+        systemctl restart dropbear >/dev/null 2>&1 || true
+        CONFIG_FAILED="$CONFIG_FAILED Dropbear-démarrage (journalctl -u dropbear)"
+      fi
+    fi
+    [ -z "$_db_backup" ] || rm -f "$_db_backup"
+  fi
+  if [ "$_db_blocked" = 0 ] && \
+     { ! systemctl is-active --quiet dropbear || ! _db_listening "$_dropbear_port"; }; then
     CONFIG_FAILED="$CONFIG_FAILED Dropbear"
   fi
 else
   _dropbear_port=143
+  CONFIG_FAILED="$CONFIG_FAILED Dropbear-absent"
 fi
-iptables -C INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  ufw allow "$_dropbear_port/tcp" >/dev/null 2>&1
+if systemctl is-active --quiet dropbear 2>/dev/null && _db_listening "$_dropbear_port"; then
+  iptables -C INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null || \
+    CONFIG_FAILED="$CONFIG_FAILED pare-feu-Dropbear"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw allow "$_dropbear_port/tcp" >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED UFW-Dropbear"
+  fi
 fi
 # Comptes du panel avec shell /bin/false : sans /bin/false dans /etc/shells,
 # Dropbear rejette l'authentification par mot de passe ("invalid shell,
@@ -250,7 +284,7 @@ touch /root/.hushlogin 2>/dev/null
 # par défaut afin que son socket UDP persistant récupère la nouvelle valeur.
 _nv_old_rmem=$(sysctl -n net.core.rmem_default 2>/dev/null || echo 0)
 if [ -x /usr/local/bin/nvpanel-net-tune ]; then
-  if /usr/local/bin/nvpanel-net-tune install >/dev/null 2>&1; then
+  if /usr/local/bin/nvpanel-net-tune install >>/var/log/rhaff-install.log 2>&1; then
     if [ "$_nv_old_rmem" != "1048576" ] && systemctl is-active --quiet nvpanel-slowdns 2>/dev/null; then
       systemctl restart nvpanel-slowdns >/dev/null 2>&1 \
         || CONFIG_FAILED="$CONFIG_FAILED SlowDNS-buffer"

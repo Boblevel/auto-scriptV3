@@ -114,29 +114,57 @@ if [ -n "$_MISSING" ]; then
   exit 1
 fi
 
-# --- Dropbear : Ubuntu livre NO_START=1, le service ne demarre jamais --------
-# (sur Debian le paquet demarre seul ; sans ceci, le SSH WebSocket/SSL est mort)
-if command -v dropbear >/dev/null 2>&1 || dpkg -l 2>/dev/null | grep -q '^ii.*dropbear'; then
-  touch /etc/default/dropbear
-  sed -i '/^NO_START=/d' /etc/default/dropbear
-  echo 'NO_START=0' >> /etc/default/dropbear
-  # FORCER le port (certains paquets, ex. Debian 12, livrent DROPBEAR_PORT=22
-  # déjà décommenté : un simple "grep || echo" ne l'aurait jamais corrigé et
-  # Dropbear entrait alors en conflit avec OpenSSH sur le port 22).
-  sed -i '/^DROPBEAR_PORT=/d' /etc/default/dropbear
-  echo 'DROPBEAR_PORT=143' >> /etc/default/dropbear
-  grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
-  # certaines versions fournissent dropbear.socket au lieu du service classique
-  if systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket'; then
-    systemctl disable --now dropbear.socket >/dev/null 2>&1
+# --- Dropbear : adapter le démarrage sans toucher au SSH principal ----------
+# Debian 12/13 utilisent DROPBEAR_PORT dans /etc/default/dropbear.
+# Conserver les ports personnalisés ; éviter le conflit initial avec SSH :22.
+_db_listening(){
+  ss -H -ltn 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$"){f=1} END{exit f?0:1}'
+}
+_db_owned(){
+  ss -H -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$") && /"dropbear"/{f=1} END{exit f?0:1}'
+}
+command -v dropbear >/dev/null 2>&1 || die "Dropbear absent après installation APT. Consulte : $INSTALL_LOG"
+touch /etc/default/dropbear || die "Configuration Dropbear inaccessible."
+_db_backup=$(mktemp /tmp/rhaff-dropbear.XXXXXX) || die "Sauvegarde Dropbear impossible."
+cp -a /etc/default/dropbear "$_db_backup" && chmod 600 "$_db_backup" || die "Sauvegarde Dropbear impossible."
+DROPBEAR_PORT=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear)
+[[ "$DROPBEAR_PORT" =~ ^[0-9]+$ ]] && [ "$DROPBEAR_PORT" -ge 1 ] && [ "$DROPBEAR_PORT" -le 65535 ] \
+  || DROPBEAR_PORT=143
+[ "$DROPBEAR_PORT" = 22 ] && DROPBEAR_PORT=143
+# Si 143 appartient déjà à un serveur IMAP/autre service, choisir un port
+# libre plutôt que d'écraser son service ou de bloquer l'installation.
+if _db_listening "$DROPBEAR_PORT" && ! _db_owned "$DROPBEAR_PORT"; then
+  if [ "$DROPBEAR_PORT" != 143 ]; then
+    die "Le port Dropbear personnalisé $DROPBEAR_PORT est occupé. Vérifie : ss -ltnp"
   fi
-  systemctl unmask dropbear >/dev/null 2>&1
-  systemctl enable dropbear >/dev/null 2>&1
-  systemctl restart dropbear >/dev/null 2>&1 \
-    && systemctl is-active --quiet dropbear \
-    && ss -H -ltn 2>/dev/null | awk '$4 ~ /:143$/{f=1} END{exit f?0:1}' \
-    || die "Dropbear n'a pas pu démarrer sur le port 143. Consulte : journalctl -u dropbear"
+  for _db_candidate in 1443 2222 22222; do
+    [ "$_db_candidate" = "$NVPORT" ] && continue
+    if ! _db_listening "$_db_candidate"; then DROPBEAR_PORT=$_db_candidate; break; fi
+  done
+  if _db_listening "$DROPBEAR_PORT" && ! _db_owned "$DROPBEAR_PORT"; then
+    die "Aucun port de secours disponible pour Dropbear (143, 1443, 2222, 22222)."
+  fi
+  printf "\n  ${YLW}! Port 143 occupé : Dropbear utilisera %s/tcp.${NC}\n" "$DROPBEAR_PORT"
 fi
+sed -i '/^NO_START=/d; /^DROPBEAR_PORT=/d' /etc/default/dropbear
+printf 'NO_START=0\nDROPBEAR_PORT=%s\n' "$DROPBEAR_PORT" >> /etc/default/dropbear
+grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
+if systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket'; then
+  systemctl disable --now dropbear.socket >/dev/null 2>&1
+fi
+systemctl unmask dropbear >/dev/null 2>&1
+if ! systemctl enable dropbear >>"$INSTALL_LOG" 2>&1 \
+   || ! systemctl restart dropbear >>"$INSTALL_LOG" 2>&1 \
+   || ! systemctl is-active --quiet dropbear \
+   || ! _db_listening "$DROPBEAR_PORT"; then
+  cp -a "$_db_backup" /etc/default/dropbear
+  systemctl restart dropbear >>"$INSTALL_LOG" 2>&1 || true
+  rm -f "$_db_backup"
+  printf '\n  Détails Dropbear :\n' >&2
+  journalctl -u dropbear -n 12 --no-pager 2>/dev/null >&2
+  die "Échec Dropbear sur le port $DROPBEAR_PORT (configuration restaurée)."
+fi
+rm -f "$_db_backup"
 
 # --- Comptes du panel avec shell /bin/false : Dropbear (et OpenSSH selon
 # PAM) rejette l'authentification par mot de passe si le shell du compte
@@ -228,8 +256,8 @@ systemctl is-active --quiet nvpanel-xlimit || die "Le service de limite Xray s'e
 # Réglages réseau validés : appliqués avant le démarrage de SlowDNS afin que
 # son socket UDP soit créé directement avec le bon buffer.
 [ -x /usr/local/bin/nvpanel-net-tune ] \
-  && /usr/local/bin/nvpanel-net-tune install >/dev/null 2>&1 \
-  || die "Application des réglages réseau échouée."
+  && /usr/local/bin/nvpanel-net-tune install >>"$INSTALL_LOG" 2>&1 \
+  || die "Installation de l'optimisation réseau échouée. Consulte : $INSTALL_LOG"
 ( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null \
   || die "Installation de la tâche de quota échouée."
 # compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)
@@ -243,10 +271,10 @@ systemctl is-active --quiet nvpanel-xlimit || die "Le service de limite Xray s'e
   || die "Installation du relevé d'activité Xray échouée."
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  ufw allow 143/tcp >/dev/null 2>&1 || die "Ouverture du port Dropbear dans UFW impossible."
+  ufw allow "$DROPBEAR_PORT/tcp" >/dev/null 2>&1 || die "Ouverture du port Dropbear dans UFW impossible."
 fi
-iptables -C INPUT -p tcp --dport 143 -j ACCEPT 2>/dev/null \
-  || iptables -I INPUT -p tcp --dport 143 -j ACCEPT 2>/dev/null \
+iptables -C INPUT -p tcp --dport "$DROPBEAR_PORT" -j ACCEPT 2>/dev/null \
+  || iptables -I INPUT -p tcp --dport "$DROPBEAR_PORT" -j ACCEPT 2>/dev/null \
   || die "Ouverture du port Dropbear dans le pare-feu impossible."
 netfilter-persistent save >/dev/null 2>&1 || die "Impossible de rendre le pare-feu persistant."
 
@@ -264,14 +292,14 @@ touch /root/.hushlogin 2>/dev/null
 fill 80 "Préparation des protocoles…"
 PROTO_FAILED=""
 if [ -x /usr/local/bin/install-xray ]; then
-  /usr/local/bin/install-xray auto >/dev/null 2>&1 || PROTO_FAILED="$PROTO_FAILED Xray"
+  /usr/local/bin/install-xray auto >>"$INSTALL_LOG" 2>&1 || PROTO_FAILED="$PROTO_FAILED Xray"
 else
   PROTO_FAILED="$PROTO_FAILED Xray"
 fi
 # UDP (UDPGW) activé d'office : le paquet badvpn vient des dépôts officiels,
 # donc cela fonctionne sur tous les VPS Debian/Ubuntu sans binaire à héberger.
 if [ -x /usr/local/bin/install-udp ]; then
-  /usr/local/bin/install-udp auto >/dev/null 2>&1 || PROTO_FAILED="$PROTO_FAILED UDPGW"
+  /usr/local/bin/install-udp auto >>"$INSTALL_LOG" 2>&1 || PROTO_FAILED="$PROTO_FAILED UDPGW"
 else
   PROTO_FAILED="$PROTO_FAILED UDPGW"
 fi
@@ -279,7 +307,7 @@ fi
 fill 90 "Préparation de SlowDNS…"
 if [ -n "$NVDOMAIN" ]; then
   if [ -x /usr/local/bin/install-slowdns ]; then
-    /usr/local/bin/install-slowdns auto "ns-$NVDOMAIN" >/dev/null 2>&1 || PROTO_FAILED="$PROTO_FAILED SlowDNS"
+    /usr/local/bin/install-slowdns auto "ns-$NVDOMAIN" >>"$INSTALL_LOG" 2>&1 || PROTO_FAILED="$PROTO_FAILED SlowDNS"
   else
     PROTO_FAILED="$PROTO_FAILED SlowDNS"
   fi
@@ -295,7 +323,7 @@ fi
 fill 100 "Terminé"
 sleep 0.3
 
-[ -z "$PROTO_FAILED" ] || die "Installation incomplète, protocoles en échec :$PROTO_FAILED"
+[ -z "$PROTO_FAILED" ] || die "Installation incomplète, protocoles en échec :$PROTO_FAILED. Consulte : $INSTALL_LOG"
 
 # --- Écran final --------------------------------------------
 IPADDR=$(cat /etc/nvpanel/ip 2>/dev/null)
@@ -312,6 +340,7 @@ printf "${NC}\n"
 printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\n"
 printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
 printf "   ${GRY}🌐 IP du serveur : %s${NC}\n\n" "$IPADDR"
+printf "   ${GRY}🔌 Port Dropbear : %s/tcp${NC}\n\n" "$DROPBEAR_PORT"
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion puis tape : update${NC}\n\n"
