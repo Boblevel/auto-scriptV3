@@ -12,9 +12,11 @@ die(){ printf "${RED}✘ %s${NC}\n" "$1"; exit 1; }
 
 # --- Vérifications ------------------------------------------
 [ "$EUID" -ne 0 ] && die "Ce script doit être lancé en root (sudo su -)."
-[ "$(systemd-detect-virt 2>/dev/null)" = "openvz" ] && die "OpenVZ non supporté."
+# Le nom de l'hyperviseur ne détermine pas ses permissions effectives.
+# Contrôles des capacités et de systemd ci-dessous (KVM/LXC/OpenVZ).
 . /etc/os-release 2>/dev/null || die "Distribution inconnue."
 echo "$ID $ID_LIKE" | grep -qiE 'ubuntu|debian' || die "Ubuntu ou Debian requis (détecté : $PRETTY_NAME)."
+[ -d /run/systemd/system ] || die "systemd (PID 1) requis : image VPS incompatible avec ce panel."
 RAM_TOT=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')
 case "$(uname -m)" in
   x86_64|amd64) ARCH=x86_64 ;;
@@ -86,8 +88,8 @@ echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
 fill 20 "Installation des dépendances…"
 INSTALL_LOG=/var/log/rhaff-install.log
-apt-get update -y >"$INSTALL_LOG" 2>&1 || die "Mise à jour APT échouée. Détails : $INSTALL_LOG"
-apt-get install -y curl wget jq unzip cron screen socat python3 openssl \
+apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update -y >"$INSTALL_LOG" 2>&1 || die "Mise à jour APT échouée. Détails : $INSTALL_LOG"
+apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y curl wget jq unzip cron screen socat python3 openssl \
     ca-certificates iproute2 procps util-linux net-tools dropbear stunnel4 \
     fail2ban vnstat iptables iptables-persistent nginx certbot qrencode >>"$INSTALL_LOG" 2>&1 \
     || die "Installation des dépendances échouée. Détails : $INSTALL_LOG"
@@ -102,7 +104,7 @@ _MISSING=""
 for _tool_pkg in curl:curl jq:jq openssl:openssl python3:python3 ip:iproute2 ss:iproute2 flock:util-linux nginx:nginx systemctl:systemd crontab:cron iptables:iptables; do
   _t=${_tool_pkg%%:*}; _pkg=${_tool_pkg##*:}
   command -v "$_t" >/dev/null 2>&1 || {
-    apt-get install -y "$_pkg" >/dev/null 2>&1
+    apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y "$_pkg" >>"$INSTALL_LOG" 2>&1
     command -v "$_t" >/dev/null 2>&1 || _MISSING="$_MISSING $_t"
   }
 done
@@ -114,57 +116,98 @@ if [ -n "$_MISSING" ]; then
   exit 1
 fi
 
-# --- Dropbear : adapter le démarrage sans toucher au SSH principal ----------
-# Debian 12/13 utilisent DROPBEAR_PORT dans /etc/default/dropbear.
-# Conserver les ports personnalisés ; éviter le conflit initial avec SSH :22.
+# Les protocoles utilisent iptables/NAT : sans NET_ADMIN (certains LXC/OpenVZ),
+# impossible de garantir leur fonctionnement. Détecter avant de modifier le panel.
+if ! iptables -t filter -S INPUT >>"$INSTALL_LOG" 2>&1 \
+   || ! iptables -t nat -S PREROUTING >>"$INSTALL_LOG" 2>&1; then
+  die "Pare-feu/NAT non administrable (droits NET_ADMIN du VPS). Demande ces permissions à l'hébergeur. Journal : $INSTALL_LOG"
+fi
+
+# ARM64 : le module SlowDNS est lié à un exécutable spécifique à l'architecture.
+# Ne pas commencer le déploiement si le domaine implique un binaire absent.
+if [ "$ARCH" = arm64 ] && [ -n "$NVDOMAIN" ]; then
+  curl -fsSIL --connect-timeout 10 --max-time 20 "$REPO_RAW/dns-server-arm64" >>"$INSTALL_LOG" 2>&1 \
+    || die "SlowDNS ARM64 requis mais dns-server-arm64 indisponible dans le dépôt ; aucun déploiement commencé."
+fi
+
+# --- Dropbear : démarrage sûr ; conserver OpenSSH et les ports personnalisés ---
 _db_listening(){
-  ss -H -ltn 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$"){f=1} END{exit f?0:1}'
+  ss -H -ltn 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$" ){f=1} END{exit f?0:1}'
 }
 _db_owned(){
-  ss -H -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$") && /"dropbear"/{f=1} END{exit f?0:1}'
+  ss -H -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$" ) && /"dropbear"/{f=1} END{exit f?0:1}'
 }
-command -v dropbear >/dev/null 2>&1 || die "Dropbear absent après installation APT. Consulte : $INSTALL_LOG"
-touch /etc/default/dropbear || die "Configuration Dropbear inaccessible."
+_db_port_free(){
+  [ "$1" != 22 ] && [ "$1" != "$NVPORT" ] || return 1
+  ! _db_listening "$1" || _db_owned "$1"
+}
+command -v dropbear >/dev/null 2>&1 || die "Dropbear absent après installation APT. Journal : $INSTALL_LOG"
+[ -f /etc/default/dropbear ] || touch /etc/default/dropbear || die "Configuration Dropbear inaccessible."
 _db_backup=$(mktemp /tmp/rhaff-dropbear.XXXXXX) || die "Sauvegarde Dropbear impossible."
 cp -a /etc/default/dropbear "$_db_backup" && chmod 600 "$_db_backup" || die "Sauvegarde Dropbear impossible."
-DROPBEAR_PORT=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear)
-[[ "$DROPBEAR_PORT" =~ ^[0-9]+$ ]] && [ "$DROPBEAR_PORT" -ge 1 ] && [ "$DROPBEAR_PORT" -le 65535 ] \
-  || DROPBEAR_PORT=143
-[ "$DROPBEAR_PORT" = 22 ] && DROPBEAR_PORT=143
-# Si 143 appartient déjà à un serveur IMAP/autre service, choisir un port
-# libre plutôt que d'écraser son service ou de bloquer l'installation.
-if _db_listening "$DROPBEAR_PORT" && ! _db_owned "$DROPBEAR_PORT"; then
-  if [ "$DROPBEAR_PORT" != 143 ]; then
-    die "Le port Dropbear personnalisé $DROPBEAR_PORT est occupé. Vérifie : ss -ltnp"
-  fi
-  for _db_candidate in 1443 2222 22222; do
-    [ "$_db_candidate" = "$NVPORT" ] && continue
-    if ! _db_listening "$_db_candidate"; then DROPBEAR_PORT=$_db_candidate; break; fi
-  done
-  if _db_listening "$DROPBEAR_PORT" && ! _db_owned "$DROPBEAR_PORT"; then
-    die "Aucun port de secours disponible pour Dropbear (143, 1443, 2222, 22222)."
-  fi
-  printf "\n  ${YLW}! Port 143 occupé : Dropbear utilisera %s/tcp.${NC}\n" "$DROPBEAR_PORT"
+_db_old_port=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear)
+_db_old_ok=0
+if [[ "$_db_old_port" =~ ^[0-9]+$ ]] && [ "$_db_old_port" -ne 22 ] \
+   && systemctl is-active --quiet dropbear && _db_owned "$_db_old_port"; then
+  _db_old_ok=1
 fi
-sed -i '/^NO_START=/d; /^DROPBEAR_PORT=/d' /etc/default/dropbear
-printf 'NO_START=0\nDROPBEAR_PORT=%s\n' "$DROPBEAR_PORT" >> /etc/default/dropbear
-grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
-if systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket'; then
-  systemctl disable --now dropbear.socket >/dev/null 2>&1
+# Un port réellement personnalisé est conservé. Les ports automatiques ont
+# des solutions de repli, sans jamais prendre le port 22 d'OpenSSH.
+if [[ "$_db_old_port" =~ ^[0-9]+$ ]] \
+   && [ "$_db_old_port" -ge 1 ] && [ "$_db_old_port" -le 65535 ] \
+   && [ "$_db_old_port" -ne 22 ] && [ "$_db_old_port" -ne 143 ]; then
+  _db_candidates=("$_db_old_port")
+else
+  _db_candidates=(143 1443 2222 22222)
 fi
-systemctl unmask dropbear >/dev/null 2>&1
-if ! systemctl enable dropbear >>"$INSTALL_LOG" 2>&1 \
-   || ! systemctl restart dropbear >>"$INSTALL_LOG" 2>&1 \
-   || ! systemctl is-active --quiet dropbear \
-   || ! _db_listening "$DROPBEAR_PORT"; then
-  cp -a "$_db_backup" /etc/default/dropbear
-  systemctl restart dropbear >>"$INSTALL_LOG" 2>&1 || true
+# socket activation ancienne : incompatible avec un service à port configurable.
+if systemctl list-unit-files --no-legend dropbear.socket 2>/dev/null | grep -q '^dropbear.socket'; then
+  systemctl disable --now dropbear.socket >>"$INSTALL_LOG" 2>&1 || die "Désactivation du socket Dropbear impossible."
+fi
+systemctl unmask dropbear >>"$INSTALL_LOG" 2>&1 || die "Service Dropbear masqué et non modifiable."
+_db_ok=0
+for _db_port in "${_db_candidates[@]}"; do
+  _db_port_free "$_db_port" || continue
+  if [ "$_db_old_ok" = 1 ] && [ "$_db_port" = "$_db_old_port" ]; then
+    DROPBEAR_PORT="$_db_port"; _db_ok=1; break
+  fi
+  # Retirer toutes les valeurs précédentes, y compris une ligne dupliquée.
+  sed -i '/^[[:space:]]*NO_START=/d; /^[[:space:]]*DROPBEAR_PORT=/d' /etc/default/dropbear \
+    || break
+  printf 'NO_START=0\nDROPBEAR_PORT=%s\n' "$_db_port" >> /etc/default/dropbear
+  grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear \
+    || printf 'DROPBEAR_EXTRA_ARGS=""\n' >> /etc/default/dropbear
+  systemctl reset-failed dropbear >>"$INSTALL_LOG" 2>&1 || true
+  if systemctl enable dropbear >>"$INSTALL_LOG" 2>&1 \
+     && systemctl restart dropbear >>"$INSTALL_LOG" 2>&1 \
+     && systemctl is-active --quiet dropbear \
+     && _db_owned "$_db_port"; then
+    DROPBEAR_PORT="$_db_port"
+    _db_ok=1
+    break
+  fi
+  printf 'Échec Dropbear sur %s/tcp :\n' "$_db_port" >>"$INSTALL_LOG"
+  journalctl -u dropbear -n 12 --no-pager >>"$INSTALL_LOG" 2>&1 || true
+  # Si la cause est un port non disponible, essayer le suivant.
+  systemctl stop dropbear >>"$INSTALL_LOG" 2>&1 || true
+done
+if [ "$_db_ok" -ne 1 ]; then
+  if [ "$_db_old_ok" = 1 ]; then
+    # Restaurer uniquement un service auparavant réellement fonctionnel.
+    cp -a "$_db_backup" /etc/default/dropbear
+    systemctl reset-failed dropbear >>"$INSTALL_LOG" 2>&1 || true
+    systemctl restart dropbear >>"$INSTALL_LOG" 2>&1 || true
+  else
+    # Ne jamais restaurer puis relancer une ancienne configuration sur :22.
+    systemctl disable --now dropbear >>"$INSTALL_LOG" 2>&1 || true
+  fi
   rm -f "$_db_backup"
-  printf '\n  Détails Dropbear :\n' >&2
-  journalctl -u dropbear -n 12 --no-pager 2>/dev/null >&2
-  die "Échec Dropbear sur le port $DROPBEAR_PORT (configuration restaurée)."
+  printf '\n  Derniers événements Dropbear :\n' >&2
+  journalctl -u dropbear -n 15 --no-pager 2>/dev/null >&2 || true
+  die "Dropbear n'a pas pu écouter sur un port disponible. Journal : $INSTALL_LOG (OpenSSH préservé)."
 fi
 rm -f "$_db_backup"
+[ "$DROPBEAR_PORT" = 143 ] || printf '\n  ${YLW}! Port Dropbear : %s/tcp (port 143 indisponible).${NC}\n' "$DROPBEAR_PORT"
 
 # --- Comptes du panel avec shell /bin/false : Dropbear (et OpenSSH selon
 # PAM) rejette l'authentification par mot de passe si le shell du compte
@@ -255,9 +298,10 @@ systemctl is-active --quiet nvpanel-limit || die "Le service de limite SSH s'est
 systemctl is-active --quiet nvpanel-xlimit || die "Le service de limite Xray s'est arrêté après son démarrage."
 # Réglages réseau validés : appliqués avant le démarrage de SlowDNS afin que
 # son socket UDP soit créé directement avec le bon buffer.
-[ -x /usr/local/bin/nvpanel-net-tune ] \
-  && /usr/local/bin/nvpanel-net-tune install >>"$INSTALL_LOG" 2>&1 \
-  || die "Installation de l'optimisation réseau échouée. Consulte : $INSTALL_LOG"
+if [ -x /usr/local/bin/nvpanel-net-tune ]; then
+  /usr/local/bin/nvpanel-net-tune install >>"$INSTALL_LOG" 2>&1 \
+    || printf '\n  ${YLW}! Optimisation réseau non disponible sur ce VPS ; installation poursuivie.${NC}\n'
+fi
 ( crontab -l 2>/dev/null | grep -v nvpanel-quota; echo "*/5 * * * * /usr/local/bin/nvpanel-quota check" ) | crontab - 2>/dev/null \
   || die "Installation de la tâche de quota échouée."
 # compteur de consommation CLIENTS (n'inclut pas le trafic propre du serveur)

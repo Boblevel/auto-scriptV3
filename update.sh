@@ -186,71 +186,84 @@ ln -sf /usr/local/bin/menu-uninstall /usr/local/bin/uninstall 2>/dev/null
 progress_to 80 "Mise à jour des services"
 systemctl daemon-reload >/dev/null 2>&1
 CONFIG_FAILED=""
-# Dropbear : préserver le port personnalisé et éviter les conflits avec SSH/IMAP.
+# Réparer aussi une installation où le paquet Dropbear serait absent.
+command -v dropbear >/dev/null 2>&1 \
+  || apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y dropbear >>/var/log/rhaff-install.log 2>&1
+# Dropbear : ne jamais restaurer un port :22 en conflit avec OpenSSH.
 _db_listening(){
-  ss -H -ltn 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$"){f=1} END{exit f?0:1}'
+  ss -H -ltn 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$" ){f=1} END{exit f?0:1}'
 }
 _db_owned(){
-  ss -H -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$") && /"dropbear"/{f=1} END{exit f?0:1}'
+  ss -H -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ (p "$" ) && /"dropbear"/{f=1} END{exit f?0:1}'
+}
+_db_port_free(){
+  [ "$1" != 22 ] && [ "$1" != "$_db_xport" ] || return 1
+  ! _db_listening "$1" || _db_owned "$1"
 }
 if command -v dropbear >/dev/null 2>&1; then
   touch /etc/default/dropbear
-  _dropbear_port=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
-  case "$_dropbear_port" in ''|*[!0-9]*) _dropbear_port=143 ;; esac
-  [ "$_dropbear_port" -ge 1 ] 2>/dev/null && [ "$_dropbear_port" -le 65535 ] 2>/dev/null || _dropbear_port=143
-  [ "$_dropbear_port" = 22 ] && _dropbear_port=143
-  _db_blocked=0
-  if _db_listening "$_dropbear_port" && ! _db_owned "$_dropbear_port"; then
-    if [ "$_dropbear_port" = 143 ]; then
-      _db_xport=$(cat /etc/nvpanel/xport 2>/dev/null)
-      for _db_candidate in 1443 2222 22222; do
-        [ "$_db_candidate" = "$_db_xport" ] && continue
-        if ! _db_listening "$_db_candidate"; then _dropbear_port=$_db_candidate; break; fi
-      done
-    fi
-    if _db_listening "$_dropbear_port" && ! _db_owned "$_dropbear_port"; then
-      _db_blocked=1
-      CONFIG_FAILED="$CONFIG_FAILED Dropbear-port-occupé"
-    fi
+  _db_xport=$(cat /etc/nvpanel/xport 2>/dev/null)
+  _db_old_port=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear)
+  _db_old_ok=0
+  if [[ "$_db_old_port" =~ ^[0-9]+$ ]] && [ "$_db_old_port" -ne 22 ] \
+     && systemctl is-active --quiet dropbear && _db_owned "$_db_old_port"; then
+    _db_old_ok=1
   fi
-  if [ "$_db_blocked" = 0 ] && \
-     { grep -q '^NO_START=1' /etc/default/dropbear \
-       || ! systemctl is-active --quiet dropbear 2>/dev/null \
-       || ! grep -q '^DROPBEAR_PORT=' /etc/default/dropbear \
-       || ! grep -Eq "^DROPBEAR_PORT=\"?${_dropbear_port}\"?[[:space:]]*$" /etc/default/dropbear \
-       || ! _db_listening "$_dropbear_port"; }; then
-    _db_backup=$(mktemp /tmp/rhaff-dropbear-update.XXXXXX) || _db_backup=""
-    if [ -z "$_db_backup" ] || ! cp -a /etc/default/dropbear "$_db_backup" 2>/dev/null \
-       || ! chmod 600 "$_db_backup"; then
-      CONFIG_FAILED="$CONFIG_FAILED Dropbear-sauvegarde"
-    else
-      sed -i '/^NO_START=/d; /^DROPBEAR_PORT=/d' /etc/default/dropbear
-      printf 'NO_START=0\nDROPBEAR_PORT=%s\n' "$_dropbear_port" >> /etc/default/dropbear
-      grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear || echo 'DROPBEAR_EXTRA_ARGS=""' >> /etc/default/dropbear
-      if systemctl list-unit-files 2>/dev/null | grep -q '^dropbear.socket'; then
-        systemctl disable --now dropbear.socket >/dev/null 2>&1
+  if [[ "$_db_old_port" =~ ^[0-9]+$ ]] \
+     && [ "$_db_old_port" -ge 1 ] && [ "$_db_old_port" -le 65535 ] \
+     && [ "$_db_old_port" -ne 22 ] && [ "$_db_old_port" -ne 143 ]; then
+    _db_candidates=("$_db_old_port")
+  else
+    _db_candidates=(143 1443 2222 22222)
+  fi
+  _db_backup=$(mktemp /tmp/rhaff-dropbear-update.XXXXXX) || _db_backup=""
+  _db_ok=0
+  if [ -n "$_db_backup" ] && cp -a /etc/default/dropbear "$_db_backup" 2>/dev/null \
+     && chmod 600 "$_db_backup"; then
+    if systemctl list-unit-files --no-legend dropbear.socket 2>/dev/null | grep -q '^dropbear.socket'; then
+      systemctl disable --now dropbear.socket >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED socket-Dropbear"
+    fi
+    systemctl unmask dropbear >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED service-Dropbear-masqué"
+    for _db_port in "${_db_candidates[@]}"; do
+      _db_port_free "$_db_port" || continue
+      # Un service sain au bon port ne doit pas être redémarré sans nécessité.
+      if [ "$_db_old_ok" = 1 ] && [ "$_db_port" = "$_db_old_port" ]; then
+        _dropbear_port="$_db_port"; _db_ok=1; break
       fi
-      systemctl unmask dropbear >/dev/null 2>&1
-      if ! systemctl enable dropbear >/dev/null 2>&1 \
-         || ! systemctl restart dropbear >/dev/null 2>&1 \
-         || ! systemctl is-active --quiet dropbear \
-         || ! _db_listening "$_dropbear_port"; then
+      sed -i '/^[[:space:]]*NO_START=/d; /^[[:space:]]*DROPBEAR_PORT=/d' /etc/default/dropbear || break
+      printf 'NO_START=0\nDROPBEAR_PORT=%s\n' "$_db_port" >> /etc/default/dropbear
+      grep -q '^DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear \
+        || printf 'DROPBEAR_EXTRA_ARGS=""\n' >> /etc/default/dropbear
+      systemctl reset-failed dropbear >/dev/null 2>&1 || true
+      if systemctl enable dropbear >/dev/null 2>&1 \
+         && systemctl restart dropbear >/dev/null 2>&1 \
+         && systemctl is-active --quiet dropbear \
+         && _db_owned "$_db_port"; then
+        _dropbear_port="$_db_port"; _db_ok=1; break
+      fi
+      systemctl stop dropbear >/dev/null 2>&1 || true
+    done
+    if [ "$_db_ok" -ne 1 ]; then
+      if [ "$_db_old_ok" = 1 ]; then
         cp -a "$_db_backup" /etc/default/dropbear
+        systemctl reset-failed dropbear >/dev/null 2>&1 || true
         systemctl restart dropbear >/dev/null 2>&1 || true
-        CONFIG_FAILED="$CONFIG_FAILED Dropbear-démarrage (journalctl -u dropbear)"
+      else
+        systemctl disable --now dropbear >/dev/null 2>&1 || true
       fi
+      CONFIG_FAILED="$CONFIG_FAILED Dropbear-démarrage (journalctl -u dropbear)"
     fi
-    [ -z "$_db_backup" ] || rm -f "$_db_backup"
+  else
+    CONFIG_FAILED="$CONFIG_FAILED Dropbear-sauvegarde"
   fi
-  if [ "$_db_blocked" = 0 ] && \
-     { ! systemctl is-active --quiet dropbear || ! _db_listening "$_dropbear_port"; }; then
-    CONFIG_FAILED="$CONFIG_FAILED Dropbear"
+  [ -z "$_db_backup" ] || rm -f "$_db_backup"
+  if [ "$_db_ok" -eq 1 ]; then
+    [ "$_dropbear_port" = 143 ] || printf '\n  ${YLW}! Dropbear utilise %s/tcp.${NC}\n' "$_dropbear_port"
   fi
 else
-  _dropbear_port=143
   CONFIG_FAILED="$CONFIG_FAILED Dropbear-absent"
 fi
-if systemctl is-active --quiet dropbear 2>/dev/null && _db_listening "$_dropbear_port"; then
+if [ "${_db_ok:-0}" = 1 ]; then
   iptables -C INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null || \
     iptables -I INPUT -p tcp --dport "$_dropbear_port" -j ACCEPT 2>/dev/null || \
     CONFIG_FAILED="$CONFIG_FAILED pare-feu-Dropbear"
@@ -290,10 +303,8 @@ if [ -x /usr/local/bin/nvpanel-net-tune ]; then
         || CONFIG_FAILED="$CONFIG_FAILED SlowDNS-buffer"
     fi
   else
-    CONFIG_FAILED="$CONFIG_FAILED réseau"
+    printf 'RHAFF : optimisation réseau facultative indisponible sur ce VPS.\n' >>/var/log/rhaff-install.log
   fi
-else
-  CONFIG_FAILED="$CONFIG_FAILED réseau"
 fi
 
 if [ -x /usr/local/bin/install-xray ]; then
