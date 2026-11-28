@@ -6,32 +6,54 @@
 #  reste en place et les comptes Vmess/Vless/Trojan continuent.
 # ============================================================
 source /etc/nvpanel/lib/ui.sh
+# En mode auto : aucune invite ; code non nul si le certificat ne peut être établi.
+TLS_AUTO=0
+case "${1:-}" in auto) TLS_AUTO=1 ;; '') ;; *) err "Option inconnue : $1"; exit 2 ;; esac
+tls_pause(){ [ "$TLS_AUTO" = 1 ] || pause; }
 [ "$EUID" -ne 0 ] && { err "Lance en root."; exit 1; }
 umask 077
 
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
-banner; top; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; bot
-[ -z "$DOMAIN" ] && { err "Aucun domaine défini (menu-settings → option 1)."; pause; exit 1; }
+[ "$TLS_AUTO" = 1 ] || { banner; top; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; bot; }
+[ -z "$DOMAIN" ] && { err "Aucun domaine défini (menu-settings → option 1)."; tls_pause; exit 1; }
 [[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
   && [ "${#DOMAIN}" -le 253 ] \
-  || { err "Domaine invalide : $DOMAIN"; pause; exit 1; }
+  || { err "Domaine invalide : $DOMAIN"; tls_pause; exit 1; }
 
 printf " Domaine : ${WHT}%s${NC}\n" "$DOMAIN"
 printf " ${GRY}Si le certificat échoue, tes comptes continueront de fonctionner.${NC}\n\n"
-ask " Continuer ? (o/n) : " r; confirm "$r" || exit 0
+if [ "$TLS_AUTO" != 1 ]; then
+  ask " Continuer ? (o/n) : " r; confirm "$r" || exit 0
+fi
+
+# Un certificat déjà valide est conservé : pas de demande ACME répétée,
+# aucun redémarrage inutile de nginx/Xray chez les clients existants.
+CERT=/etc/letsencrypt/live/$DOMAIN
+if [ "$TLS_AUTO" = 1 ] && [ -s "$CERT/fullchain.pem" ] && [ -s "$CERT/privkey.pem" ] \
+   && openssl x509 -in "$CERT/fullchain.pem" -noout -checkend 86400 >/dev/null 2>&1 \
+   && openssl x509 -in "$CERT/fullchain.pem" -noout -checkhost "$DOMAIN" >/dev/null 2>&1; then
+  printf 'TLS : certificat valide existant pour %s, conservé.\n' "$DOMAIN"
+  exit 0
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 printf "${CYN}➜${NC} Préparation…\n"
-apt-get install -y certbot >/dev/null 2>&1 || { err "Installation de certbot échouée."; pause; exit 1; }
+apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y certbot >/dev/null 2>&1 || { err "Installation de certbot échouée."; tls_pause; exit 1; }
 mkdir -p /var/www/certbot
 
 # nginx doit tourner (il sert le challenge sur le port 80) — AUCUNE coupure
 [ -x /usr/local/bin/install-xray ] && command -v xray >/dev/null 2>&1 || true
-nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || systemctl start nginx >/dev/null 2>&1
+if ! nginx -t >/dev/null 2>&1; then
+  err "Configuration Nginx invalide : certificat non demandé, services préservés."
+  tls_pause; exit 1
+fi
+if ! systemctl is-active --quiet nginx; then
+  systemctl start nginx >/dev/null 2>&1 || { err "Nginx indisponible pour HTTP-01."; tls_pause; exit 1; }
+fi
 
 printf "${CYN}➜${NC} Obtention du certificat Let's Encrypt…\n"
-certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos \
+certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos --keep-until-expiring \
   -m "admin@$DOMAIN" -d "$DOMAIN" >/dev/null 2>&1
 CERTBOT_RC=$?
 
@@ -41,7 +63,7 @@ if [ "$CERTBOT_RC" -eq 0 ] && [ -f "$CERT/fullchain.pem" ] && [ -f "$CERT/privke
   if ! [ -x /usr/local/bin/install-xray ] || ! /usr/local/bin/install-xray auto >/dev/null 2>&1 \
      || ! nginx -t >/dev/null 2>&1; then
     err "Certificat obtenu, mais la façade nginx n'a pas pu l'appliquer."
-    pause; exit 1
+    tls_pause; exit 1
   fi
   touch /etc/nvpanel/tls_on; chmod 600 /etc/nvpanel/tls_on 2>/dev/null
   systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1
@@ -61,7 +83,7 @@ EOF
   if systemctl is-active --quiet nvpanel-sstp 2>/dev/null && [ -x /usr/local/bin/install-sstp ]; then
     /usr/local/bin/install-sstp auto >/dev/null 2>&1 || TLS_OPTIONAL_WARN="$TLS_OPTIONAL_WARN SSTP"
   fi
-  clear; banner; top; center " ✔  TLS ACTIF " "${BOLD}${GRN}"; bot
+  [ "$TLS_AUTO" = 1 ] || { clear; banner; top; center " ✔  TLS ACTIF " "${BOLD}${GRN}"; bot; }
   ok "HTTPS activé sur $DOMAIN (certificat officiel Let's Encrypt)."
   printf "   ${GRY}Tes comptes Vmess/Vless/Trojan continuent de marcher — désormais avec un vrai certificat.${NC}\n"
   [ -z "$TLS_OPTIONAL_WARN" ] || warn "Certificat actif, mais redémarrage à vérifier :$TLS_OPTIONAL_WARN."
@@ -69,9 +91,11 @@ EOF
 else
   # Échec : on ne casse RIEN. L'auto-signé reste, les comptes marchent toujours.
   nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1
-  clear; banner; top; center " TLS NON ACTIVÉ " "${BOLD}${YLW}"; bot
+  [ "$TLS_AUTO" = 1 ] || { clear; banner; top; center " TLS NON ACTIVÉ " "${BOLD}${YLW}"; bot; }
   warn "Certificat Let's Encrypt non obtenu (DNS pas prêt, port 80 bloqué, ou proxy Cloudflare)."
   printf "   ${GRN}Aucune inquiétude :${NC} ${GRY}tes comptes fonctionnent toujours (certificat auto-signé).${NC}\n"
-  printf "   ${GRY}Vérifie que %s pointe vers %s (DNS only), puis réessaie.${NC}\n" "$DOMAIN" "$IP"
+  printf "   ${GRY}Vérifie que %s pointe vers %s et que HTTP-01 atteint le port 80.${NC}\n" "$DOMAIN" "$IP"
+  tls_pause
+  exit 1
 fi
-pause
+tls_pause

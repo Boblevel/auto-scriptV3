@@ -21,7 +21,9 @@ _backup_paths=()
 for _path in etc/nvpanel usr/local/etc/xray etc/nginx/conf.d/rhaff.conf \
              etc/nginx/nvpanel-ws.conf etc/wireguard etc/ppp etc/hysteria \
              etc/default/dropbear etc/sysctl.d/99-nvpanel-network.conf \
-             etc/systemd/system/nvpanel-net-tune.service; do
+             etc/systemd/system/nvpanel-net-tune.service \
+             etc/systemd/system/nvpanel-ssh-tls.service \
+             etc/letsencrypt/renewal-hooks/deploy/nvpanel-ssh-tls; do
   [ -e "/$_path" ] && _backup_paths+=("$_path")
 done
 [ "${#_backup_paths[@]}" -gt 0 ] \
@@ -313,6 +315,30 @@ if [ -x /usr/local/bin/install-xray ]; then
 else
   CONFIG_FAILED="$CONFIG_FAILED Xray"
 fi
+# SSH TLS pour les installations existantes : initialisation automatique si
+# absent, sans toucher aux ports existants ni relancer un service arrêté.
+SSH_TLS_NOTE=''
+_TLS_DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null || true)
+if [ -s /etc/nvpanel/ssh-tls/port ] && [ -f /etc/systemd/system/nvpanel-ssh-tls.service ]; then
+  if systemctl is-active --quiet nvpanel-ssh-tls; then
+    SSH_TLS_NOTE="actif (port $(cat /etc/nvpanel/ssh-tls/port)/tcp conservé)"
+  else
+    SSH_TLS_NOTE='configuré, arrêté : aucune réactivation automatique'
+  fi
+elif [ -z "$_TLS_DOMAIN" ]; then
+  SSH_TLS_NOTE='en attente : domaine public requis pour le certificat TLS'
+elif [[ " $FAILED " == *" install-tls"* || " $FAILED " == *" install-ssh-tls"* ]]; then
+  SSH_TLS_NOTE='en attente : téléchargement des modules TLS incomplet'
+elif [ -x /usr/local/bin/install-tls ] && [ -x /usr/local/bin/install-ssh-tls ]; then
+  if /usr/local/bin/install-tls auto >>/var/log/rhaff-install.log 2>&1 \
+     && /usr/local/bin/install-ssh-tls auto >>/var/log/rhaff-install.log 2>&1; then
+    SSH_TLS_NOTE="activé automatiquement (port $(cat /etc/nvpanel/ssh-tls/port)/tcp)"
+  else
+    SSH_TLS_NOTE='en attente : certificat/DNS/port 80, détails dans /var/log/rhaff-install.log'
+  fi
+else
+  SSH_TLS_NOTE='en attente : installateurs TLS indisponibles'
+fi
 # compteur de consommation CLIENTS (exclut le trafic propre du serveur)
 if [ -x /usr/local/bin/nvpanel-conso ]; then
   /usr/local/bin/nvpanel-conso setup >/dev/null 2>&1 || CONFIG_FAILED="$CONFIG_FAILED consommation"
@@ -390,6 +416,7 @@ if [ -n "$CONFIG_FAILED" ]; then
   printf "   ${YLW}⚠ Configuration non appliquée :%s.${NC}\n" "$CONFIG_FAILED"
   printf "   ${GRY}  Consulte les journaux systemd, corrige la cause puis relance : update${NC}\n\n"
 fi
+printf "   ${GRY}SSH SSL/TLS : %s${NC}\n" "$SSH_TLS_NOTE"
 printf "   ${GRY}Sauvegarde avant mise à jour :${NC} %s\n\n" "$BACKUP_FILE"
 # Le bot partage les mêmes commandes que le panel. S'il tourne déjà, on le
 # redémarre après la mise à jour afin qu'il charge immédiatement les fichiers

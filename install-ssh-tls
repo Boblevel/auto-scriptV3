@@ -48,6 +48,19 @@ if [ "$MODE" = interactive ]; then
   printf 'Port SSH SSL/TLS (Entrée = %s) : ' "$OLD_PORT"
   IFS= read -r answer || fail 'Saisie interrompue.'
   PORT=${answer:-$OLD_PORT}
+elif [ "$MODE" = auto ] && [ ! -s "$PORT_FILE" ]; then
+  # Nouveau VPS uniquement : tenter des ports alternatifs sans jamais modifier
+  # un port déjà choisi par un client ni déplacer Nginx/Xray.
+  XP_AUTO=$(cat /etc/nvpanel/xport 2>/dev/null || echo 443)
+  PORT=''
+  for CANDIDATE in 8443 9443 10443 2443; do
+    [ "$CANDIDATE" != "$XP_AUTO" ] || continue
+    if ! ss -H -ltn "( sport = :$CANDIDATE )" 2>/dev/null | grep -q .; then
+      PORT=$CANDIDATE
+      break
+    fi
+  done
+  [ -n "$PORT" ] || fail 'Aucun port TLS libre (8443, 9443, 10443, 2443).'
 fi
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || fail 'Port TLS invalide.'
 PORT=$((10#$PORT))

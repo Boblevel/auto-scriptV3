@@ -371,6 +371,31 @@ if [ -n "$NVDOMAIN" ]; then
   fi
 fi
 
+# SSH SSL/TLS est facultatif sans domaine public valide : ne jamais bloquer
+# les autres protocoles à cause de DNS / Let's Encrypt / pare-feu du fournisseur.
+SSH_TLS_NOTE=''
+if [ -z "$NVDOMAIN" ]; then
+  SSH_TLS_NOTE='en attente : domaine requis pour le certificat TLS'
+elif [ -s /etc/nvpanel/ssh-tls/port ] && [ -f /etc/systemd/system/nvpanel-ssh-tls.service ]; then
+  # Reinstallation sur un VPS déjà configuré : ne pas modifier le port et
+  # ne pas réactiver un service que l'administrateur avait arrêté.
+  if systemctl is-active --quiet nvpanel-ssh-tls; then
+    SSH_TLS_NOTE="actif : port $(cat /etc/nvpanel/ssh-tls/port)/tcp"
+  else
+    SSH_TLS_NOTE='déjà configuré et arrêté : état conservé'
+  fi
+elif [ -x /usr/local/bin/install-tls ] && [ -x /usr/local/bin/install-ssh-tls ]; then
+  if /usr/local/bin/install-tls auto >>"$INSTALL_LOG" 2>&1 \
+     && /usr/local/bin/install-ssh-tls auto >>"$INSTALL_LOG" 2>&1; then
+    SSH_TLS_NOTE="activé automatiquement : port $(cat /etc/nvpanel/ssh-tls/port)/tcp"
+  else
+    SSH_TLS_NOTE="en attente : vérifie le domaine, le port 80 et le journal $INSTALL_LOG"
+    printf "\n  ${YLW}! SSH SSL/TLS non activé : %s.${NC}\n" "$SSH_TLS_NOTE"
+  fi
+else
+  SSH_TLS_NOTE='en attente : installateurs TLS absents'
+fi
+
 fill 97 "Finalisation…"
 IFACE=$(ip route 2>/dev/null | awk '/default/{print $5; exit}')
 if [ -n "$IFACE" ] && command -v vnstat >/dev/null 2>&1; then
@@ -399,7 +424,8 @@ printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\
 printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
 printf "   ${GRY}🌐 IP du serveur : %s${NC}\n\n" "$IPADDR"
 printf "   ${GRY}🔐 Port HTTPS / Xray : %s/tcp${NC}\n" "$NVPORT"
-printf "   ${GRY}🔌 Port Dropbear : %s/tcp${NC}\n\n" "$DROPBEAR_PORT"
+printf "   ${GRY}🔌 Port Dropbear : %s/tcp${NC}\n" "$DROPBEAR_PORT"
+printf "   ${GRY}🔐 SSH SSL/TLS : %s${NC}\n\n" "$SSH_TLS_NOTE"
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"
   printf "   ${YLW}  récupérés.${NC} ${GRY}Vérifie la connexion puis tape : update${NC}\n\n"
