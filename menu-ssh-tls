@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# RHAFF SERVICE - SSH SSL/TLS pour HTTP Injector (comptes SSH partagés).
+source /etc/nvpanel/lib/ui.sh
+ui_enter; trap ui_leave EXIT INT TERM HUP
+[ "$EUID" -eq 0 ] || { err 'Lance en root.'; exit 1; }
+
+SERVICE=nvpanel-ssh-tls
+PORT_FILE=/etc/nvpanel/ssh-tls/port
+CLI=/usr/local/bin/nvpanel-cli
+
+header(){
+  banner; _edge '┏' '┓' 'SSH SSL/TLS (STUNNEL)'
+  proto_dash ssh ssh ssh_bundle
+  bot
+}
+connection_info(){
+  local domain port
+  domain=$(cat /etc/nvpanel/domain 2>/dev/null)
+  port=$(cat "$PORT_FILE" 2>/dev/null)
+  printf '   %bHôte / SNI :%b %s\n' "$CYN" "$NC" "${domain:-(domaine absent)}"
+  printf '   %bPort TLS   :%b %s\n' "$CYN" "$NC" "${port:-(non configuré)}"
+  printf '   %bClient     :%b HTTP Injector → SSL/TLS → SSH → TLS/SSL (stunnel)\n' "$CYN" "$NC"
+  printf '   %bComptes    :%b comptes SSH du panel (partagés)\n' "$CYN" "$NC"
+  printf '   %bNote       :%b Stunnel masque les IP originales au SSH ; limites par appareil non fiables.\n' "$YLW" "$NC"
+  printf '   %bSNI        :%b domaine couvert par le certificat du VPS\n' "$CYN" "$NC"
+  if systemctl is-active --quiet "$SERVICE"; then
+    printf '   %bService    : actif%b\n' "$GRN" "$NC"
+  else
+    printf '   %bService    : inactif / non installé%b\n' "$YLW" "$NC"
+  fi
+  if [[ "$port" =~ ^[0-9]+$ ]] && systemctl is-active --quiet "$SERVICE"; then
+    local n
+    n=$(ss -Htn state established "( sport = :$port )" 2>/dev/null | wc -l)
+    printf '   %bSessions TLS :%b %s (sockets, non utilisateurs uniques)\n' "$CYN" "$NC" "$n"
+  fi
+}
+validate_ready(){
+  if ! systemctl is-active --quiet "$SERVICE"; then
+    warn 'SSH TLS inactif. Active le service depuis ce menu (option 9).'
+    pause
+    return 1
+  fi
+}
+accounts(){
+  local rows
+  rows=$($CLI list 2>/dev/null)
+  if [ -z "$rows" ]; then warn 'Aucun compte SSH.'; return 1; fi
+  printf '   %b%-16s %-12s %-10s %s%b\n' "$WHT" 'COMPTE' 'EXPIRE' 'ÉTAT' 'LIMITES' "$NC"
+  while IFS='|' read -r u exp max quota state; do
+    [ -n "$u" ] || continue
+    printf '   %-16.16s %-12.12s %-10.10s %s appareil(s)\n' "$u" "$(_fmtd "$exp")" "$state" "${max:-0}"
+  done <<< "$rows"
+  return 0
+}
+pick(){
+  local n=0 a u exp max quota state
+  PICK=''
+  mapfile -t _USERS < <($CLI list 2>/dev/null | awk -F'|' 'NF>1{print $1}')
+  [ "${#_USERS[@]}" -gt 0 ] || { warn 'Aucun compte SSH.'; return 1; }
+  for u in "${_USERS[@]}"; do
+    n=$((n+1)); printf '   %2d) %s\n' "$n" "$u"
+  done
+  ask '   Numéro (0 = annuler) : ' a || return 1
+  [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le "$n" ] || return 1
+  PICK=${_USERS[$((a-1))]}
+}
+create_account(){
+  local user pass days lim gb result
+  if [ "$1" = trial ]; then
+    user="test$(tr -dc 'a-z0-9' </dev/urandom | head -c 5)"
+    pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)
+    days=1; lim=1; gb=0
+  else
+    ask 'Nom du compte SSH SSL/TLS : ' user || return
+    ask 'Mot de passe : ' pass || return
+    ask 'Validité (jours) : ' days || return
+    ask 'Appareils (0 = illimité) : ' lim || return
+    ask 'Quota Go (0 = illimité) : ' gb || return
+  fi
+  result=$($CLI create "$user" "$pass" "${days:-30}" "${lim:-0}" "${gb:-0}" 2>&1)
+  if [[ "$result" == OK* ]]; then
+    ok 'Compte SSH créé, utilisable via SSH direct, SlowDNS et SSH SSL/TLS.'
+    printf '%s\n' "$result" | tail -n +2
+    connection_info
+  else err "Création refusée : $(printf '%s' "$result" | head -1)"; fi
+  pause
+}
+view_account(){
+  pick || { pause; return; }
+  local result
+  result=$($CLI info "$PICK" 2>&1)
+  if [[ "$result" == OK* ]]; then
+    printf '%s\n' "$result" | tail -n +2
+    connection_info
+  else err "$result"; fi
+  pause
+}
+renew_account(){
+  pick || { pause; return; }
+  local d result
+  ask 'Nouvelle validité (jours) : ' d || return
+  result=$($CLI renew "$PICK" "$d" 2>&1)
+  [[ "$result" == OK* ]] && ok "$PICK prolongé : $result" || err "$result"
+  pause
+}
+set_lock(){
+  local method=$1 result
+  pick || { pause; return; }
+  result=$($CLI "$method" "$PICK" 2>&1)
+  [[ "$result" == OK* ]] && ok "$PICK : $result" || err "$result"
+  pause
+}
+delete_account(){
+  pick || { pause; return; }
+  warn "Supprime le compte SSH $PICK sur TOUS les accès SSH (Direct, TLS, SlowDNS, UDP)."
+  local answer result
+  ask 'Confirmer la suppression ? (o/n) : ' answer || return
+  confirm "$answer" || return
+  result=$($CLI delete "$PICK" 2>&1)
+  [[ "$result" == OK* ]] && ok "Compte $PICK supprimé." || err "$result"
+  pause
+}
+blocked_accounts(){
+  local rows
+  rows=$($CLI list 2>/dev/null | awk -F'|' '$5 ~ /expir|verrou|verr/ {print $1" | "$2" | "$5}')
+  if [ -z "$rows" ]; then ok 'Aucun compte bloqué.'; else printf '   %s\n' "$rows"; fi
+  pause
+}
+activate(){
+  if ! [ -x /usr/local/bin/install-ssh-tls ]; then
+    err 'Installateur SSH SSL/TLS absent. Mets à jour le panel.'
+  else
+    /usr/local/bin/install-ssh-tls interactive || warn 'Activation non effectuée. Configuration SSH existante préservée.'
+  fi
+  pause
+}
+stop_tls(){
+  local c
+  warn 'Arrête uniquement le tunnel TLS. Les comptes SSH et les autres services restent actifs.'
+  ask 'Confirmer (o/n) : ' c || return
+  confirm "$c" || return
+  if systemctl stop "$SERVICE" 2>/dev/null; then ok 'Tunnel TLS arrêté.'
+  else err 'Impossible d’arrêter le tunnel TLS.'; fi
+  pause
+}
+while true; do
+  header
+  connection_info
+  menu_box_top
+  compact_menu_entry '1' '➕' 'Créer un compte SSH SSL/TLS'
+  compact_menu_entry '2' '📋' 'Lister les comptes (SSH partagés)'
+  compact_menu_entry '3' '🔍' 'Revoir un compte / identifiants'
+  compact_menu_entry '4' '♻️' 'Prolonger un compte'
+  compact_menu_entry '5' '🔒' 'Verrouiller un compte'
+  compact_menu_entry '6' '🔓' 'Déverrouiller un compte'
+  compact_menu_entry '7' '🗑️' 'Supprimer un compte'
+  compact_menu_entry '8' '🎁' 'Compte test 24 h'
+  compact_menu_entry '9' '🔐' 'Installer / reconfigurer TLS'
+  compact_menu_entry '10' '⏹️' 'Arrêter uniquement le tunnel TLS'
+  compact_menu_entry '11' '🚫' 'Voir les comptes bloqués'
+  compact_menu_entry '0' '⬅️' 'Retour'
+  menu_box_bot
+  ask 'Choix : ' choice || break
+  case "$choice" in
+    1) header; validate_ready && create_account ;; 2) header; accounts; pause ;;
+    3) header; view_account ;; 4) header; renew_account ;;
+    5) header; set_lock lock ;; 6) header; set_lock unlock ;;
+    7) header; delete_account ;; 8) header; validate_ready && create_account trial ;;
+    9) header; activate ;; 10) header; stop_tls ;; 11) header; blocked_accounts ;;
+    0) break ;; *) warn 'Option invalide.'; sleep 1 ;;
+  esac
+done

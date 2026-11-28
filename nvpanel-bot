@@ -234,13 +234,56 @@ def main_kb():
         [{"text": "\u267B\uFE0F Prolonger", "callback_data": "renew"}, {"text": "\U0001F5D1 Suppr SSH", "callback_data": "delete"}],
         [{"text": "\U0001F512 Verrouiller", "callback_data": "lock"}, {"text": "\U0001F513 D\u00e9verrouiller", "callback_data": "unlock"}],
         [{"text": "\U0001F7E3 Vmess", "callback_data": "p:vmess"}, {"text": "\U0001F535 Vless", "callback_data": "p:vless"}],
-        [{"text": "\U0001F7E0 Trojan", "callback_data": "p:trojan"}, {"text": "\U0001F7E2 Shadowsocks", "callback_data": "p:ss"}],
+        [{"text": "\U0001F7E0 Trojan", "callback_data": "p:trojan"}, {"text": "🔐 SSH SSL/TLS", "callback_data": "tls:menu"}],
+        [{"text": "\U0001F7E2 Shadowsocks", "callback_data": "p:ss"}],
         [{"text": "\U0001F7E4 L2TP", "callback_data": "pp:l2tp"}, {"text": "\U0001F4E1 PPTP", "callback_data": "pp:pptp"}],
         [{"text": "\U0001F510 SSTP", "callback_data": "pp:sstp"}, {"text": "\U0001F6E1 WireGuard", "callback_data": "wg:list"}],
         [{"text": "\u26A1 Hysteria2", "callback_data": "hy:menu"}],
         [{"text": "\U0001F381 Compte test 24h", "callback_data": "trial"}],
         [{"text": "\U0001F9F9 Purger les expir\u00e9s", "callback_data": "purge"}],
         [{"text": "\U0001F504 Rafra\u00eechir le menu", "callback_data": "menu"}],
+    ]}
+
+def tls_info():
+    """SSH SSL/TLS is a listener over the existing SSH account database."""
+    domain = read_file("/etc/nvpanel/domain") or "Domaine absent"
+    port = read_file("/etc/nvpanel/ssh-tls/port") or "non configuré"
+    try:
+        active = subprocess.run(["systemctl", "is-active", "--quiet", "nvpanel-ssh-tls"],
+                                timeout=4).returncode == 0
+    except Exception:
+        active = False
+    state = "🟢 actif" if active else "🟠 inactif / non installé"
+    return ("🔐 <b>SSH SSL/TLS · Stunnel</b>\n"
+            "État : %s\n"
+            "Hôte / SNI : <code>%s</code>\n"
+            "Port TLS : <code>%s</code>\n"
+            "Tunnel : <code>SSL/TLS → SSH</code>\n"
+            "Client : HTTP Injector → TLS/SSL (stunnel)\n"
+            "<i>Comptes SSH partagés avec le panel ; pas de double comptage. "
+            "Le SNI doit être couvert par le certificat du VPS. "
+            "La limite d'appareils distincts n'est pas garantie derrière Stunnel.</i>" %
+            (state, esc(domain), esc(port)))
+
+def tls_active():
+    try:
+        return subprocess.run(["systemctl", "is-active", "--quiet", "nvpanel-ssh-tls"],
+                              timeout=4).returncode == 0
+    except Exception:
+        return False
+
+def tls_kb():
+    return {"inline_keyboard": [
+        [{"text": "➕ Créer SSH TLS", "callback_data": "tls:create"},
+         {"text": "📋 Comptes", "callback_data": "tls:list"}],
+        [{"text": "🎁 Test 24h", "callback_data": "tls:trial"},
+         {"text": "🔍 Connexion", "callback_data": "tls:info"}],
+        [{"text": "👤 Revoir un compte", "callback_data": "tls:account"}],
+        [{"text": "♻️ Prolonger", "callback_data": "tls:renew"},
+         {"text": "🔒 Verrouiller", "callback_data": "tls:lock"}],
+        [{"text": "🔓 Déverrouiller", "callback_data": "tls:unlock"},
+         {"text": "🗑️ Supprimer", "callback_data": "tls:delete"}],
+        [{"text": "🏠 Menu principal", "callback_data": "menu"}]
     ]}
 
 def proto_kb(p):
@@ -508,7 +551,7 @@ def do_monitor(chat):
     txt += "\u2550" * 23
     send(chat, txt)
 
-def do_list(chat):
+def do_list(chat, kb=None):
     out = cli("list")
     rows = [l.split("|") for l in out.splitlines() if l.count("|") == 4] if out else []
     if not rows:
@@ -535,7 +578,7 @@ def do_list(chat):
         else:
             lignes.append("\u2570 \u00c9tat       %s %s" % (badge, etat))
         blocks.append("\U0001F464 <b>%s</b>\n<code>%s</code>" % (esc(user), "\n".join(lignes)))
-    send_blocks(chat, "📋 <b>COMPTES SSH</b>  ·  %d" % len(rows), blocks)
+    send_blocks(chat, "📋 <b>COMPTES SSH</b>  ·  %d" % len(rows), blocks, kb=kb)
 
 def do_xlist(chat, proto):
     out = cli("xlist", proto)
@@ -582,6 +625,42 @@ def handle_callback(chat, data):
     if data == "cancel":
         send(chat, "\u274C Action annul\u00e9e.")
         return
+    if data.startswith("tls:"):
+        # Ne jamais publier de coordonnées ni identifiants TLS dans un groupe.
+        if str(chat) != ADMIN:
+            send(chat, "Utilise le bot en conversation privée pour SSH SSL/TLS.")
+            return
+        action = data[4:]
+        if action in ("menu", "info"):
+            send(chat, tls_info(), kb=tls_kb()); return
+        if action == "list":
+            do_list(chat, kb=tls_kb()); return
+        if action in ("create", "trial") and not tls_active():
+            send(chat, "⚠️ Active SSH SSL/TLS depuis le menu VPS (option 15) avant de créer un compte.",
+                 kb=tls_kb()); return
+        if action == "trial":
+            n, pw = rand_name(), rand_pass()
+            out = cli("create", n, pw, "1", "1", "0")
+            if out.startswith("OK"):
+                box, key = split_dns_key("\n".join(out.splitlines()[1:]))
+                send(chat, "✅ <b>Test SSH SSL/TLS 24h</b>\n<pre>%s</pre>%s\n\n%s" %
+                     (esc(box), dns_key_line(key), tls_info()), kb=tls_kb())
+            else:
+                send(chat, "❌ Création refusée : %s" % esc(out), kb=tls_kb())
+            return
+        prompt = {"create": ("create", "Nom motdepasse jours [appareils] [quotaGo]"),
+                  "account": ("tlsinfo", "Nom du compte à revoir"),
+                  "renew": ("renewdo", "Nom jours"),
+                  "lock": ("lockdo", "Nom du compte"),
+                  "unlock": ("unlockdo", "Nom du compte"),
+                  "delete": ("delete", "Nom du compte à supprimer de SSH, TLS, SlowDNS et UDP")}
+        if action in prompt:
+            state, hint = prompt[action]
+            STATE[chat] = {"action": state, "proto": "ssh", "tls": True}
+            send(chat, "🔐 <b>SSH SSL/TLS</b> — %s\nEnvoie : <code>%s</code>" %
+                 (esc(action), esc(hint)), kb=cancel_kb())
+            return
+        send(chat, "❌ Option TLS inconnue.", kb=tls_kb()); return
     if data == "monitor":
         do_monitor(chat); return
     if data == "trial":
@@ -760,6 +839,20 @@ def handle_text(chat, text):
     if not st:
         show_menu(chat); return
     a = st["action"]; parts = text.split()
+    if a == "tlsinfo":
+        if not parts:
+            send(chat, "Indique un nom de compte.", kb=tls_kb()); return
+        result = cli("info", parts[0])
+        if result.startswith("OK"):
+            send(chat, "👤 <b>Compte SSH SSL/TLS</b>\n<pre>%s</pre>\n\n%s" %
+                 (esc("\n".join(result.splitlines()[1:])), tls_info()), kb=tls_kb())
+        else:
+            send(chat, "❌ Compte introuvable : %s" % esc(result), kb=tls_kb())
+        return
+    if st.get("tls") and a == "create" and not tls_active():
+        send(chat, "⚠️ SSH SSL/TLS est arrêté. Active d'abord le service dans le panel.",
+             kb=tls_kb())
+        return
     if a in ("lockdo", "unlockdo", "delete", "pppdel", "hydel", "xdel") and not parts:
         STATE[chat] = st
         send(chat, "Envoie le nom du compte, ou /cancel pour annuler.")
@@ -772,8 +865,10 @@ def handle_text(chat, text):
             # dans le bot et dans le terminal. esc() protège les caractères
             # spéciaux d'un mot de passe (<, >, &) qui casseraient l'affichage.
             box, key = split_dns_key("\n".join(r.splitlines()[1:]))
-            send(chat, "\u2705 <b>Compte SSH cr\u00e9\u00e9</b>\n<pre>%s</pre>%s"
-                 % (esc(box), dns_key_line(key)))
+            details = ("\n\n" + tls_info()) if st.get("tls") else ""
+            send(chat, "\u2705 <b>Compte SSH cr\u00e9\u00e9</b>\n<pre>%s</pre>%s%s"
+                 % (esc(box), dns_key_line(key), details),
+                 kb=tls_kb() if st.get("tls") else None)
         else:
             send(chat, "\u274C %s" % r)
     elif a == "renewdo":
@@ -792,7 +887,8 @@ def handle_text(chat, text):
         nom = PROTO_NAME.get(p, p.upper())
         if r.startswith("OK"):
             send(chat, "\u2705 <b>%s</b> \u2014 %s prolong\u00e9 jusqu'au %s"
-                 % (nom, esc(parts[0]), esc(fmt_date(r.split()[-1]))))
+                 % (nom, esc(parts[0]), esc(fmt_date(r.split()[-1]))),
+                 kb=tls_kb() if st.get("tls") else None)
         else:
             send(chat, "\u274C <b>%s</b> \u2014 %s" % (nom, esc(r)))
     elif a in ("lockdo", "unlockdo"):
@@ -810,12 +906,14 @@ def handle_text(chat, text):
         if r.startswith("OK"):
             send(chat, "%s <b>%s</b> \u2014 %s %s"
                  % ("\U0001F512" if verrou else "\U0001F513", nom, esc(parts[0]),
-                    "verrouill\u00e9" if verrou else "d\u00e9verrouill\u00e9"))
+                    "verrouill\u00e9" if verrou else "d\u00e9verrouill\u00e9"),
+                 kb=tls_kb() if st.get("tls") else None)
         else:
             send(chat, "\u274C <b>%s</b> \u2014 %s" % (nom, esc(r)))
     elif a == "delete":
         r = cli("delete", parts[0])
-        send(chat, ("\u2705 %s supprim\u00e9" % esc(parts[0])) if r.startswith("OK") else ("\u274C %s" % esc(r)))
+        send(chat, ("\u2705 %s supprim\u00e9" % esc(parts[0])) if r.startswith("OK") else ("\u274C %s" % esc(r)),
+             kb=tls_kb() if st.get("tls") else None)
     elif a == "pppadd":
         p = st["proto"]
         if len(parts) < 2:

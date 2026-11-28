@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# RHAFF SERVICE - SSH over TLS (stunnel), service autonome.
+# N'édite ni le SSH existant, ni nginx, ni les comptes du panel.
+set -o pipefail
+umask 077
+
+CONF_DIR=/etc/nvpanel/ssh-tls
+STUNNEL_CONF=$CONF_DIR/stunnel.conf
+PORT_FILE=$CONF_DIR/port
+UNIT=/etc/systemd/system/nvpanel-ssh-tls.service
+HOOK=/etc/letsencrypt/renewal-hooks/deploy/nvpanel-ssh-tls
+SERVICE=nvpanel-ssh-tls
+MODE=${1:-interactive}
+
+say(){ printf '%s\n' "$*"; }
+fail(){ say "ERREUR SSH TLS : $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || fail 'Exécuter en root.'
+case "$MODE" in interactive|auto|status) ;; *) fail 'Option invalide (interactive|auto|status).' ;; esac
+
+if [ "$MODE" = status ]; then
+  if ! [ -f "$PORT_FILE" ]; then say 'SSH TLS non configuré.'; exit 0; fi
+  say "Port TLS : $(cat "$PORT_FILE")"
+  if systemctl is-active --quiet "$SERVICE"; then say 'Service : actif'; else say 'Service : arrêté'; fi
+  exit 0
+fi
+
+DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null || true)
+[[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+  && [ "${#DOMAIN}" -le 253 ] || fail 'Définir un domaine DNS valide dans Paramètres du panel.'
+CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+[ -s "$CERT" ] && [ -s "$KEY" ] || fail "Certificat Let's Encrypt manquant pour $DOMAIN. Activer TLS/HTTPS depuis Paramètres, option 2."
+command -v openssl >/dev/null 2>&1 || fail 'OpenSSL absent.'
+openssl x509 -in "$CERT" -noout -checkend 86400 >/dev/null 2>&1 \
+  || fail "Certificat $DOMAIN expiré ou proche de l'expiration. Renouveler TLS."
+openssl x509 -in "$CERT" -noout -checkhost "$DOMAIN" 2>/dev/null | grep -q 'does match certificate' \
+  || fail "Le certificat ne couvre pas $DOMAIN (SNI)."
+openssl pkey -in "$KEY" -noout >/dev/null 2>&1 || fail 'Clé TLS illisible ou invalide.'
+# Refuser une paire de certificat/clé dépareillée avant de toucher au service.
+CERT_PUB=$(openssl x509 -in "$CERT" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+KEY_PUB=$(openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+[ -n "$CERT_PUB" ] && [ "$CERT_PUB" = "$KEY_PUB" ] || fail 'Certificat TLS et clé privée incompatibles.'
+
+OLD_PORT=$(cat "$PORT_FILE" 2>/dev/null || true)
+case "$OLD_PORT" in ''|*[!0-9]*) OLD_PORT=8443 ;; esac
+PORT=$OLD_PORT
+if [ "$MODE" = interactive ]; then
+  printf 'Port SSH SSL/TLS (Entrée = %s) : ' "$OLD_PORT"
+  IFS= read -r answer || fail 'Saisie interrompue.'
+  PORT=${answer:-$OLD_PORT}
+fi
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] || fail 'Port TLS invalide.'
+PORT=$((10#$PORT))
+[ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || fail 'Choisir un port entre 1024 et 65535.'
+# Ports gérés par d'autres services. Le port web TLS public est dynamique.
+XP=$(cat /etc/nvpanel/xport 2>/dev/null || echo 443)
+case "$PORT" in 22|53|80|143|443|1723|4443|5300|5301|7100|7200|7300|8080|8081|8082|8388|10085)
+  fail "Port $PORT réservé à un service du panel." ;;
+esac
+[ "$PORT" != "$XP" ] || fail "Port $PORT utilisé par nginx/Xray."
+# Refuser les ports occupés, sauf l'instance propriétaire du même service.
+if ss -H -ltn "( sport = :$PORT )" 2>/dev/null | grep -q .; then
+  MAINPID=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)
+  if ! systemctl is-active --quiet "$SERVICE" \
+    || ! [[ "$MAINPID" =~ ^[1-9][0-9]*$ ]] \
+    || ! ss -H -ltnp "( sport = :$PORT )" 2>/dev/null | grep -Fq "pid=$MAINPID,"; then
+    fail "Port TCP $PORT déjà occupé. Aucune configuration modifiée."
+  fi
+fi
+
+# Cibler le serveur SSH réel, sans changer ses ports ni sa configuration.
+BACKEND=""
+DP=$(awk -F= '/^DROPBEAR_PORT=/{gsub(/["[:space:]]/,"",$2); p=$2} END{print p}' /etc/default/dropbear 2>/dev/null)
+if [[ "$DP" =~ ^[0-9]{1,5}$ ]] && [ "$DP" -ge 1 ] && [ "$DP" -le 65535 ] \
+  && systemctl is-active --quiet dropbear 2>/dev/null \
+  && ss -H -ltnp "( sport = :$DP )" 2>/dev/null | grep -q 'dropbear'; then
+  BACKEND=$DP
+elif ss -H -ltnp '( sport = :22 )' 2>/dev/null | grep -q 'sshd'; then
+  BACKEND=22
+fi
+[ -n "$BACKEND" ] || fail 'Aucun serveur Dropbear/SSH actif détecté. Ne rien modifier.'
+command -v apt-get >/dev/null 2>&1 || fail 'apt-get absent : Debian/Ubuntu requis.'
+if ! command -v stunnel4 >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y stunnel4 \
+    || fail 'Installation du paquet stunnel4 échouée.'
+fi
+STUNNEL=$(command -v stunnel4) || fail 'Binaire stunnel4 introuvable.'
+
+mkdir -p "$CONF_DIR" || fail 'Impossible de créer la configuration TLS.'
+chmod 700 "$CONF_DIR" || fail 'Permissions de la configuration refusées.'
+TMPDIR=$(mktemp -d "$CONF_DIR/.deploy.XXXXXX") || fail 'Préparation impossible.'
+HAD_CONF=0; HAD_UNIT=0; HAD_PORT=0; HAD_HOOK=0; WAS_ACTIVE=0; WAS_ENABLED=0
+[ ! -e "$STUNNEL_CONF" ] || { cp -a "$STUNNEL_CONF" "$TMPDIR/old.conf" || fail 'Sauvegarde config impossible.'; HAD_CONF=1; }
+[ ! -e "$UNIT" ] || { cp -a "$UNIT" "$TMPDIR/old.unit" || fail 'Sauvegarde unit impossible.'; HAD_UNIT=1; }
+[ ! -e "$PORT_FILE" ] || { cp -a "$PORT_FILE" "$TMPDIR/old.port" || fail 'Sauvegarde port impossible.'; HAD_PORT=1; }
+[ ! -e "$HOOK" ] || { cp -a "$HOOK" "$TMPDIR/old.hook" || fail 'Sauvegarde renouvellement impossible.'; HAD_HOOK=1; }
+systemctl is-active --quiet "$SERVICE" && WAS_ACTIVE=1
+systemctl is-enabled --quiet "$SERVICE" && WAS_ENABLED=1
+
+rollback(){
+  say 'Restauration de SSH TLS uniquement (SSH et nginx inchangés).' >&2
+  if [ "$HAD_CONF" = 1 ]; then cp -a "$TMPDIR/old.conf" "$STUNNEL_CONF"; else rm -f "$STUNNEL_CONF"; fi
+  if [ "$HAD_UNIT" = 1 ]; then cp -a "$TMPDIR/old.unit" "$UNIT"; else rm -f "$UNIT"; fi
+  if [ "$HAD_PORT" = 1 ]; then cp -a "$TMPDIR/old.port" "$PORT_FILE"; else rm -f "$PORT_FILE"; fi
+  if [ "$HAD_HOOK" = 1 ]; then cp -a "$TMPDIR/old.hook" "$HOOK"; else rm -f "$HOOK"; fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if [ "$WAS_ACTIVE" = 1 ]; then
+    systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
+    systemctl restart "$SERVICE" >/dev/null 2>&1 || true
+  else systemctl stop "$SERVICE" >/dev/null 2>&1 || true; fi
+  if [ "$WAS_ENABLED" = 1 ]; then systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+  else systemctl disable "$SERVICE" >/dev/null 2>&1 || true; fi
+  rm -rf "$TMPDIR"
+}
+# Le service est dédié, jamais enregistré dans /etc/stunnel/.
+cat > "$TMPDIR/new.conf" <<EOF_CONF
+foreground = yes
+client = no
+cert = $CERT
+key = $KEY
+[ssh-tls]
+accept = 0.0.0.0:$PORT
+connect = 127.0.0.1:$BACKEND
+EOF_CONF
+cat > "$TMPDIR/new.unit" <<EOF_UNIT
+[Unit]
+Description=RHAFF SERVICE - SSH over TLS (Stunnel)
+After=network.target ssh.service dropbear.service
+
+[Service]
+Type=simple
+ExecStart=$STUNNEL $STUNNEL_CONF
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+# Déploiement autonome du hook : fonctionne même si TLS avait été activé
+# AVANT la mise à jour du panel et sans réexécuter Certbot.
+cat > "$TMPDIR/new.hook" <<'EOF_HOOK'
+#!/bin/sh
+systemctl is-active --quiet nvpanel-ssh-tls 2>/dev/null && systemctl restart nvpanel-ssh-tls >/dev/null 2>&1
+exit 0
+EOF_HOOK
+chmod 600 "$TMPDIR/new.conf" "$TMPDIR/new.unit"
+chmod 755 "$TMPDIR/new.hook"
+if ! mv -f "$TMPDIR/new.conf" "$STUNNEL_CONF" \
+  || ! mv -f "$TMPDIR/new.unit" "$UNIT" \
+  || ! mkdir -p "${HOOK%/*}" \
+  || ! mv -f "$TMPDIR/new.hook" "$HOOK" \
+  || ! printf '%s\n' "$PORT" > "$PORT_FILE" \
+  || ! chmod 600 "$STUNNEL_CONF" "$PORT_FILE" \
+  || ! chmod 644 "$UNIT" \
+  || ! systemctl daemon-reload \
+  || ! systemctl enable "$SERVICE" \
+  || ! systemctl reset-failed "$SERVICE" \
+  || ! systemctl restart "$SERVICE" \
+  || ! systemctl is-active --quiet "$SERVICE"; then
+  rollback
+  fail 'Démarrage SSH TLS échoué. Consulter journalctl -u nvpanel-ssh-tls.'
+fi
+# Vérification du socket propriétaire (évite un faux « actif »).
+MAINPID=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)
+if ! [[ "$MAINPID" =~ ^[1-9][0-9]*$ ]] \
+  || ! ss -H -ltnp "( sport = :$PORT )" 2>/dev/null | grep -Fq "pid=$MAINPID,"; then
+  rollback
+  fail "Stunnel ne détient pas le port $PORT."
+fi
+# Ne changer les règles de pare-feu qu'après démarrage vérifié.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow "$PORT/tcp" >/dev/null 2>&1 || say "ATTENTION : ouvrir $PORT/tcp dans UFW."
+elif command -v iptables >/dev/null 2>&1; then
+  if ! iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT >/dev/null 2>&1; then
+    if iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT >/dev/null 2>&1; then
+      command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1 || true
+    else say "ATTENTION : vérifier le pare-feu pour $PORT/tcp."; fi
+  fi
+fi
+rm -rf "$TMPDIR"
+say 'SSH SSL/TLS activé (comptes SSH existants réutilisés, sans duplication).'
+say "Hôte / SNI : $DOMAIN"
+say "Port TLS    : $PORT/tcp"
+say "SSH interne : 127.0.0.1:$BACKEND"
+say 'HTTP Injector : SSL/TLS → SSH, TLS/SSL (stunnel), SNI = ce domaine.'
+say 'Ouvrir aussi ce port TCP dans le pare-feu du fournisseur si nécessaire.'

@@ -40,7 +40,7 @@ services_status() {
     "ssh:SSH (OpenSSH)" "dropbear:Dropbear" "xray:Xray (Vmess/Vless/Trojan/SS)" \
     "nginx:Nginx (façade TLS/WS)" "nvpanel-slowdns:SlowDNS" "nvpanel-badvpn-7300:UDP (badvpn)" \
     "wg-quick@wg0:WireGuard" "xl2tpd:L2TP (xl2tpd)" "strongswan-starter:L2TP (IPsec)" \
-    "pptpd:PPTP" "nvpanel-sstp:SSTP" "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
+    "pptpd:PPTP" "nvpanel-sstp:SSTP" "nvpanel-ssh-tls:SSH SSL/TLS" "nvpanel-limit:Limite d'appareils" "nvpanel-bot:Bot Telegram"; do
     s="${pair%%:*}"; name="${pair##*:}"
     if systemctl is-active --quiet "$s" 2>/dev/null; then
       printf "   ${GRN}● actif  ${NC} %s\n" "$name"
@@ -109,6 +109,7 @@ while true; do
   home_entry "05" "🟣" "Xray · Vmess"
   home_entry "06" "🔵" "Xray · Vless"
   home_entry "07" "🟠" "Xray · Trojan"
+  home_entry "15" "🔐" "SSH · SSL/TLS (Stunnel)"
   home_entry "08" "🟢" "Menu · Shadowsocks"
   home_entry "09" "🔰" "Menu · WireGuard"
   home_mid
@@ -128,6 +129,7 @@ while true; do
     05|5) run menu-xray vmess ;;
     06|6) run menu-xray vless ;;
     07|7) run menu-xray trojan ;;
+    15)   run menu-ssh-tls ;;
     08|8) run menu-ss ;;
     09|9) run menu-wg ;;
     10)   run menu-bot ;;

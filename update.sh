@@ -115,6 +115,7 @@ trap 'rm -rf "$_STAGE" 2>/dev/null' EXIT
 _COMPONENTS=(
   "ui.sh:/etc/nvpanel/lib/ui.sh" "menu:/usr/local/bin/menu" "menu-ssh:/usr/local/bin/menu-ssh"
   "menu-xray:/usr/local/bin/menu-xray" "menu-ss:/usr/local/bin/menu-ss" "menu-wg:/usr/local/bin/menu-wg"
+  "menu-ssh-tls:/usr/local/bin/menu-ssh-tls" "install-ssh-tls:/usr/local/bin/install-ssh-tls"
   "menu-bot:/usr/local/bin/menu-bot" "menu-settings:/usr/local/bin/menu-settings"
   "menu-uninstall:/usr/local/bin/menu-uninstall" "nvpanel-cli:/usr/local/bin/nvpanel-cli"
   "nvpanel-bot:/usr/local/bin/nvpanel-bot" "nvpanel-limit:/usr/local/bin/nvpanel-limit"
