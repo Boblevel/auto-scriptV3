@@ -233,13 +233,71 @@ swap_ram(){
 }
 enable_bbr(){
   header
-  grep -q 'net.core.default_qdisc=fq' /etc/sysctl.conf || echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
-  grep -q 'tcp_congestion_control=bbr' /etc/sysctl.conf || echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
-  sysctl -p >/dev/null 2>&1
-  local cc; cc=$(sysctl -n net.ipv4.tcp_congestion_control)
-  [ "$cc" = "bbr" ] && ok "BBR activé." || warn "BBR demandé (contrôle : $cc). Un redémarrage peut être nécessaire."
+  local bbr_file=/etc/sysctl.d/90-nvpanel-bbr.conf old_cc old_qdisc available tmp bak="" had_file=0
+  command -v sysctl >/dev/null 2>&1 || { err "sysctl introuvable."; pause; return; }
+  old_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || {
+    err "Le noyau interdit la lecture du contrôle TCP."; pause; return;
+  }
+  old_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || {
+    err "Ce noyau ne permet pas de configurer la file réseau fq."; pause; return;
+  }
+  available=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+  if ! [[ " $available " == *" bbr "* ]]; then
+    command -v modprobe >/dev/null 2>&1 && modprobe tcp_bbr >/dev/null 2>&1 || true
+    available=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+  fi
+  if ! [[ " $available " == *" bbr "* ]]; then
+    warn "BBR indisponible sur ce noyau/VPS : aucune modification."; pause; return
+  fi
+  # Ne pas écraser les choix réseau d'autres outils : détecter les conflits.
+  local settings_file conflict=""
+  for settings_file in /etc/sysctl.conf /etc/sysctl.d/*.conf /usr/lib/sysctl.d/*.conf /lib/sysctl.d/*.conf /run/sysctl.d/*.conf; do
+    [ "$settings_file" = "$bbr_file" ] && continue
+    [ -f "$settings_file" ] || continue
+    if grep -Eq '^[[:space:]]*(net\.ipv4\.tcp_congestion_control|net\.core\.default_qdisc)[[:space:]]*=' "$settings_file"; then
+      conflict="$settings_file"; break
+    fi
+  done
+  if [ -n "$conflict" ]; then
+    warn "Paramètres TCP déjà gérés dans $conflict : non modifiés pour éviter un conflit."
+    pause; return
+  fi
+  if [ -e "$bbr_file" ]; then
+    bak=$(mktemp /etc/sysctl.d/.nvpanel-bbr-old.XXXXXX) || { err "Sauvegarde impossible."; pause; return; }
+    cp -a "$bbr_file" "$bak" || { rm -f "$bak"; err "Sauvegarde impossible."; pause; return; }
+    had_file=1
+  fi
+  if [ "$old_qdisc" != fq ] && ! sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
+    err "fq refusé : aucun changement persistant."; [ -z "$bak" ] || rm -f "$bak"; pause; return
+  fi
+  if ! sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 \
+     || [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" != bbr ] \
+     || [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" != fq ]; then
+    sysctl -w "net.ipv4.tcp_congestion_control=$old_cc" >/dev/null 2>&1 || true
+    sysctl -w "net.core.default_qdisc=$old_qdisc" >/dev/null 2>&1 || true
+    [ -z "$bak" ] || rm -f "$bak"
+    err "BBR non confirmé : valeurs réseau précédentes restaurées."
+    pause; return
+  fi
+  tmp=$(mktemp /etc/sysctl.d/.nvpanel-bbr.XXXXXX) || tmp=""
+  if [ -z "$tmp" ] \
+     || ! printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > "$tmp" \
+     || ! chmod 644 "$tmp" || ! mv -f "$tmp" "$bbr_file"; then
+    [ -z "$tmp" ] || rm -f "$tmp"
+    if [ "$had_file" = 1 ]; then cp -a "$bak" "$bbr_file"; else rm -f "$bbr_file"; fi
+    sysctl -w "net.ipv4.tcp_congestion_control=$old_cc" >/dev/null 2>&1 || true
+    sysctl -w "net.core.default_qdisc=$old_qdisc" >/dev/null 2>&1 || true
+    [ -z "$bak" ] || rm -f "$bak"
+    err "Persistance impossible : configuration précédente restaurée."
+    pause; return
+  fi
+  [ -z "$bak" ] || rm -f "$bak"
+  ok "BBR actif (TCP) et fq configuré pour les nouvelles files réseau."
+  printf "   ${GRY}Paramètres enregistrés : %s${NC}\n" "$bbr_file"
+  printf "   ${GRY}Services existants non redémarrés ; connexions UDP inchangées.${NC}\n"
   pause
 }
+
 speedtest(){
   header; section_panel " 📶  TEST DE VITESSE DU SERVEUR "; echo
   local lat; lat=$(ping -c 2 -W 2 1.1.1.1 2>/dev/null | awk -F'time=' '/time=/{gsub(/ ms/,"",$2); v=$2} END{print v}')

@@ -11,7 +11,7 @@ umask 077
 
 DOMAIN=$(cat /etc/nvpanel/domain 2>/dev/null)
 IP=$(cat /etc/nvpanel/ip 2>/dev/null)
-banner; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; line
+banner; top; center " ACTIVATION TLS / HTTPS " "${BOLD}${WHT}"; bot
 [ -z "$DOMAIN" ] && { err "Aucun domaine défini (menu-settings → option 1)."; pause; exit 1; }
 [[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
   && [ "${#DOMAIN}" -le 253 ] \
@@ -61,7 +61,7 @@ EOF
   if systemctl is-active --quiet nvpanel-sstp 2>/dev/null && [ -x /usr/local/bin/install-sstp ]; then
     /usr/local/bin/install-sstp auto >/dev/null 2>&1 || TLS_OPTIONAL_WARN="$TLS_OPTIONAL_WARN SSTP"
   fi
-  clear; banner; center " ✔  TLS ACTIF " "${BOLD}${GRN}"; line
+  clear; banner; top; center " ✔  TLS ACTIF " "${BOLD}${GRN}"; bot
   ok "HTTPS activé sur $DOMAIN (certificat officiel Let's Encrypt)."
   printf "   ${GRY}Tes comptes Vmess/Vless/Trojan continuent de marcher — désormais avec un vrai certificat.${NC}\n"
   [ -z "$TLS_OPTIONAL_WARN" ] || warn "Certificat actif, mais redémarrage à vérifier :$TLS_OPTIONAL_WARN."
@@ -69,7 +69,7 @@ EOF
 else
   # Échec : on ne casse RIEN. L'auto-signé reste, les comptes marchent toujours.
   nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1
-  clear; banner; center " TLS NON ACTIVÉ " "${BOLD}${YLW}"; line
+  clear; banner; top; center " TLS NON ACTIVÉ " "${BOLD}${YLW}"; bot
   warn "Certificat Let's Encrypt non obtenu (DNS pas prêt, port 80 bloqué, ou proxy Cloudflare)."
   printf "   ${GRN}Aucune inquiétude :${NC} ${GRY}tes comptes fonctionnent toujours (certificat auto-signé).${NC}\n"
   printf "   ${GRY}Vérifie que %s pointe vers %s (DNS only), puis réessaie.${NC}\n" "$DOMAIN" "$IP"

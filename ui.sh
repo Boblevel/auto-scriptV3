@@ -468,6 +468,25 @@ _ppp_online_all(){
   printf '%s\n' "$r"
 }
 
+# Un compte expiré ou verrouillé compte UNE seule fois comme bloqué.
+# Dates AAAA-MM-JJ, expiration inclusive (même règle que nvpanel-cli).
+_count_blocked_db(){
+  local today expcol="${2:-4}" lockcol="${3:-5}"
+  today=$(date +%F)
+  awk -v d="$today" -v e="$expcol" -v l="$lockcol" '
+    $1=="###" && (($e!="" && length($e)==10 && $e<=d) || $l=="L") {n++}
+    END{print n+0}
+  ' "/etc/nvpanel/db/$1" 2>/dev/null
+}
+_count_blocked_ssh(){
+  local today; today=$(date +%F)
+  awk -v d="$today" '
+    NR==FNR {if($1=="###"){users[$2]=1; expiry[$2]=$3}; next}
+    {split($0,a,":"); if(a[1] in users && a[2] ~ /^[!*]/) locked[a[1]]=1}
+    END{for(u in users) if(locked[u] || (length(expiry[u])==10 && expiry[u]<=d)) n++; print n+0}
+  ' /etc/nvpanel/db/ssh /etc/shadow 2>/dev/null
+}
+
 # ---- Statistiques comptes ----------------------------------
 # ATTENTION : « grep -c » renvoie un code d'erreur quand le compte est 0,
 # tout en affichant « 0 ». Un « || echo 0 » ajouterait donc un SECOND zéro
@@ -481,7 +500,7 @@ stats() {
 
   # Un seul passage dans /etc/shadow au lieu d'un appel `passwd -S` par
   # compte : même information réelle, nettement moins de processus au chargement.
-  bl_ssh=$(awk 'NR==FNR{if($1=="###")u[$2]=1; next} {split($0,a,":"); if(u[a[1]] && a[2] ~ /^!/)c++} END{print c+0}' /etc/nvpanel/db/ssh /etc/shadow 2>/dev/null); bl_ssh=${bl_ssh:-0}
+  bl_ssh=$(_count_blocked_ssh); bl_ssh=${bl_ssh:-0}
 
   local vm vl tr ss wg l2 pp sst hy
   vm=$(_count_db vmess); vl=$(_count_db vless); tr=$(_count_db trojan)
@@ -514,15 +533,15 @@ stats() {
     (_conso_raw > "$_sd/conso" 2>/dev/null) &
 
     local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
-    bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
-    bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
-    bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
-    bl_ss=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/shadowsocks 2>/dev/null)
-    bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
-    bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
-    bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
-    bl_wg=$(awk '/^### /{if($6=="L")c++} END{print c+0}' /etc/nvpanel/db/wireguard 2>/dev/null)
-    bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
+    bl_vm=$(_count_blocked_db vmess 4 5)
+    bl_vl=$(_count_blocked_db vless 4 5)
+    bl_tr=$(_count_blocked_db trojan 4 5)
+    bl_ss=$(_count_blocked_db shadowsocks 4 5)
+    bl_l2=$(_count_blocked_db l2tp 4 5)
+    bl_pp=$(_count_blocked_db pptp 4 5)
+    bl_sst=$(_count_blocked_db sstp 4 5)
+    bl_wg=$(_count_blocked_db wireguard 5 6)
+    bl_hy=$(_count_blocked_db hysteria 4 5)
     blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_wg + bl_hy ))
 
     wait
@@ -558,15 +577,15 @@ stats() {
     fi
     _conso=$(_conso_raw)
     local bl_vm bl_vl bl_tr bl_ss bl_l2 bl_pp bl_sst bl_wg bl_hy
-    bl_vm=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vmess 2>/dev/null)
-    bl_vl=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/vless 2>/dev/null)
-    bl_tr=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/trojan 2>/dev/null)
-    bl_ss=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/shadowsocks 2>/dev/null)
-    bl_l2=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/l2tp 2>/dev/null)
-    bl_pp=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/pptp 2>/dev/null)
-    bl_sst=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/sstp 2>/dev/null)
-    bl_wg=$(awk '/^### /{if($6=="L")c++} END{print c+0}' /etc/nvpanel/db/wireguard 2>/dev/null)
-    bl_hy=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null)
+    bl_vm=$(_count_blocked_db vmess 4 5)
+    bl_vl=$(_count_blocked_db vless 4 5)
+    bl_tr=$(_count_blocked_db trojan 4 5)
+    bl_ss=$(_count_blocked_db shadowsocks 4 5)
+    bl_l2=$(_count_blocked_db l2tp 4 5)
+    bl_pp=$(_count_blocked_db pptp 4 5)
+    bl_sst=$(_count_blocked_db sstp 4 5)
+    bl_wg=$(_count_blocked_db wireguard 5 6)
+    bl_hy=$(_count_blocked_db hysteria 4 5)
     blocked=$(( bl_ssh + bl_vm + bl_vl + bl_tr + bl_ss + bl_l2 + bl_pp + bl_sst + bl_wg + bl_hy ))
   fi
 
@@ -595,7 +614,7 @@ proto_dash() {
   case "$mode" in
     ssh)
       online=$(_ssh_online)
-      blocked=$(awk 'NR==FNR{if($1=="###")u[$2]=1; next} {split($0,a,":"); if(u[a[1]] && a[2] ~ /^!/)c++} END{print c+0}' "/etc/nvpanel/db/$dbf" /etc/shadow 2>/dev/null); blocked=${blocked:-0} ;;
+      blocked=$(_count_blocked_ssh); blocked=${blocked:-0} ;;
     port:*)
       local p="${mode#port:}"
       online=0
@@ -604,7 +623,7 @@ proto_dash() {
         else online=$(_online_uniq_port "$p"); fi
       fi
       online=${online:-0}
-      blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
+      blocked=$(_count_blocked_db "$dbf" 4 5); blocked=${blocked:-0} ;;
     xray)
       # Auparavant : un seul total de sockets partagé sur le port public
       # nginx (_xray_online), affiché IDENTIQUE dans les menus Vmess, Vless
@@ -615,10 +634,10 @@ proto_dash() {
       # affiche enfin son propre chiffre.
       online=0
       [ "$total" -gt 0 ] && online=$(_xonline_cached "$dbf"); online=${online:-0}
-      blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
+      blocked=$(_count_blocked_db "$dbf" 4 5); blocked=${blocked:-0} ;;
     wg)
       online=$(wg show wg0 latest-handshakes 2>/dev/null | awk -v n="$(date +%s)" '$2>0 && (n-$2)<75{c++} END{print c+0}')
-      blocked=$(awk '/^### /{if($6=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
+      blocked=$(_count_blocked_db "$dbf" 5 6); blocked=${blocked:-0} ;;
     ppp:*)
       local pp="${mode#ppp:}" ppp_all
       online=0
@@ -629,7 +648,7 @@ proto_dash() {
         online=$(printf '%s\n' "$ppp_all" | awk -F'|' -v p="$pp" '$1==p{print $2+0}')
         online=${online:-0}
       fi
-      blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' "/etc/nvpanel/db/$dbf" 2>/dev/null); blocked=${blocked:-0} ;;
+      blocked=$(_count_blocked_db "$dbf" 4 5); blocked=${blocked:-0} ;;
   esac
   IFS='|' read -r hier auj mois <<< "$(_conso_raw "$tag")"
   printf "${CYN}┃${NC} ${GRY}📦 Comptes:${NC} ${WHT}%s${NC}   ${GRY}👥 En ligne:${NC} ${GRN}%s${NC}   ${GRY}⛔ Bloqué:${NC} ${RED}%s${NC}" "$total" "$online" "$blocked"; printf "\033[%dG${CYN}┃${NC}\n" "$((W + 2))"

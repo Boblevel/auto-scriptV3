@@ -167,9 +167,24 @@ def ssh_online():
     ))
 
 def ssh_blocked():
-    return _int(sh("c=0; while read _ u _; do [ -z \"$u\" ] && continue; "
-                   "s=$(passwd -S \"$u\" 2>/dev/null | awk '{print $2}'); "
-                   "[ \"$s\" = L ] && c=$((c+1)); done < /etc/nvpanel/db/ssh 2>/dev/null; echo $c"))
+    """Expired OR locked SSH accounts (distinct usernames)."""
+    today = time.strftime("%Y-%m-%d")
+    accounts = {}
+    try:
+        with open("/etc/nvpanel/db/ssh") as f:
+            for row in f:
+                fields = row.split()
+                if len(fields) >= 3 and fields[0] == "###":
+                    accounts[fields[1]] = bool(len(fields[2]) == 10 and fields[2] <= today)
+        with open("/etc/shadow") as f:
+            for row in f:
+                user, _, pw = row.partition(":")
+                if user in accounts and pw.startswith(("!", "*")):
+                    accounts[user] = True
+    except OSError:
+        # Ne pas inventer un nombre si les fichiers ne sont pas lisibles.
+        return 0
+    return sum(accounts.values())
 
 def port_online(p):
     # Clients UNIQUES (par IP source), jamais un simple nombre de connexions
@@ -187,11 +202,26 @@ def xray_online(proto):
     return _int(cli("xonline", proto))
 
 def blocked_count(name, field=5):
-    # Comptes verrouillés (colonne 5 = L) pour un protocole donné. Le bot ne
-    # comptait jusqu'ici que les comptes SSH verrouillés : le total
-    # « Bloqués » ne correspondait donc pas à celui du panel dès qu'un
-    # compte d'un autre protocole était verrouillé.
-    return _int(sh("awk -v col=%d '/^### /{if($col==\"L\")c++} END{print c+0}' /etc/nvpanel/db/%s 2>/dev/null" % (field, name)))
+    """Expired OR locked clients, once per account, like the VPS panel."""
+    if name not in ("vmess", "vless", "trojan", "shadowsocks", "l2tp",
+                    "pptp", "sstp", "wireguard", "hysteria"):
+        return 0
+    date_col = 5 if name == "wireguard" else 4
+    today = time.strftime("%Y-%m-%d")
+    result = 0
+    try:
+        with open("/etc/nvpanel/db/" + name) as f:
+            for row in f:
+                cells = row.split()
+                if not cells or cells[0] != "###":
+                    continue
+                exp = cells[date_col - 1] if len(cells) >= date_col else ""
+                locked = len(cells) >= field and cells[field - 1] == "L"
+                if locked or (len(exp) == 10 and exp <= today):
+                    result += 1
+    except OSError:
+        pass
+    return result
 
 def wg_online():
     return _int(sh("wg show wg0 latest-handshakes 2>/dev/null | "
@@ -231,11 +261,12 @@ def proto_choice_kb(prefix):
          {"text": "\U0001F7E4 L2TP", "callback_data": "%s:l2tp" % prefix}],
         [{"text": "\U0001F4E1 PPTP", "callback_data": "%s:pptp" % prefix},
          {"text": "\U0001F511 SSTP", "callback_data": "%s:sstp" % prefix}],
+        [{"text": "⚡ Hysteria2", "callback_data": "%s:hysteria" % prefix}],
         [{"text": "\u274C Annuler", "callback_data": "cancel"}],
     ]}
 
 PROTO_NAME = {"ssh": "SSH", "vmess": "Vmess", "vless": "Vless", "trojan": "Trojan",
-              "ss": "Shadowsocks", "l2tp": "L2TP", "pptp": "PPTP", "sstp": "SSTP"}
+              "ss": "Shadowsocks", "l2tp": "L2TP", "pptp": "PPTP", "sstp": "SSTP", "hysteria": "Hysteria2"}
 
 def trial_kb():
     return {"inline_keyboard": [
@@ -243,6 +274,7 @@ def trial_kb():
         [{"text": "Vless", "callback_data": "t:vless"}, {"text": "Trojan", "callback_data": "t:trojan"}],
         [{"text": "Shadowsocks", "callback_data": "t:ss"}, {"text": "L2TP", "callback_data": "t:l2tp"}],
         [{"text": "PPTP", "callback_data": "t:pptp"}, {"text": "SSTP", "callback_data": "t:sstp"}],
+        [{"text": "Hysteria2", "callback_data": "t:hysteria"}],
         [{"text": "\u274C Annuler", "callback_data": "cancel"}],
     ]}
 
@@ -252,6 +284,7 @@ def purge_kb():
         [{"text": "Vless", "callback_data": "g:vless"}, {"text": "Trojan", "callback_data": "g:trojan"}],
         [{"text": "Shadowsocks", "callback_data": "g:ss"}, {"text": "L2TP", "callback_data": "g:l2tp"}],
         [{"text": "PPTP", "callback_data": "g:pptp"}, {"text": "SSTP", "callback_data": "g:sstp"}],
+        [{"text": "Hysteria2", "callback_data": "g:hysteria"}],
         [{"text": "\u274C Annuler", "callback_data": "cancel"}],
     ]}
 
@@ -263,8 +296,10 @@ def ppp_kb(p):
 
 def hy_kb():
     return {"inline_keyboard": [
-        [{"text": "\u2795 Ajouter", "callback_data": "hya"}, {"text": "\U0001F4CB Liste", "callback_data": "hyl"}],
-        [{"text": "\U0001F5D1 Supprimer", "callback_data": "hyd"}, {"text": "\u2B05\uFE0F Retour", "callback_data": "menu"}],
+        [{"text": "➕ Ajouter", "callback_data": "hya"}, {"text": "📋 Liste", "callback_data": "hyl"}],
+        [{"text": "♻️ Prolonger", "callback_data": "rn:hysteria"}, {"text": "🔒 Verrouiller", "callback_data": "lk:hysteria"}],
+        [{"text": "🔓 Déverrouiller", "callback_data": "ul:hysteria"}, {"text": "🗑️ Supprimer", "callback_data": "hyd"}],
+        [{"text": "🏠 Menu principal", "callback_data": "menu"}],
     ]}
 
 def split_dns_key(box):
@@ -355,18 +390,37 @@ def wg_time(pub):
         return "%dh %02dmin" % (d // 3600, (d % 3600) // 60)
     return "%dmin" % (d // 60)
 
+def back_kb():
+    return {"inline_keyboard": [[{"text": "🏠 Menu principal", "callback_data": "menu"}]]}
+
 def send(chat, text, kb=None):
-    mk = kb if kb is not None else main_kb()
+    # Only the main menu shows the large action keyboard.
+    mk = kb if kb is not None else back_kb()
     api("sendMessage", chat_id=chat, text=text, parse_mode="HTML", reply_markup=mk)
 
-MENU_TXT = ("\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-            "   \U0001F6F0 <b>RHAFF SERVICE</b>\n"
-            "   <i>Panel gestion &amp; contr\u00f4le</i>\n"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-            "Choisissez une commande \U0001F447")
+def send_blocks(chat, title, blocks, kb=None):
+    """Split long account listings to respect Telegram's 4096-char limit."""
+    page = title
+    for block in blocks:
+        if len(page) + len(block) + 2 > 3800:
+            send(chat, page, kb=kb)
+            page = title
+        page += "\n\n" + block
+    send(chat, page, kb=kb)
+
+MENU_TXT = (
+    "━━━━━━━━━━━━━━━━━━━━\n"
+    "🛡️ <b>RHAFF SERVICE</b>\n"
+    "<i>Centre de gestion VPS • Accès administrateur</i>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "📊 <b>SUPERVISION</b>  ·  serveur et connexions\n"
+    "👥 <b>COMPTES</b>  ·  création, état et renouvellement\n"
+    "🔐 <b>PROTOCOLES</b>  ·  SSH et services VPN\n\n"
+    "Sélectionne une action ci-dessous."
+)
 
 def show_menu(chat):
-    send(chat, MENU_TXT)
+    send(chat, MENU_TXT, kb=main_kb())
 
 def do_monitor(chat):
     up, ram, load = sys_info()
@@ -406,7 +460,7 @@ def do_monitor(chat):
     # chiffre.
     total_on = on_ssh + on_xray + on_ss + on_wg + on_l2 + on_pp + on_st
 
-    # Comptes verrouillés sur TOUS les protocoles, pas seulement SSH —
+    # Comptes expirés OU verrouillés sur tous les protocoles, sans doublons —
     # sinon ce total ne correspondait pas à celui du panel dès qu'un compte
     # d'un autre protocole était verrouillé.
     blocked = (ssh_blocked() + blocked_count("vmess") + blocked_count("vless")
@@ -481,7 +535,7 @@ def do_list(chat):
         else:
             lignes.append("\u2570 \u00c9tat       %s %s" % (badge, etat))
         blocks.append("\U0001F464 <b>%s</b>\n<code>%s</code>" % (esc(user), "\n".join(lignes)))
-    send(chat, "\U0001F4CB <b>COMPTES SSH</b>  \u00b7  %d\n\n%s" % (len(rows), "\n\n".join(blocks)))
+    send_blocks(chat, "📋 <b>COMPTES SSH</b>  ·  %d" % len(rows), blocks)
 
 def do_xlist(chat, proto):
     out = cli("xlist", proto)
@@ -513,8 +567,8 @@ def do_xlist(chat, proto):
         else:
             lignes.append("\u2570 \u00c9tat       %s %s" % (badge, etat))
         blocks.append("\U0001F464 <b>%s</b>\n<code>%s</code>" % (esc(name), "\n".join(lignes)))
-    send(chat, "\U0001F4CB <b>%s</b>  \u00b7  %d\n\n%s" % (proto.upper(), len(rows), "\n\n".join(blocks)),
-         kb=proto_kb(proto))
+    send_blocks(chat, "📋 <b>%s</b>  ·  %d" % (proto.upper(), len(rows)), blocks,
+                kb=proto_kb(proto))
 
 def handle_callback(chat, data):
     # Toute pression sur un bouton annule une action texte en attente,
@@ -542,8 +596,13 @@ def handle_callback(chat, data):
         elif p in ("l2tp", "pptp", "sstp"):
             n, pw = rand_name(), rand_pass()
             out = ppp("add", p, n, pw, "1", "1")
-        else:
+        elif p == "hysteria":
+            n, pw = rand_name(), rand_pass()
+            out = hy("add", n, pw, "1")
+        elif p in ("vmess", "vless", "trojan", "ss"):
             out = cli("xadd", p, rand_name(), "1", "1")
+        else:
+            send(chat, "❌ Protocole non reconnu."); return
         if out.startswith("OK"):
             _box, _key = split_dns_key("\n".join(out.split("\n")[1:]))
             send(chat, "<b>\u2705 Compte test 24 h cr\u00e9\u00e9</b>\n<pre>%s</pre>%s"
@@ -553,9 +612,20 @@ def handle_callback(chat, data):
         return
     if data.startswith("g:"):
         p = data[2:]
-        out = ppp("purge", p, "expired") if p in ("l2tp", "pptp", "sstp") else cli("purge", p, "expired")
-        n = out.split()[1] if out.startswith("OK") and len(out.split()) > 1 else "0"
-        send(chat, "\U0001F9F9 <b>%s</b> : %s compte(s) expir\u00e9(s) supprim\u00e9(s)." % (p.upper(), n)); return
+        if p in ("l2tp", "pptp", "sstp"):
+            out = ppp("purge", p, "expired")
+        elif p == "hysteria":
+            out = hy("purge", "expired")
+        elif p in ("ssh", "vmess", "vless", "trojan", "ss"):
+            out = cli("purge", p, "expired")
+        else:
+            send(chat, "❌ Protocole non reconnu."); return
+        if out.startswith("OK"):
+            n = out.split()[1] if len(out.split()) > 1 else "0"
+            send(chat, "🧹 <b>%s</b> : %s compte(s) expiré(s) supprimé(s)." % (p.upper(), esc(n)))
+        else:
+            send(chat, "❌ Échec du nettoyage : %s" % esc(out))
+        return
     if data.startswith("pp:"):
         p = data[3:]
         send(chat, "<b>%s</b> \u2014 choisis :" % p.upper(), kb=ppp_kb(p)); return
@@ -654,6 +724,8 @@ def handle_callback(chat, data):
              kb=proto_choice_kb(pref)); return
     if data.startswith(("lk:", "ul:", "rn:")):
         act, _, proto = data.partition(":")
+        if proto not in PROTO_NAME:
+            send(chat, "❌ Protocole non reconnu."); return
         nom = PROTO_NAME.get(proto, proto.upper())
         if act == "rn":
             STATE[chat] = {"action": "renewdo", "proto": proto}
@@ -713,6 +785,8 @@ def handle_text(chat, text):
             r = cli("renew", parts[0], parts[1])
         elif p in ("l2tp", "pptp", "sstp"):
             r = ppp("renew", p, parts[0], parts[1])
+        elif p == "hysteria":
+            r = hy("renew", parts[0], parts[1])
         else:
             r = cli("xrenew", p, parts[0], parts[1])
         nom = PROTO_NAME.get(p, p.upper())
@@ -728,6 +802,8 @@ def handle_text(chat, text):
             r = cli("lock" if verrou else "unlock", parts[0])
         elif p in ("l2tp", "pptp", "sstp"):
             r = ppp("lock" if verrou else "unlock", p, parts[0])
+        elif p == "hysteria":
+            r = hy("lock" if verrou else "unlock", parts[0])
         else:
             r = cli("xlock" if verrou else "xunlock", p, parts[0])
         nom = PROTO_NAME.get(p, p.upper())
@@ -780,7 +856,8 @@ def handle_text(chat, text):
             send(chat, "\u274C %s" % first)
     elif a == "xdel":
         r = cli("xdel", st["proto"], parts[0])
-        send(chat, "\u2705 Supprime" if r.startswith("OK") else ("\u274C %s" % r))
+        send(chat, ("✅ <b>%s</b> supprimé de %s" % (esc(parts[0]), esc(st["proto"].upper())))
+             if r.startswith("OK") else ("❌ %s" % esc(r)))
 
 def authorized(uid):
     return str(uid) == ADMIN
@@ -794,13 +871,20 @@ def main():
         for u in upd["result"]:
             OFFSET = u["update_id"] + 1
             if "callback_query" in u:
-                cq = u["callback_query"]; uid = cq["from"]["id"]; chat = cq["message"]["chat"]["id"]
+                cq = u["callback_query"]
+                uid = cq.get("from", {}).get("id")
+                chat = cq.get("message", {}).get("chat", {}).get("id")
+                if not authorized(uid) or str(chat) != ADMIN:
+                    api("answerCallbackQuery", callback_query_id=cq["id"], text="Accès privé réservé")
+                    continue
                 api("answerCallbackQuery", callback_query_id=cq["id"])
-                if not authorized(uid): api("sendMessage", chat_id=chat, text="\u26D4 Non autorise"); continue
-                handle_callback(chat, cq["data"])
+                handle_callback(chat, cq.get("data", ""))
             elif "message" in u:
-                m = u["message"]; uid = m["from"]["id"]; chat = m["chat"]["id"]
-                if not authorized(uid): api("sendMessage", chat_id=chat, text="\u26D4 Non autorise"); continue
+                m = u["message"]
+                uid = m.get("from", {}).get("id")
+                chat = m.get("chat", {}).get("id")
+                if not authorized(uid) or str(chat) != ADMIN:
+                    continue
                 txt = m.get("text", "")
                 if txt in ("/start", "/menu"): STATE.pop(chat, None); show_menu(chat)
                 else: handle_text(chat, txt)

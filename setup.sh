@@ -59,7 +59,9 @@ NVDOMAIN=${NVDOMAIN,,}
 [ -z "$NVDOMAIN" ] || valid_domain "$NVDOMAIN" || die "Nom de domaine invalide (FQDN attendu, ex. vpn.example.com)."
 read -rp "   🔌 Port (Entrée = 443 par défaut) : " NVPORT
 NVPORT=${NVPORT:-443}
-[[ "$NVPORT" =~ ^[0-9]+$ ]] && [ "$NVPORT" -ge 1 ] && [ "$NVPORT" -le 65535 ] && [ "$NVPORT" -ne 80 ] \
+[[ "$NVPORT" =~ ^[0-9]{1,5}$ ]] || die "Port invalide (1 à 65535, sauf 80)."
+NVPORT=$((10#$NVPORT))
+[ "$NVPORT" -ge 1 ] && [ "$NVPORT" -le 65535 ] && [ "$NVPORT" -ne 80 ] \
   || die "Port invalide (1 à 65535, sauf 80 réservé à la façade HTTP)."
 case "$NVPORT" in
   22|143|1723|4443|7100|7200|7300|8080|8081|8082|8388|10085)
@@ -114,6 +116,17 @@ if [ -n "$_MISSING" ]; then
   printf "  Le serveur n'a pas pu les télécharger. Vérifie sa connexion,\n"
   printf "  puis relance l'installation.\n\n"
   exit 1
+fi
+
+# Contrôler le port TCP de la façade nginx avant de toucher au panel.
+# Une réinstallation du même panel peut conserver son propre nginx.
+if ss -H -ltn 2>/dev/null | awk -v port=":$NVPORT" '$4 ~ (port "$"){found=1} END{exit !found}'; then
+  _existing_xport=$(cat /etc/nvpanel/xport 2>/dev/null)
+  if [ "$_existing_xport" != "$NVPORT" ] \
+     || [ ! -f /etc/nginx/conf.d/rhaff.conf ] \
+     || ! ss -H -ltnp 2>/dev/null | awk -v port=":$NVPORT" '$4 ~ (port "$") && /"nginx"/{found=1} END{exit !found}'; then
+    die "Le port TCP $NVPORT est déjà occupé. Choisis un port libre sans toucher au service existant."
+  fi
 fi
 
 # Les protocoles utilisent iptables/NAT : sans NET_ADMIN (certains LXC/OpenVZ),
@@ -384,6 +397,7 @@ printf "${NC}\n"
 printf "   ${CYN}▶ Pour ouvrir le panel, tape l'une de ces commandes :${NC}\n\n"
 printf "         ${WHT}menu${NC}      ${GRY}·${NC}      ${WHT}acc${NC}      ${GRY}·${NC}      ${WHT}dgh${NC}\n\n"
 printf "   ${GRY}🌐 IP du serveur : %s${NC}\n\n" "$IPADDR"
+printf "   ${GRY}🔐 Port HTTPS / Xray : %s/tcp${NC}\n" "$NVPORT"
 printf "   ${GRY}🔌 Port Dropbear : %s/tcp${NC}\n\n" "$DROPBEAR_PORT"
 if [ -n "$FAILED" ]; then
   printf "   ${YLW}⚠ Installation partielle : certains composants n'ont pas pu être${NC}\n"

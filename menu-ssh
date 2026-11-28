@@ -377,8 +377,8 @@ hy_header(){
   local total blocked expired online today service
   today=$(date +%F)
   total=$(grep -c '^### ' /etc/nvpanel/db/hysteria 2>/dev/null); total=${total:-0}
-  blocked=$(awk '/^### /{if($5=="L")c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); blocked=${blocked:-0}
-  expired=$(awk -v d="$today" '/^### /{if($5!="L" && $4!="" && $4<=d)c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); expired=${expired:-0}
+  blocked=$(_count_blocked_db hysteria 4 5); blocked=${blocked:-0}
+  expired=$(awk -v d="$today" '/^### /{if($4!="" && $4<=d)c++} END{print c+0}' /etc/nvpanel/db/hysteria 2>/dev/null); expired=${expired:-0}
   online=$(_hysteria_online_cached); online=${online:-0}
   if systemctl is-active --quiet hysteria-server 2>/dev/null; then
     service="${GRN}actif${NC}"
